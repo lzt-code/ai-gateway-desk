@@ -23,8 +23,8 @@
     "prepublishOnly": "npm test"
   },
   "dependencies": {
-    "hono": "^4.13.1",
-    "@hono/node-server": "^1.19.17"
+    "@hono/node-server": "^1.19.17",
+    "hono": "^4.13.1"
   },
   "devDependencies": {
     "wrangler": "^3.0.0"
@@ -36,5 +36,9 @@
     "models",
     "web",
     "cli"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lzt-code/ai-gateway-desk.git"
+  }
 }
