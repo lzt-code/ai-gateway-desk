@@ -1,0 +1,16 @@
+[
+  {
+    "id": "custom-provider-1/example-model",
+    "object": "model",
+    "name": "Example Model",
+    "created": 1720000000,
+    "owned_by": "provider-1",
+    "context_length": 128000,
+    "max_output_length": 4096,
+    "input_modalities": ["text"],
+    "output_modalities": ["text"],
+    "supported_sampling_parameters": ["temperature", "top_p", "max_tokens"],
+    "supported_features": ["tools", "json_mode"],
+    "description": "示例模型条目。实际 models.json 由 TUI F5 保存时自动生成（selected 模型），无需手工维护。"
+  }
+]

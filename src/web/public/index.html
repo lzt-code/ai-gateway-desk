@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-gateway-desk</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="app-header">
+  <h1>ai-gateway-desk</h1>
+  <nav id="tab-bar">
+    <!-- data-view 属性是任务 31-33 的绑定契约 -->
+    <button data-view="providers">[1] Provider</button>
+    <button data-view="models">[2] 模型</button>
+    <button data-view="workers">[3] Worker</button>
+    <button data-view="account">[4] 账户</button>
+  </nav>
+  <span id="health-status" class="health-status">正在检测后端…</span>
+</header>
+
+<div id="app-main">
+  <main id="view-container">
+    <!-- 四视图容器：id 约定 view-<name>，hidden 切换（任务 31-33 填充内容） -->
+    <section class="view" id="view-providers" hidden></section>
+    <section class="view" id="view-models" hidden></section>
+    <section class="view" id="view-workers" hidden></section>
+    <section class="view" id="view-account" hidden></section>
+  </main>
+  <aside id="side-panel">
+    <div id="hint-bar"></div>
+    <!-- 侧栏操作按钮：随当前视图显隐 -->
+    <div id="side-actions" hidden>
+      <button id="btn-provider-refresh" class="btn btn-default" type="button">更新 Provider 列表</button>
+      <button id="btn-provider-add" class="btn btn-default" type="button">添加 Provider</button>
+    </div>
+    <div id="model-side-actions" class="side-actions" hidden>
+      <div class="side-group">
+        <div class="side-group-title">数据操作</div>
+        <button id="mbtn-sync" class="btn btn-default" type="button">拉取云端数据</button>
+        <button id="mbtn-save-deploy" class="btn btn-primary" type="button">部署更改</button>
+        <button id="mbtn-save" class="btn btn-default" type="button">暂存更改<span class="btn-hint">本地暂存，暂不部署</span></button>
+      </div>
+      <div class="side-group">
+        <div class="side-group-title">模型操作</div>
+        <button id="mbtn-batch-toggle" class="btn btn-default" type="button">批量切换</button>
+        <button id="mbtn-batch-remove" class="btn btn-danger" type="button">批量删除</button>
+        <button id="mbtn-edit" class="btn btn-default" type="button">编辑</button>
+        <button id="mbtn-delete" class="btn btn-danger" type="button">删除</button>
+        <button id="mbtn-add" class="btn btn-default" type="button">添加</button>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<div id="progress-panel" hidden></div>
+
+<!-- 底部处理过程日志栏：所有操作（拉取 Provider / 更新模型列表 / 获取 Worker 状态 /
+     更新模型信息 / 保存部署 / 账户操作等）的过程日志统一写入此处 -->
+<div id="activity-log">
+  <div class="log-bar">
+    <span class="log-title">处理过程日志</span>
+    <span id="log-count" class="log-count" hidden></span>
+    <button id="btn-log-clear" class="log-btn" type="button">清空</button>
+    <button id="btn-log-toggle" class="log-btn" type="button">展开全部</button>
+  </div>
+  <div id="activity-log-body" class="log-body">
+    <div class="log-empty">暂无操作记录</div>
+  </div>
+</div>
+
+<div id="flash-root"></div>
+
+<script>
+  // 后端健康检查（任务 25 占位逻辑保留，显示在页头右侧）
+  ;(async () => {
+    const el = document.getElementById('health-status')
+    let ok = false
+    try {
+      const res = await fetch('/api/health')
+      const j = await res.json()
+      ok = !!(j && j.ok)
+      el.textContent = ok ? '✓ 后端服务正常' : '✗ 后端异常'
+    } catch {
+      el.textContent = '✗ 无法连接后端'
+    }
+    el.classList.toggle('ok', ok)
+    el.classList.toggle('bad', !ok)
+  })()
+</script>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,385 @@
+/* ============================================================
+ * ai-gateway-desk Web UI — 深色主题 + 布局（任务 30）
+ * 颜色语义与原 TUI 一致：绿=成功 / 黄=警告 / 红=错误
+ * ============================================================ */
+
+:root {
+  --bg: #1e1e2e;        /* 页面背景（深色） */
+  --panel: #27273a;     /* 面板/卡片背景 */
+  --fg: #cdd6f4;        /* 主文字 */
+  --muted: #7f849c;     /* 次要文字 */
+  --accent: #89b4fa;    /* 高亮/当前选项卡 */
+  --ok: #a6e3a1;        /* 成功（绿） */
+  --warn: #f9e2af;      /* 警告（黄） */
+  --err: #f38ba8;       /* 错误（红） */
+  --border: #45475a;    /* 边框 */
+}
+
+* { box-sizing: border-box; }
+
+/* 已知坑 8：display 样式会覆盖 hidden 默认行为，必须显式声明 */
+[hidden] { display: none !important; }
+
+html, body { margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 页头（固定顶部） ─────────────────────────────────── */
+#app-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.55rem 1rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+#app-header h1 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── 选项卡 ───────────────────────────────────────────── */
+#tab-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+#tab-bar button {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0.35rem 0.85rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+#tab-bar button:hover { background: rgba(137, 180, 250, 0.14); }
+#tab-bar button.active {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+/* 页头右侧：后端健康状态（任务 25 占位逻辑保留） */
+.health-status {
+  margin-left: auto;
+  font-size: 0.8rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.health-status.ok { color: var(--ok); }
+.health-status.bad { color: var(--err); }
+
+/* ── 主体布局：1fr 主区 + 280px 提示栏 ─────────────────── */
+#app-main {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 1rem;
+  padding: 1rem;
+  flex: 1;
+  min-height: 0;
+}
+#view-container { min-width: 0; }   /* 防表格溢出 */
+
+/* ── 模型视图：左/中/右三栏各自独立滚动（仅 ≥901px 宽屏；小屏回退整页滚动）── */
+/* 高度链：body(100vh) → #app-main(flex:1) → #view-models(flex:1) →
+   .models-layout(flex:1) → 三栏(overflow-y:auto)。任一环节缺 min-height:0
+   都会退化为内容撑高、无法独立滚动。 */
+@media (min-width: 901px) {
+  body.models-active { height: 100vh; overflow: hidden; }
+  body.models-active #app-main { overflow: hidden; grid-template-rows: minmax(0, 1fr); }
+  body.models-active #view-container { display: flex; min-height: 0; }
+  body.models-active #view-models {
+    flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+  }
+  /* 右侧按钮栏：填充网格行高，内容超出时内部滚动 */
+  body.models-active #side-panel {
+    align-self: stretch; max-height: 100%; min-height: 0;
+    overflow-y: auto; position: static;
+  }
+}
+
+.view {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+}
+.view-title { margin: 0 0 0.5rem; font-size: 1.1rem; }
+.view-hint { color: var(--muted); margin: 0; font-size: 0.9rem; }
+
+/* ── 右侧栏：提示栏 + 侧栏操作按钮（Provider 刷新）────────── */
+#side-panel {
+  position: sticky;
+  top: 1rem;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+#hint-bar {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+/* 侧栏操作按钮（随视图显隐；按钮左对齐避免 stretch 撑满） */
+#side-actions,
+.side-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+/* ── 底部进度面板（任务 31 SSE 驱动，默认 hidden） ─────── */
+#progress-panel {
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  padding: 0.6rem 1rem;
+}
+#progress-panel .progress-message { font-size: 0.85rem; margin-bottom: 0.35rem; }
+.progress-track {
+  height: 8px;
+  background: var(--bg);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.progress-bar {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+.progress-bar.ok { background: var(--ok); }
+.progress-bar.err { background: var(--err); }
+
+/* ── 底部处理过程日志栏（全局，所有操作写入）────────────── */
+/* sticky bottom：内容少时位于文档流底部（#app-main flex:1 撑开），
+   内容多时吸附在视口底部常驻可见 */
+#activity-log {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  max-height: 32vh;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+}
+#activity-log.collapsed #activity-log-body { display: none; }
+#activity-log.expanded #activity-log-body {
+  max-height: calc(32vh - 2rem);
+}
+.log-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.log-title { font-size: 0.85rem; font-weight: 600; }
+.log-count { font-size: 0.8rem; color: var(--muted); }
+.log-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.1rem 0.5rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.log-btn:hover { border-color: var(--accent); color: var(--accent); }
+#btn-log-clear { margin-left: auto; }
+#activity-log-body {
+  overflow-y: auto;
+  padding: 0.25rem 0.75rem 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  max-height: 4lh;  /* 默认紧凑：4 行日志 */
+}
+.log-line { white-space: pre-wrap; word-break: break-all; color: var(--muted); }
+.log-ok { color: var(--ok); }
+.log-warn { color: var(--warn); }
+.log-err { color: var(--err); }
+.log-info { color: var(--fg); }
+.log-empty { color: var(--muted); font-size: 0.8rem; padding: 0.2rem 0; }
+
+/* ── 表格 ─────────────────────────────────────────────── */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+th, td {
+  text-align: left;
+  padding: 0.45rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
+tbody tr:hover { background: rgba(137, 180, 250, 0.07); }
+
+/* ── 表单 ─────────────────────────────────────────────── */
+label {
+  display: block;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+input, select, textarea {
+  width: 100%;
+  margin-top: 0.3rem;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(137, 180, 250, 0.25);
+}
+/* 表单字段下方提示（如 base URL 的 /v1 说明）：灰字小号，置于输入框下方 */
+.field-hint {
+  font-size: 0.72rem;
+  color: var(--muted);
+  margin-top: 0.2rem;
+  line-height: 1.35;
+}
+
+/* ── 按钮 ─────────────────────────────────────────────── */
+button { font: inherit; }
+.btn {
+  display: inline-block;
+  border: none;
+  border-radius: 6px;
+  padding: 0.45rem 1rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: opacity 0.15s ease, background 0.15s ease;
+}
+.btn:hover { opacity: 0.88; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: var(--bg); }
+.btn-danger { background: var(--err); color: #1e1e2e; }
+.btn-default { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+
+/* ── 弹窗 <dialog> ────────────────────────────────────── */
+dialog {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0;
+  min-width: 340px;
+  max-width: min(90vw, 480px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.dialog-header {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+.dialog-body { padding: 1rem; }
+.dialog-body label:last-child { margin-bottom: 0; }
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0 1rem 1rem;
+}
+
+/* ── 开关按钮（弹窗表单行：标题左侧 + 开关右侧）────────── */
+/* 替代原生 checkbox：checkbox 受全局 input 样式（width:100% + margin-top）影响，行内不对齐 */
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.2rem 0;
+}
+.switch-row .switch-label { font-size: 0.9rem; }
+.switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 40px;
+  height: 22px;
+  padding: 0;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+.switch:hover { border-color: var(--accent); }
+.switch:disabled { opacity: 0.5; cursor: not-allowed; }
+.switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+.switch[aria-checked='true'] { background: var(--accent); border-color: var(--accent); }
+.switch[aria-checked='true'] .switch-thumb {
+  background: var(--bg);
+  transform: translateX(18px);
+}
+
+/* ── flash toast ──────────────────────────────────────── */
+#flash-root {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.flash {
+  padding: 0.55rem 1rem;
+  border-radius: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  font-size: 0.9rem;
+  animation: flash-in 0.18s ease-out;
+}
+@keyframes flash-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.flash-ok { color: var(--ok); border-color: var(--ok); }
+.flash-warn { color: var(--warn); border-color: var(--warn); }
+.flash-err { color: var(--err); border-color: var(--err); }
+.flash-info { color: var(--fg); border-color: var(--accent); }
+
+/* ── 响应式：<900px 右侧栏移到下方 ─────────────────────── */
+@media (max-width: 900px) {
+  #app-main { grid-template-columns: 1fr; }
+  #side-panel { order: 2; position: static; }
+}

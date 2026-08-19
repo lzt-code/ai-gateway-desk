@@ -1,0 +1,15 @@
+name = "ai-gateway-desk-worker"
+main = "src/index.js"
+compatibility_date = "2026-07-28"
+
+[vars]
+GW_HOST = "gateway.ai.cloudflare.com"
+ACCOUNT_ID = "{{ACCOUNT_ID}}"
+GATEWAY_ID = "{{GATEWAY_ID}}"
+
+# 模型列表存储：运行下方命令创建 KV namespace 并把输出的 id 填入占位符
+#   npx wrangler kv:namespace create MODELS_KV
+# 更新模型：wrangler kv:key put --binding=MODELS_KV "models" "$(cat ../data/models.json)"
+[[kv_namespaces]]
+binding = "MODELS_KV"
+id = "<YOUR_KV_NAMESPACE_ID>"

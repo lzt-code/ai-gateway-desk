@@ -1,0 +1,15 @@
+{
+  "gateway": {
+    "host": "gateway.ai.cloudflare.com",
+    "accountId": "<YOUR_CLOUDFLARE_ACCOUNT_ID>",
+    "gatewayId": "<YOUR_GATEWAY_ID>"
+  },
+  "kv": {
+    "namespaceId": "<YOUR_KV_NAMESPACE_ID>",
+    "key": "models"
+  },
+  "providers": [
+    { "id": "custom-provider-1", "name": "Provider 1", "enabled": true },
+    { "id": "custom-provider-2", "name": "Provider 2", "enabled": true, "pathPrefix": "/api/v3" }
+  ]
+}

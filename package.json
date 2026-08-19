@@ -1,0 +1,40 @@
+{
+  "name": "ai-gateway-desk",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "AI Gateway 模型管理工具（本地 Web 界面）+ 转发封装 Worker",
+  "bin": {
+    "aigd": "src/bin/aigd.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "src",
+    "data/providers.example.json",
+    "data/models.example.json"
+  ],
+  "scripts": {
+    "dev": "node scripts/deploy.mjs dev",
+    "deploy": "node scripts/deploy.mjs deploy",
+    "web": "node src/bin/aigd.js web",
+    "aigd": "node src/bin/aigd.js",
+    "test": "node test/run-all.mjs",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "hono": "^4.13.1",
+    "@hono/node-server": "^1.19.17"
+  },
+  "devDependencies": {
+    "wrangler": "^3.0.0"
+  },
+  "license": "MIT",
+  "keywords": [
+    "cloudflare",
+    "ai-gateway",
+    "models",
+    "web",
+    "cli"
+  ]
+}

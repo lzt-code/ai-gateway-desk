@@ -1,0 +1,16 @@
+node_modules/
+.wrangler/
+.dev.vars
+
+# 部署时动态生成的临时 wrangler 配置（真实 KV id 注入用，用完即删）
+ai-gateway-desk-worker/.wrangler.generated.toml
+
+# 运行时数据（私有配置 + 用户数据 + 生成产物）
+# 仅白名单 *.example.json 模板可提交，真实配置 / 产物不提交
+data/*
+!data/providers.example.json
+!data/models.example.json
+
+# MCP / 代码图谱配置（本机工具配置，不入库）
+.mcp.json
+.codebase-memory.json
