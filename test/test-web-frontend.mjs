@@ -64,6 +64,11 @@ check(
 check(/<script\s+type="module"\s+src="app\.js">/.test(html), '含 <script type="module" src="app.js">')
 check(/<link\s+rel="stylesheet"\s+href="style\.css">/.test(html), '含 <link rel="stylesheet" href="style.css">')
 check(html.includes('id="flash-root"'), 'flash 挂载点 id="flash-root"')
+check(
+  html.includes('id="busy-indicator"') && html.includes('hidden') &&
+    html.includes('id="busy-text"') && html.includes('class="busy-spinner"'),
+  '全局加载指示骨架（busy-indicator hidden / busy-text / busy-spinner）',
+)
 
 // ── 6：style.css 主题 + 布局要点 ──────────────────────────
 section('style.css 主题变量与布局')
@@ -78,6 +83,7 @@ check(/\[hidden\]\s*\{[^}]*display\s*:\s*none\s*!important/.test(css), '[hidden]
 check(/grid-template-columns\s*:\s*1fr\s+280px/.test(css), '主区 grid 1fr + 280px 提示栏')
 check(/@media\s*\(max-width\s*:\s*900px\)/.test(css), '<900px 响应式断点')
 check(/\.tab-bar\s+button\.active|button\.active/.test(css), '选项卡激活态样式 .active')
+check(/\.busy-spinner\s*\{/.test(css) && /@keyframes\s+busy-spin/.test(css), '转圈圈动画样式（.busy-spinner + @keyframes busy-spin）')
 
 // ── 7-19：app.js 纯函数单测 ───────────────────────────────
 section('app.js 纯函数单测')
@@ -104,8 +110,17 @@ const {
   HEARTBEAT_INTERVAL,
   startHeartbeat,
   sendGoodbye,
+  showBusy,
+  hideBusy,
+  withBusy,
 } = mod
 check(true, 'app.js 可被 Node import（顶层无 DOM 访问，能加载即证明）')
+
+// 8z：全局加载指示（转圈圈）纯函数（showBusy / hideBusy / withBusy）
+check(typeof showBusy === 'function' && typeof hideBusy === 'function', 'showBusy/hideBusy 已导出（全局加载指示）')
+check(typeof withBusy === 'function', 'withBusy 已导出（异步包装自动显隐）')
+const busyResult = await withBusy('处理中', Promise.resolve(42))
+check(busyResult === 42, 'withBusy 透传 Promise 结果（无 DOM 环境）')
 
 // 8a：底部处理过程日志栏纯函数（logActivity / clearActivityLog）
 check(typeof logActivity === 'function', 'logActivity 已导出（底部处理过程日志栏）')

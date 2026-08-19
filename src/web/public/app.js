@@ -340,6 +340,50 @@ export function flash(message, type = 'info') {
   }, 3000)
 }
 
+// ── 全局加载指示（转圈圈）────────────────────────────────
+// 所有异步操作（进入视图拉列表 / 保存部署 / 同步 KV / 部署 Worker / 刷新状态等）
+// 统一通过页头右侧的 #busy-indicator 胶囊提示「正在工作」。
+// 实现用引用计数：并发/嵌套操作共享同一个指示器，全部结束才隐藏（避免闪烁），
+// 文案取最近一次 showBusy 的 message（计数归零后不再更新）。
+// 纯函数约束：Node 无 DOM 环境只维护计数不碰 DOM（顶层零 DOM 访问的前提）。
+let busyCount = 0
+let busyText = ''
+
+function renderBusyIndicator() {
+  if (typeof document === 'undefined') return
+  const el = document.getElementById('busy-indicator')
+  if (!el) return
+  el.hidden = busyCount === 0
+  if (busyCount > 0) {
+    const text = document.getElementById('busy-text')
+    if (text) text.textContent = busyText
+  }
+}
+
+// 显示加载指示（可叠加：每调一次 showBusy，需对应一次 hideBusy 才会隐藏）
+export function showBusy(message) {
+  busyCount += 1
+  busyText = message || '处理中…'
+  renderBusyIndicator()
+}
+
+// 隐藏加载指示（引用计数递减，全部并发操作结束才真正隐藏）
+export function hideBusy() {
+  busyCount = Math.max(0, busyCount - 1)
+  renderBusyIndicator()
+}
+
+// 便捷包装：work 为 Promise 或 ()=>Promise。期间显示指示器，结束（含异常）
+// 自动隐藏——用 try/finally 保证 hideBusy 必被调用，无需调用方自行配对。
+export async function withBusy(message, work) {
+  showBusy(message)
+  try {
+    return await (typeof work === 'function' ? work() : work)
+  } finally {
+    hideBusy()
+  }
+}
+
 // ── 复制文本到剪贴板（模型名称复制按钮用）──────────────────
 // 返回 Promise<boolean>：true=成功；false=失败（无 Clipboard API / 无 DOM /
 // 权限拒绝）。失败时调用方应给出可见提示。
@@ -915,7 +959,7 @@ export function renderModelsView(container) {
   async function toggleModel(modelId) {
     if (syncing) return
     try {
-      const res = await api('/api/models/toggle', { method: 'POST', body: { modelId } })
+      const res = await withBusy('正在切换模型…', api('/api/models/toggle', { method: 'POST', body: { modelId } }))
       if (state[modelId]) state[modelId] = { ...state[modelId], ...(res.entry || {}) }
       updateDirty()
       await applyFilter()
@@ -936,7 +980,7 @@ export function renderModelsView(container) {
     )
     if (!yes) return
     try {
-      const res = await api('/api/models/remove', { method: 'POST', body: { modelId } })
+      const res = await withBusy('正在删除模型…', api('/api/models/remove', { method: 'POST', body: { modelId } }))
       delete state[modelId] // 永久删除
       if (selectedModelId === modelId) selectedModelId = null
       updateDirty()
@@ -959,7 +1003,7 @@ export function renderModelsView(container) {
       return
     }
     try {
-      const res = await api('/api/models/batch-toggle', { method: 'POST', body: { modelIds: targets } })
+      const res = await withBusy('正在批量切换…', api('/api/models/batch-toggle', { method: 'POST', body: { modelIds: targets } }))
       for (const id of targets) {
         if (state[id]) state[id].status = res.status
       }
@@ -988,7 +1032,7 @@ export function renderModelsView(container) {
     )
     if (!yes) return
     try {
-      const res = await api('/api/models/batch-remove', { method: 'POST', body: { modelIds: targets } })
+      const res = await withBusy('正在批量删除…', api('/api/models/batch-remove', { method: 'POST', body: { modelIds: targets } }))
       for (const id of targets) {
         delete state[id]
       }
@@ -1039,7 +1083,7 @@ export function renderModelsView(container) {
     if (String(values.description).trim() !== '') fields.description = String(values.description).trim()
     if (!Object.keys(fields).length) return
     try {
-      const res = await api('/api/models/edit', { method: 'POST', body: { modelId: selectedModelId, fields } })
+      const res = await withBusy('正在更新模型信息…', api('/api/models/edit', { method: 'POST', body: { modelId: selectedModelId, fields } }))
       if (state[selectedModelId]) {
         state[selectedModelId] = { ...state[selectedModelId], metadata: res.metadata || {} }
       }
@@ -1135,7 +1179,7 @@ export function renderModelsView(container) {
     }
     if (descInput.value.trim()) metadata.description = descInput.value.trim()
     try {
-      const res = await api('/api/models/add', { method: 'POST', body: { modelId, provider: providerVal, metadata } })
+      const res = await withBusy('正在添加模型…', api('/api/models/add', { method: 'POST', body: { modelId, provider: providerVal, metadata } }))
       state[modelId] = res.entry
       selectedModelId = modelId
       updateDirty()
@@ -1151,7 +1195,7 @@ export function renderModelsView(container) {
   async function saveModels(deploy) {
     logActivity(deploy ? '开始保存并提交部署…' : '开始保存（写 model-states + models.json）…', 'info')
     try {
-      const res = await api(deploy ? '/api/save-deploy' : '/api/save', { method: 'POST' })
+      const res = await withBusy(deploy ? '正在保存并部署（同步 KV）…' : '正在保存…', api(deploy ? '/api/save-deploy' : '/api/save', { method: 'POST' }))
       if (!res || res.ok === false) {
         // 已知坑 10：save-deploy 业务失败用 HTTP 200 + { ok:false, step, error }；
         // step 3 = 部署失败（正常反馈），step 1/2 才是保存失败
@@ -1315,12 +1359,14 @@ export function renderModelsView(container) {
 
   async function refreshAfterSync() {
     try {
-      const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
-      state = s.state || {}
-      providers = p.providers || []
-      renderSidebar()
-      updateDirty() // 新模型进入内存态 → 相对初始快照 dirty（§6.e）
-      await applyFilter()
+      await withBusy('正在刷新模型列表…', async () => {
+        const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
+        state = s.state || {}
+        providers = p.providers || []
+        renderSidebar()
+        updateDirty() // 新模型进入内存态 → 相对初始快照 dirty（§6.e）
+        await applyFilter()
+      })
       flash('同步完成', 'ok')
     } catch (err) {
       flash(err.message, 'err')
@@ -1534,13 +1580,15 @@ export function renderModelsView(container) {
   // ── 初始加载：进入视图拉一次 /api/state + /api/providers/list（§3.1 step 2）──
   ;(async () => {
     try {
-      const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
-      state = s.state || {}
-      providers = p.providers || []
-      snapshot = structuredClone(state)
-      renderSidebar()
-      updateDirty()
-      await applyFilter()
+      await withBusy('正在加载模型列表…', async () => {
+        const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
+        state = s.state || {}
+        providers = p.providers || []
+        snapshot = structuredClone(state)
+        renderSidebar()
+        updateDirty()
+        await applyFilter()
+      })
     } catch (err) {
       flash(err.message, 'err')
     }
@@ -1940,10 +1988,10 @@ export function renderProvidersView(container) {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT)
     try {
-      const res = await api(force ? '/api/providers/refresh' : '/api/providers', {
+      const res = await withBusy(force ? '正在更新 Provider 列表…' : '正在加载 Provider 列表…', api(force ? '/api/providers/refresh' : '/api/providers', {
         method: force ? 'POST' : 'GET',
         signal: controller.signal,
-      })
+      }))
       providers = Array.isArray(res.providers) ? res.providers : []
       readonly = res.readonly === true
       renderTable()
@@ -1986,10 +2034,10 @@ export function renderProvidersView(container) {
     const visibilityChanged = localChanges && typeof localChanges.localEnabled === 'boolean'
     if (!hasCloudChange && !localChanges) return // 无任何变更，不发请求
     try {
-      const res = await api('/api/providers/update', {
+      const res = await withBusy('正在更新 Provider…', api('/api/providers/update', {
         method: 'POST',
         body: { id, changes: { ...cloudChanges, ...(localChanges || {}) } },
-      })
+      }))
       // 已知坑 5：用响应 provider 替换本地数组对应项再重渲染（不整页重拉）
       if (res.provider) {
         const idx = providers.findIndex((p) => p.id === id)
@@ -2035,7 +2083,7 @@ export function renderProvidersView(container) {
     })
     if (!yes) return
     try {
-      const res = await api('/api/providers/delete', { method: 'POST', body: { id } })
+      const res = await withBusy('正在删除 Provider…', api('/api/providers/delete', { method: 'POST', body: { id } }))
       if (res && res.removed === true) {
         providers = providers.filter((p) => p.id !== id)
         renderTable()
@@ -2092,10 +2140,10 @@ export function renderProvidersView(container) {
       return
     }
     try {
-      const res = await api('/api/providers/create', {
+      const res = await withBusy('正在添加 Provider…', api('/api/providers/create', {
         method: 'POST',
         body: payload.body,
-      })
+      }))
       // 已知坑 5：用响应 provider push 进内存再重渲染（不整页重拉）
       if (res.provider) {
         providers.push(res.provider)
@@ -2322,7 +2370,7 @@ export function renderWorkersView(container) {
     btnRefresh.textContent = '刷新中…'
     logActivity('获取 Worker 状态…', 'info')
     try {
-      const res = await api('/api/workers/status')
+      const res = await withBusy('正在获取 Worker 状态…', api('/api/workers/status'))
       renderStatus(res)
       const mj = res.modelsJson || {}
       logActivity(
@@ -2348,7 +2396,7 @@ export function renderWorkersView(container) {
     btnDeploy.textContent = '部署中…'
     logActivity('开始部署 Worker…', 'info')
     try {
-      const res = await api('/api/workers/deploy', { method: 'POST' })
+      const res = await withBusy('正在部署 Worker（wrangler）…', api('/api/workers/deploy', { method: 'POST' }))
       if (res && res.ok === true) {
         flash('部署成功', 'ok')
         logActivity('Worker 部署成功', 'ok')
@@ -2423,7 +2471,7 @@ export function renderAccountView(container) {
   async function refreshStatus() {
     logActivity('获取账户状态…', 'info')
     try {
-      const res = await api('/api/account/status')
+      const res = await withBusy('正在获取账户状态…', api('/api/account/status'))
       renderStatus(res)
       const t = (res && res.tokens) || {}
       const mgmt = t.management || {}
@@ -2445,10 +2493,10 @@ export function renderAccountView(container) {
     ])
     if (!values) return // 取消
     try {
-      const res = await api('/api/account/update-token', {
+      const res = await withBusy('正在更新 Token…', api('/api/account/update-token', {
         method: 'POST',
         body: { slot, token: values.token },
-      })
+      }))
       if (res && res.ok === true) {
         flash('已保存', 'ok')
         logActivity(`已更新 ${slotLabel(slot)}`, 'ok')
@@ -2470,7 +2518,7 @@ export function renderAccountView(container) {
     )
     if (!yes) return
     try {
-      const res = await api('/api/account/clear-token', { method: 'POST', body: { slot } })
+      const res = await withBusy('正在清除 Token…', api('/api/account/clear-token', { method: 'POST', body: { slot } }))
       if (res && res.impact) flash(res.impact, 'warn')
       logActivity(`已清除 ${slotLabel(slot)}`, 'warn')
       refreshStatus()
@@ -2486,7 +2534,7 @@ export function renderAccountView(container) {
     if (!yes) return
     btnSetup.disabled = true
     try {
-      await api('/api/account/setup', { method: 'POST' })
+      await withBusy('正在启动初始化向导…', api('/api/account/setup', { method: 'POST' }))
       flash('初始化向导已在终端启动', 'info')
       logActivity('初始化向导已在服务器终端启动（请切换到终端完成 7 步配置）', 'info')
     } catch (err) {

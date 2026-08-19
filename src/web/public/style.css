@@ -84,6 +84,34 @@ body {
 .health-status.ok { color: var(--ok); }
 .health-status.bad { color: var(--err); }
 
+/* ── 全局加载指示（转圈圈）：页头右侧胶囊，异步操作期间显示 ── */
+/* display:inline-flex 与 [hidden] 冲突时由已知坑 8 的 !important 规则覆盖 */
+.busy-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-left: 0.75rem;
+  padding: 0.15rem 0.7rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: rgba(137, 180, 250, 0.12);
+  color: var(--accent);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+.busy-spinner {
+  width: 0.85em;
+  height: 0.85em;
+  flex-shrink: 0;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: busy-spin 0.8s linear infinite;
+}
+@keyframes busy-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── 主体布局：1fr 主区 + 280px 提示栏 ─────────────────── */
 #app-main {
   display: grid;

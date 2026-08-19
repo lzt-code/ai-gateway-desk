@@ -17,6 +17,12 @@
     <button data-view="account">[4] 账户</button>
   </nav>
   <span id="health-status" class="health-status">正在检测后端…</span>
+  <!-- 全局加载指示（转圈圈）：所有异步操作（进入视图拉列表 / 保存部署 / 同步 KV /
+       部署 Worker 等）由 app.js showBusy/hideBusy 引用计数控制显隐 -->
+  <span id="busy-indicator" class="busy-indicator" hidden>
+    <span class="busy-spinner" aria-hidden="true"></span>
+    <span id="busy-text">处理中…</span>
+  </span>
 </header>
 
 <div id="app-main">
