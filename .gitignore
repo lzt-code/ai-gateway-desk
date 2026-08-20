@@ -14,3 +14,6 @@ data/*
 # MCP / 代码图谱配置（本机工具配置，不入库）
 .mcp.json
 .codebase-memory.json
+
+# 本地工作区数据（本机专属，不入库）
+.workbuddy/
