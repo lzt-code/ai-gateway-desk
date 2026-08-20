@@ -43,7 +43,14 @@ check('bin.aigd 路径正确', pkg.bin && pkg.bin['aigd'] === 'src/bin/aigd.js',
 // ── 5. files 白名单：包含必需项
 {
   const files = Array.isArray(pkg.files) ? pkg.files : []
-  const mustHave = ['src', 'data/providers.example.json', 'data/models.example.json']
+  const mustHave = [
+    'src',
+    'scripts',                          // Web UI 部署按钮 spawn scripts/deploy.mjs（npm 包内必须可用）
+    'ai-gateway-desk-worker/src',       // Worker 源码（wrangler deploy 打包对象）
+    'ai-gateway-desk-worker/wrangler.toml', // wrangler.toml 占位符模板（deploy.mjs 注入 KV id 用）
+    'data/providers.example.json',
+    'data/models.example.json',
+  ]
   for (const f of mustHave) {
     check(`files 包含 ${f}`, files.includes(f), `(files=${JSON.stringify(files)})`)
   }
@@ -52,7 +59,7 @@ check('bin.aigd 路径正确', pkg.bin && pkg.bin['aigd'] === 'src/bin/aigd.js',
 // ── 6. files 黑名单：不得打包的目录
 {
   const files = Array.isArray(pkg.files) ? pkg.files : []
-  const mustNot = ['test', 'ai-gateway-desk-worker', 'docs']
+  const mustNot = ['test', 'docs']
   for (const f of mustNot) {
     check(`files 不含 ${f}`, !files.includes(f), `(files=${JSON.stringify(files)})`)
   }
@@ -80,6 +87,9 @@ check('repository 若设置则含有效 url', !pkg.repository || (pkg.repository
 check('type 为 module', pkg.type === 'module', `(type=${JSON.stringify(pkg.type)})`)
 check('dependencies 不含 neo-blessed', !(pkg.dependencies && pkg.dependencies['neo-blessed']), `(dependencies=${JSON.stringify(pkg.dependencies)})`)
 check('dependencies 含 hono', pkg.dependencies && typeof pkg.dependencies['hono'] === 'string', `(dependencies=${JSON.stringify(pkg.dependencies)})`)
+check('dependencies 含 wrangler（部署 Worker/KV 必需，npm 安装须可见）',
+  pkg.dependencies && typeof pkg.dependencies['wrangler'] === 'string',
+  `(dependencies=${JSON.stringify(pkg.dependencies)})`)
 
 // ── 11. 命令实际可运行（spawn 直接运行 bin，验证 shebang 链路 + isMain 直跑分支）
 // 覆盖「全局安装后 aigd help 可用」的核心场景（不经 npm 包装器，避免环境差异）

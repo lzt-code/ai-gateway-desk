@@ -11,6 +11,9 @@
   },
   "files": [
     "src",
+    "scripts",
+    "ai-gateway-desk-worker/src",
+    "ai-gateway-desk-worker/wrangler.toml",
     "data/providers.example.json",
     "data/models.example.json"
   ],
@@ -24,11 +27,10 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.19.17",
-    "hono": "^4.13.1"
-  },
-  "devDependencies": {
+    "hono": "^4.13.1",
     "wrangler": "^3.0.0"
   },
+  "devDependencies": {},
   "license": "MIT",
   "keywords": [
     "cloudflare",
