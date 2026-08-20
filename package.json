@@ -14,6 +14,7 @@
     "scripts",
     "ai-gateway-desk-worker/src",
     "ai-gateway-desk-worker/wrangler.toml",
+    "LICENSE",
     "data/providers.example.json",
     "data/models.example.json"
   ],
@@ -43,5 +44,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lzt-code/ai-gateway-desk.git"
+  },
+  "homepage": "https://github.com/lzt-code/ai-gateway-desk",
+  "bugs": {
+    "url": "https://github.com/lzt-code/ai-gateway-desk/issues"
   }
 }

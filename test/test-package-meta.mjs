@@ -48,6 +48,7 @@ check('bin.aigd 路径正确', pkg.bin && pkg.bin['aigd'] === 'src/bin/aigd.js',
     'scripts',                          // Web UI 部署按钮 spawn scripts/deploy.mjs（npm 包内必须可用）
     'ai-gateway-desk-worker/src',       // Worker 源码（wrangler deploy 打包对象）
     'ai-gateway-desk-worker/wrangler.toml', // wrangler.toml 占位符模板（deploy.mjs 注入 KV id 用）
+    'LICENSE',                            // MIT 许可证文本（安装用户也应可获取）
     'data/providers.example.json',
     'data/models.example.json',
   ]
@@ -69,11 +70,13 @@ check('bin.aigd 路径正确', pkg.bin && pkg.bin['aigd'] === 'src/bin/aigd.js',
 check('prepublishOnly 为 npm test', pkg.scripts && pkg.scripts.prepublishOnly === 'npm test',
   `(实际=${JSON.stringify(pkg.scripts && pkg.scripts.prepublishOnly)})`)
 
-// ── 8. 发布元数据：license / keywords 存在且非空；repository 待新仓库创建后补（2026-08-19 移除旧 URL）
+// ── 8. 发布元数据：license / keywords / repository / homepage / bugs 存在且有效
 check('license 存在', typeof pkg.license === 'string' && pkg.license.length > 0, `(license=${JSON.stringify(pkg.license)})`)
 check('keywords 存在', Array.isArray(pkg.keywords) && pkg.keywords.length > 0, `(keywords=${JSON.stringify(pkg.keywords)})`)
-check('repository 若设置则含有效 url', !pkg.repository || (pkg.repository && typeof pkg.repository.url === 'string' && pkg.repository.url.length > 0),
+check('repository 含有效 url', pkg.repository && typeof pkg.repository.url === 'string' && pkg.repository.url.length > 0,
   `(repository=${JSON.stringify(pkg.repository)})`)
+check('homepage 为有效 url', typeof pkg.homepage === 'string' && /^https?:\/\//.test(pkg.homepage), `(homepage=${JSON.stringify(pkg.homepage)})`)
+check('bugs.url 为有效 url', pkg.bugs && typeof pkg.bugs.url === 'string' && /^https?:\/\//.test(pkg.bugs.url), `(bugs=${JSON.stringify(pkg.bugs)})`)
 
 // ── 9. example 模板文件真实存在（config.js / generate.js 缺失提示依赖它们）
 {
