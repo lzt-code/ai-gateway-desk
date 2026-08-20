@@ -32,6 +32,7 @@
   },
   "devDependencies": {},
   "license": "MIT",
+  "author": "程序员老刘 <lzt_yx@163.com>",
   "keywords": [
     "cloudflare",
     "ai-gateway",
