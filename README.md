@@ -46,7 +46,7 @@ aigd setup
 
 ## 部署转发 Worker
 
-Web 界面的 **Worker** 视图提供一键部署；如需命令行或自定义域名，见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的「Worker 部署」与「自定义域名绑定」。
+Web 界面的 **Worker** 视图提供一键部署；如需命令行部署或绑定自己的域名，见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 「§12 部署转发 Worker」与「§12.1 访问地址与自定义域名绑定」。
 
 部署前需设置 Gateway 配置（任选其一）：
 
@@ -55,12 +55,18 @@ npx wrangler secret put ACCOUNT_ID
 npx wrangler secret put GATEWAY_ID
 ```
 
-部署完成后，Worker 提供 OpenAI 兼容端点：
+部署完成后，Worker 默认挂在 Cloudflare 分配的 `*.workers.dev` 子域下，访问地址为：
 
-- `POST /v1/chat/completions` — 转发到 AI Gateway
-- `GET /v1/models` — 返回已选模型列表
+    https://ai-gateway-desk-worker.<你的Workers子域>.workers.dev
+
+- `<你的Workers子域>` 在 Cloudflare Dashboard → **Workers & Pages** → 右上角「你的子域」查看（账户级，仅首次设置，形如 `my-account`）。
+- 各 PC Agent 的 OpenAI `base_url` 填上面的完整地址，端点：
+  - `POST /v1/chat/completions` — 转发到 AI Gateway
+  - `GET /v1/models` — 返回已选模型列表
 
 各 PC Agent 只需统一 Base URL + 携带 `cfut_xxx` 即可调用。
+
+> ⚠️ `*.workers.dev` 默认域名在部分网络环境下可能被 DNS 污染 / 不可达（例如中国大陆）。若 Agent 部署在上述区域或访问不稳定，建议绑定自己的域名，见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 「§12.1 访问地址与自定义域名绑定」。
 
 ## 常用命令
 

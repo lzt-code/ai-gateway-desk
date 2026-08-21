@@ -304,26 +304,66 @@ npm run dev
 npm run deploy
 ```
 
+部署成功后，Worker 自动获得 Cloudflare 分配的 `*.workers.dev` 子域地址（无需额外配置）：
+
+```
+https://ai-gateway-desk-worker.<你的Workers子域>.workers.dev
+```
+
+- `<你的Workers子域>` 是账户级子域，在 **Workers & Pages → 右上角「你的子域」** 查看（形如 `my-account`，仅首次设置）。
+- 此地址即各 PC Agent 的 OpenAI `base_url`，完整端点（实现见 §4.10）：
+  - `POST /v1/chat/completions` — 转发到 AI Gateway（`cf-aig-authorization` 头透传，移除原始 `Authorization`）
+  - `GET /v1/models` — 从 KV 读取模型列表
+
+> `*.workers.dev` 在部分网络环境下可能被 DNS 污染 / 不可达（见 §12.1）。如需稳定访问，建议绑定自己的域名。
+
 Worker 是零依赖薄转发层，提供 OpenAI 兼容端点（实现见 §4.10）：
 
 - `POST /v1/chat/completions` — 转发到 AI Gateway（`cf-aig-authorization` 头透传，移除原始 `Authorization`）
 - `GET /v1/models` — 从 KV 读取模型列表
 
-### 12.1 自定义域名绑定
+### 12.1 访问地址与自定义域名绑定
 
-**Cloudflare Dashboard 方式：**
-1. **Workers & Pages** → 找到你的 Worker → **Triggers** → **Add route**
-2. 输入模式：`your-domain.com/*`，Zone 选对应的域名
-3. 如有旧 Worker 绑定了相同路由，先将其删除
+#### 默认访问地址
 
-**Wrangler CLI 方式（推荐）：**
-```bash
-npx wrangler routes create "your-domain.com/*" --name=<worker-name>
-# 查看现有路由
-npx wrangler routes list --name=<worker-name>
-# 删除旧路由
-npx wrangler routes delete "old-domain.com/*" --name=<worker-name>
+部署成功后，Worker 自动获得一个 `*.workers.dev` 子域地址（无需额外配置）：
+
 ```
+https://ai-gateway-desk-worker.<你的Workers子域>.workers.dev
+```
+
+`<你的Workers子域>` 是 Cloudflare 账户级子域，在 **Workers & Pages → 右上角「你的子域」** 查看（形如 `my-account`，仅首次设置）。各 PC Agent 的 OpenAI `base_url` 填这个地址即可。
+
+#### 为什么需要绑定自己的域名（DNS 污染）
+
+`*.workers.dev` 是 Cloudflare 的共享域名，**在中国大陆等部分网络环境下会被 DNS 污染 / 限速，导致 Agent 调用超时或完全不可达**；共享域名还可能受 Cloudflare 的速率或合规策略连带影响。
+
+解决思路：**把你自己拥有、且 DNS 已托管在 Cloudflare 的域名绑定为 Worker 的专属访问地址**（例如 `aigw.your-domain.com`）。这样 Agent 的 `base_url` 不再是 `*.workers.dev`，而是你可控的域名，从而规避共享域名被污染的问题。
+
+#### 方式一：Custom Domain（推荐，SaaS 式专属主机名）
+
+1. **Workers & Pages** → 选中你的 Worker → **Triggers** → **Custom Domains** → **Add Custom Domain**
+2. 输入子域，例如 `aigw.your-domain.com`（该域名的 zone 必须已托管在 Cloudflare）
+3. Cloudflare 自动添加 `aigw` 的 CNAME 指向 Worker，并自动签发证书
+4. 之后 Agent 的 `base_url` 改为 `https://aigw.your-domain.com`
+
+> Custom Domain 把整个子域独占给该 Worker，路径干净（直接 `/v1/chat/completions`），最适合做 OpenAI 兼容 Base URL。
+
+#### 方式二：Route（兼容老方式）
+
+```bash
+npx wrangler routes create "your-domain.com/*" --name=ai-gateway-desk-worker
+# 查看现有路由
+npx wrangler routes list --name=ai-gateway-desk-worker
+# 删除旧路由
+npx wrangler routes delete "old-domain.com/*" --name=ai-gateway-desk-worker
+```
+
+Route 要求 `your-domain.com` 所在 zone 已托管在 Cloudflare，请求到达该 zone 后按路由转发给 Worker。
+
+#### 进阶：国内可达性
+
+即便绑定自有域名，流量仍走 Cloudflare 全球 Anycast，在国内的回程质量仍可能不稳定。如需面向中国大陆用户提供稳定低延迟访问，可考虑 Cloudflare 中国网络（需 ICP 备案、通过 Cloudflare 中国合作伙伴接入），或使用一层自建反代 / 优选 IP 作为补充。本工具不强制要求，按需选择。
 
 ## 13. 测试
 
