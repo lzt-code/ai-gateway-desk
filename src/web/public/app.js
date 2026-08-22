@@ -608,16 +608,30 @@ function escapeHtml(s) {
     .replace(/'/g, '&#39;')
 }
 
-// context_length 千分位格式化（已知坑 9：值可能为字符串，NaN → 空串）
-function formatContextLength(v) {
+// 长度紧凑格式化（已知坑 9：值可能为字符串，NaN → 空串）
+// 进制自适应：数值能被 1000 整除按 1000 进（如 128000 → 128K），否则按 1024 进（如 131072 → 128K）
+function formatCompactLength(v) {
   if (v === undefined || v === null || v === '') return ''
   const n = Number(v)
-  if (!Number.isFinite(n)) return ''
-  return n.toLocaleString('en-US')
+  if (!Number.isFinite(n) || n < 0) return ''
+  const trim = (x) => String(Math.round(x * 10) / 10).replace(/\.0$/, '')
+  const base = n % 1000 === 0 ? 1000 : 1024
+  if (n < base) return String(n)
+  const k = n / base
+  if (k < base) return `${trim(k)}K`
+  return `${trim(k / base)}M`
+}
+
+// 上下文/输出长度合并单元格："64K/256K"；仅一侧缺失用 "-" 占位，双侧缺失为空串
+function formatContextOutput(ctx, out) {
+  const c = formatCompactLength(ctx)
+  const o = formatCompactLength(out)
+  if (!c && !o) return ''
+  return `${c || '-'}/${o || '-'}`
 }
 
 // 模型数据（/api/models/filtered 的 items）→ 表格行 HTML 数组
-// 列：模型名称（metadata.name）/ 模型ID / Provider（metadata.provider ?? entry.provider）/ 上下文 / 输出长度 / 状态 / 切换按钮
+// 列：模型名称 / 模型ID / 上下文/输出 / 状态（Provider 不单独成列：id 前缀已含归属，侧栏负责筛选）
 // 返回 [{ modelId, html }]，html 为 <tr data-model-id="...">...</tr>
 export function buildModelTableRows(items) {
   const rows = []
@@ -627,18 +641,16 @@ export function buildModelTableRows(items) {
     const meta = entry.metadata || {}
     const statusKey = STATUS_MAP[entry.status] ? entry.status : 'hidden'
     const st = STATUS_MAP[statusKey]
-    const providerText = meta.provider ?? entry.provider ?? ''
-    const contextText = formatContextLength(meta.context_length)
-    const outputText = formatContextLength(meta.max_output_length)
+    const contextText = formatContextOutput(meta.context_length, meta.max_output_length)
+    // 名称缺失时回退到 modelId 最后一段（如 openrouter/x-ai/grok-4.20 → grok-4.20）
+    const modelName = meta.name || modelId.split('/').pop() || ''
     // 复制按钮复制完整 modelId（含 provider 前缀，如 custom-agnes/agnes-2.5-flash），可直接用于 agent 添加模型
     const html =
       `<tr data-model-id="${escapeHtml(modelId)}" class="row-${statusKey}">` +
-      `<td><span class="model-name-text">${escapeHtml(meta.name || '')}</span></td>` +
+      `<td><span class="model-name-text" title="${escapeHtml(modelName)}">${escapeHtml(modelName)}</span></td>` +
       `<td><span class="model-id-text">${escapeHtml(modelId)}</span>` +
       `<button class="model-copy" data-copy-model="${escapeHtml(modelId)}" title="复制完整模型名称（含 Provider）" type="button">⧉</button></td>` +
-      `<td>${escapeHtml(providerText)}</td>` +
       `<td>${contextText}</td>` +
-      `<td>${outputText}</td>` +
       `<td><button class="status-toggle" data-model-id="${escapeHtml(modelId)}" title="切换状态" type="button"><span class="status-${st.cls}">${st.icon} ${st.text}</span></button></td>` +
       `</tr>`
     rows.push({ modelId, html })
@@ -785,11 +797,13 @@ function injectModelsStyles() {
     @media (min-width: 901px) {
       body.models-active .model-table thead th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
     }
-    .model-table th:nth-child(2), .model-table td:nth-child(2) { min-width: 240px; }
-    .model-table th:nth-child(4), .model-table td:nth-child(4),
-    .model-table th:nth-child(5), .model-table td:nth-child(5) { text-align: right; white-space: nowrap; }
-    .model-name-text { color: var(--muted); }
-    .model-id-text { margin-right: 0.4rem; }
+    .model-table { font-size: 0.8rem; }
+    .model-table th, .model-table td { padding: 0.35rem 0.5rem; }
+    /* 模型名称：亮色主体，超长自动换行 */
+    .model-name-text { word-break: break-word; }
+    .model-table td:nth-child(2) { word-break: break-all; }
+    .model-table th:nth-child(3), .model-table td:nth-child(3) { text-align: right; white-space: nowrap; }
+    .model-table th:nth-child(4), .model-table td:nth-child(4) { white-space: nowrap; }
     .model-copy {
       background: transparent; color: var(--muted); border: 1px solid var(--border);
       border-radius: 4px; padding: 0 0.3rem; cursor: pointer; font-size: 0.8rem;
@@ -872,7 +886,7 @@ export function renderModelsView(container) {
         </div>
         <div class="table-wrap" tabindex="-1">
           <table class="model-table">
-            <thead><tr><th>模型名称</th><th>模型ID</th><th>Provider</th><th>上下文</th><th>输出长度</th><th>状态</th></tr></thead>
+            <thead><tr><th>模型名称</th><th>模型ID</th><th>上下文/输出</th><th>状态</th></tr></thead>
             <tbody></tbody>
           </table>
           <div class="empty-hint" id="hint-no-match" hidden>无匹配模型</div>

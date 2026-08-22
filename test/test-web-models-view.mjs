@@ -73,34 +73,62 @@ section('buildModelTableRows')
 {
   const rows = buildModelTableRows([
     { modelId: 'a/m1', entry: { status: 'selected', metadata: { name: 'DeepSeek R1' } } },
-    { modelId: 'a/m2', entry: { status: 'selected', metadata: {} } },
+    { modelId: 'openrouter/x-ai/grok-4.20', entry: { status: 'selected', metadata: {} } },
   ])
   check(
     rows[0].html.includes('class="model-name-text"') && rows[0].html.includes('DeepSeek R1'),
     '展示模型名称（metadata.name → 模型名称列）',
   )
-  check(!rows[1].html.includes('undefined'), '无 name → 名称单元格为空（不出现 undefined）')
+  check(
+    rows[1].html.includes('>grok-4.20</span>'),
+    '无 name → 名称回退为 modelId 最后一段（grok-4.20）',
+  )
 }
 {
-  const items = [
-    { modelId: 'a/1', entry: { status: 'selected', metadata: { provider: 'meta-prov' } } },
+  // Provider 不再单独成列：id 前缀已含归属（custom-agnes/...），侧栏负责筛选
+  const rows = buildModelTableRows([
+    { modelId: 'custom-agnes/m1', entry: { status: 'selected', metadata: { provider: 'custom-agnes' } } },
     { modelId: 'b/2', entry: { status: 'selected', provider: 'top-prov', metadata: {} } },
-  ]
-  const rows = buildModelTableRows(items)
-  check(rows[0].html.includes('meta-prov'), 'metadata.provider 兼容（取到 provider 文本）')
-  check(rows[1].html.includes('top-prov'), '顶层 provider 兼容（取到 provider 文本）')
+  ])
+  check(rows[0].html.includes('custom-agnes/m1'), 'provider 归属由模型ID 前缀体现')
+  check(
+    !rows[0].html.includes('<td>custom-agnes</td>') && !rows[1].html.includes('<td>top-prov</td>'),
+    'Provider 列已移除（不渲染独立单元格）',
+  )
 }
 {
   const rows = buildModelTableRows([{ modelId: 'x/1', entry: { status: 'selected', metadata: { context_length: 65536 } } }])
-  check(rows[0].html.includes('65,536'), 'context_length 65536 → 单元格 "65,536"（千分位）')
+  check(rows[0].html.includes('64K/-'), '仅 context_length → "64K/-"（输出侧 - 占位）')
 }
 {
   const rows = buildModelTableRows([{ modelId: 'x/1', entry: { status: 'selected', metadata: { max_output_length: 4096 } } }])
-  check(rows[0].html.includes('4,096'), 'max_output_length 4096 → 单元格 "4,096"（千分位）')
+  check(rows[0].html.includes('-/4K'), '仅 max_output_length → "-/4K"（上下文侧 - 占位）')
 }
 {
-  const rows = buildModelTableRows([{ modelId: 'x/1', entry: { status: 'selected', metadata: {} } }])
-  check(rows[0].html.includes('<td></td>'), '无 context_length → 单元格为空串')
+  const cases = [
+    [{ context_length: 1048576, max_output_length: 262144 }, '1M/256K'],
+    [{ context_length: 131072, max_output_length: 8192 }, '128K/8K'],
+    [{ context_length: 1536, max_output_length: 512 }, '1.5K/512'],
+    [{ context_length: '65536', max_output_length: null }, '64K/-'],
+    [{ context_length: 0, max_output_length: 0 }, '0/0'],
+    [{}, ''],
+  ]
+  for (const [meta, expected] of cases) {
+    const rows = buildModelTableRows([{ modelId: 'x/1', entry: { status: 'selected', metadata: meta } }])
+    check(rows[0].html.includes(`<td>${expected}</td>`), `${JSON.stringify(meta)} → "${expected}"`)
+  }
+}
+{
+  // 进制自适应：整千按 1000 进，否则按 1024 进
+  const cases = [
+    [{ context_length: 128000, max_output_length: 32000 }, '128K/32K'],
+    [{ context_length: 1000000, max_output_length: 65536 }, '1M/64K'],
+    [{ context_length: 200000, max_output_length: null }, '200K/-'],
+  ]
+  for (const [meta, expected] of cases) {
+    const rows = buildModelTableRows([{ modelId: 'x/1', entry: { status: 'selected', metadata: meta } }])
+    check(rows[0].html.includes(`<td>${expected}</td>`), `${JSON.stringify(meta)} → "${expected}"（1000 进制）`)
+  }
 }
 check(
   Array.isArray(buildModelTableRows([])) && buildModelTableRows([]).length === 0,
