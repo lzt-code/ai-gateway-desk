@@ -881,6 +881,7 @@ export function renderModelsView(container) {
             <button class="filter-status-btn active" data-status="">全部</button>
             <button class="filter-status-btn" data-status="selected">✓ 选中</button>
             <button class="filter-status-btn" data-status="hidden">○ 隐藏</button>
+            <button class="filter-status-btn" data-status="removed">✕ 已删除</button>
           </div>
           <input id="model-keyword" type="search" placeholder="关键字筛选（模型ID / 名称）…">
         </div>
