@@ -194,6 +194,22 @@ UI 已迁移至 Web（2026-08-10），目录保留**纯逻辑模块**供 API 层
 
 优先级：环境变量（`CLOUDFLARE_API_TOKEN` / `GATEWAY_TOKEN`）> 本地安全存储。管理 Token 账户级凭证不可分发；`cfut_xxx` 泄露影响面仅限其绑定的 gateway。
 
+### 6.1 Provider 厂商 Key 的两种存储方式
+
+> 2026-08-22 补充。本工具（aigd）与 Cloudflare 网页对 provider key 的写入路径不同，**存储后端不一致**——两者都落在 Cloudflare 云端，但一个存进 Secrets Store、一个内联在 provider_configs / custom-provider 的 `headers` 里。因此「在 Cloudflare 管理界面能否看到 key」取决于配置来源。
+
+| 配置途径 | 存储位置 | 是否在 CF 管理界面可见 | 实现代码 |
+|---------|---------|----------------------|---------|
+| Cloudflare 网页「Provider Keys」（BYOK） | **Secrets Store**，secret 命名 `{gateway_id}_{provider_slug}_{alias}`（如 `cf-ai-gateway_openai_default`），由网页自动创建 | 可见（Provider Keys 列表：last used / status 等） | 网页内部自动建 secret + provider_config |
+| aigd BYOK | `provider_configs` 记录**内联 `secret`** + `default_config: false` | 不可见（未按官方流程先建 Secrets Store secret，且非默认配置） | `src/cloudflare/api.js` `createProviderConfig`（POST `/provider_configs`） |
+| aigd Custom Provider | custom-provider 记录的 **`headers`** 字段（`Authorization: Bearer ...`，JSON 字符串；API 接受但官方文档未收录） | 不可见（dashboard 创建/编辑界面只有 name / slug / base_url，无 headers 字段） | `src/cloudflare/api.js` `createCustomProvider`（POST `/custom-providers`） |
+
+关键点：
+
+1. **运行时取 key**：AI Gateway 默认使用 alias 为 `default` 的 BYOK key（`cf-aig-byok-alias` 头可选其它 alias）。aigd 写 BYOK 时 alias 默认 = provider_slug 且 `default_config: false`，**该 key 运行时是否真被网关选中需单独验证**。当前 `data/providers.json` 全为 custom-provider（key 在 `headers` 里），实际走的就是 headers 路径。
+2. **官方 API 流程**（若要让 key 在 dashboard 可见、可轮换、有状态监控）：先建 Secrets Store secret（命名 `{gateway_id}_{provider_slug}_{alias}`），再建 provider_config；或直接在 dashboard 配置。
+3. **对 Worker 无影响**：Worker 是无状态转发层，**不读取任何 provider key**——无论 key 存在 Secrets Store 还是 provider_configs / headers，运行时都由 Cloudflare AI Gateway 持 key 调上游，Worker 只透传 `cf-aig-authorization`（见 §7.3）。
+
 ## 7. 核心流程
 
 ### 7.1 同步（Web「一键同步」或 `POST /api/sync`）
