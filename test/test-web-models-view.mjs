@@ -71,6 +71,17 @@ section('buildModelTableRows')
   )
 }
 {
+  const rows = buildModelTableRows([
+    { modelId: 'a/m1', entry: { status: 'selected', metadata: { name: 'DeepSeek R1' } } },
+    { modelId: 'a/m2', entry: { status: 'selected', metadata: {} } },
+  ])
+  check(
+    rows[0].html.includes('class="model-name-text"') && rows[0].html.includes('DeepSeek R1'),
+    '展示模型名称（metadata.name → 模型名称列）',
+  )
+  check(!rows[1].html.includes('undefined'), '无 name → 名称单元格为空（不出现 undefined）')
+}
+{
   const items = [
     { modelId: 'a/1', entry: { status: 'selected', metadata: { provider: 'meta-prov' } } },
     { modelId: 'b/2', entry: { status: 'selected', provider: 'top-prov', metadata: {} } },

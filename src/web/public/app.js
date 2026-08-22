@@ -617,7 +617,7 @@ function formatContextLength(v) {
 }
 
 // 模型数据（/api/models/filtered 的 items）→ 表格行 HTML 数组
-// 列：模型ID / Provider（metadata.provider ?? entry.provider）/ 上下文 / 状态 / 切换按钮
+// 列：模型名称（metadata.name）/ 模型ID / Provider（metadata.provider ?? entry.provider）/ 上下文 / 输出长度 / 状态 / 切换按钮
 // 返回 [{ modelId, html }]，html 为 <tr data-model-id="...">...</tr>
 export function buildModelTableRows(items) {
   const rows = []
@@ -633,6 +633,7 @@ export function buildModelTableRows(items) {
     // 复制按钮复制完整 modelId（含 provider 前缀，如 custom-agnes/agnes-2.5-flash），可直接用于 agent 添加模型
     const html =
       `<tr data-model-id="${escapeHtml(modelId)}" class="row-${statusKey}">` +
+      `<td><span class="model-name-text">${escapeHtml(meta.name || '')}</span></td>` +
       `<td><span class="model-id-text">${escapeHtml(modelId)}</span>` +
       `<button class="model-copy" data-copy-model="${escapeHtml(modelId)}" title="复制完整模型名称（含 Provider）" type="button">⧉</button></td>` +
       `<td>${escapeHtml(providerText)}</td>` +
@@ -784,9 +785,10 @@ function injectModelsStyles() {
     @media (min-width: 901px) {
       body.models-active .model-table thead th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
     }
-    .model-table th:nth-child(1), .model-table td:nth-child(1) { min-width: 240px; }
-    .model-table th:nth-child(3), .model-table td:nth-child(3),
-    .model-table th:nth-child(4), .model-table td:nth-child(4) { text-align: right; white-space: nowrap; }
+    .model-table th:nth-child(2), .model-table td:nth-child(2) { min-width: 240px; }
+    .model-table th:nth-child(4), .model-table td:nth-child(4),
+    .model-table th:nth-child(5), .model-table td:nth-child(5) { text-align: right; white-space: nowrap; }
+    .model-name-text { color: var(--muted); }
     .model-id-text { margin-right: 0.4rem; }
     .model-copy {
       background: transparent; color: var(--muted); border: 1px solid var(--border);
@@ -870,7 +872,7 @@ export function renderModelsView(container) {
         </div>
         <div class="table-wrap" tabindex="-1">
           <table class="model-table">
-            <thead><tr><th>模型ID</th><th>Provider</th><th>上下文</th><th>输出长度</th><th>状态</th></tr></thead>
+            <thead><tr><th>模型名称</th><th>模型ID</th><th>Provider</th><th>上下文</th><th>输出长度</th><th>状态</th></tr></thead>
             <tbody></tbody>
           </table>
           <div class="empty-hint" id="hint-no-match" hidden>无匹配模型</div>
