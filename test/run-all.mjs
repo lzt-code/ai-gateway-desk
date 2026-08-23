@@ -42,6 +42,7 @@ const TESTS = [
   'test-provider-create.mjs',   // 添加 Provider FP1：云端创建纯逻辑层（校验 + 分发，全 mock）
   'test-web-api-provider-create.mjs', // 添加 Provider FP2：POST /api/providers/create 端点（全 mock）
   'test-web-provider-add-view.mjs',   // 添加 Provider FP4：前端添加视图纯函数（字段/载荷校验/结果日志）
+  'test-web-sorting.mjs',             // 表格列排序：sortViewItems/nextSortState/两表取值器（纯函数）
 ]
 
 const results = []

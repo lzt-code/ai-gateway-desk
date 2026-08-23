@@ -588,6 +588,70 @@ export function start() {
   }
 }
 
+// ── 表格列排序（模型 / Provider 视图共用纯函数）─────────────────
+// 交互约定：点击表头三态循环 未排序 → 升序 → 降序 → 未排序；
+// 排序在渲染前做（sortViewItems 返回新数组），不改内存数据顺序。
+
+// 值比较：数值按大小；数组逐元素；其余转字符串 localeCompare（数字感知 + 忽略大小写）
+function cmpSortValues(a, b) {
+  if (Array.isArray(a) && Array.isArray(b)) {
+    const len = Math.max(a.length, b.length)
+    for (let i = 0; i < len; i++) {
+      const av = a[i] == null ? -1 : a[i]
+      const bv = b[i] == null ? -1 : b[i]
+      const r = cmpSortValues(av, bv)
+      if (r !== 0) return r
+    }
+    return 0
+  }
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' })
+}
+
+// 按 getter 取值排序（稳定排序，返回新数组不修改原数组）；dir：asc|desc
+export function sortViewItems(items, getValue, dir = 'asc') {
+  const sign = dir === 'desc' ? -1 : 1
+  return [...(items || [])].sort((x, y) => cmpSortValues(getValue(x), getValue(y)) * sign)
+}
+
+// 点击表头后的排序状态流转：换列 → asc；同列 asc → desc；同列 desc → 清除
+export function nextSortState(key, dir, clickedKey) {
+  if (key !== clickedKey || key === null) return { key: clickedKey, dir: 'asc' }
+  if (dir === 'asc') return { key: clickedKey, dir: 'desc' }
+  return { key: null, dir: 'asc' }
+}
+
+// 长度字段 → 可比较数值（值可能为字符串，缺失/非法 → -1 排在前）
+const sortLengthValue = (v) => {
+  const n = Number(v)
+  return Number.isFinite(n) && n >= 0 ? n : -1
+}
+
+// Provider 列取值器（th[data-sort] 键 → 排序值）
+// visibility：启用(0) 在 隐藏(1) 前；mark：无标记(0) → 新增(1) → 云端已删(2)
+export const PROVIDER_SORT_GETTERS = {
+  slug: (p) => String(p && p.id) || '',
+  name: (p) => String(p && p.name != null ? p.name : ''),
+  type: (p) => String(p && p.type) || '',
+  visibility: (p) => (p && p.enabled === false ? 1 : 0),
+  mark: (p) => (p && p.mark === 'new' ? 1 : p && p.mark === 'removed' ? 2 : 0),
+}
+
+// 模型状态排序位次（与 TUI 分组一致：selected > hidden > removed）
+const MODEL_STATUS_RANK = { selected: 0, hidden: 1, removed: 2 }
+
+// 模型列取值器（th[data-sort] 键 → 排序值）；context 先按上下文再按输出长度
+export const MODEL_SORT_GETTERS = {
+  name: (it) => String((it && it.entry && it.entry.metadata && it.entry.metadata.name)
+    || String(it && it.modelId).split('/').pop() || ''),
+  modelId: (it) => String(it && it.modelId) || '',
+  context: (it) => [
+    sortLengthValue(it && it.entry && it.entry.metadata && it.entry.metadata.context_length),
+    sortLengthValue(it && it.entry && it.entry.metadata && it.entry.metadata.max_output_length),
+  ],
+  status: (it) => (it && it.entry && MODEL_STATUS_RANK[it.entry.status]) ?? 3,
+}
+
 // ── 任务 31：前端模型管理视图（纯函数 + 渲染器）─────────────────
 // 数据流（交付包 §2 决策）：进入视图拉一次 /api/state + /api/providers/list 到内存；
 // 变更操作走 POST 端点并用响应更新内存态，再重新 applyFilter（不整页刷新）。
@@ -799,6 +863,10 @@ function injectModelsStyles() {
     }
     .model-table { font-size: 0.8rem; }
     .model-table th, .model-table td { padding: 0.35rem 0.5rem; }
+    /* 可排序表头：hover/激活态高亮，▲▼ 指示器小号显示 */
+    .model-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    .model-table th.sortable:hover, .model-table th.sorted { color: var(--accent); }
+    .model-table .sort-ind { margin-left: 0.25em; font-size: 0.7rem; }
     /* 模型名称：亮色主体，超长自动换行 */
     .model-name-text { word-break: break-word; }
     .model-table td:nth-child(2) { word-break: break-all; }
@@ -860,6 +928,8 @@ export function renderModelsView(container) {
   let provider = null         // 侧栏筛选（null = 全部）
   let keyword = ''            // 关键字筛选（仅筛选条件，不标 dirty，已知坑 6）
   let status = null           // 状态筛选（null = 全部，selected/hidden/removed）
+  let sortKey = null          // 列排序（th[data-sort]，null = 后端默认顺序）
+  let sortDir = 'asc'         // 排序方向（asc/desc，sortKey=null 时无意义）
   let items = []              // 当前筛选结果
   let selectedModelId = null
   let syncing = false
@@ -887,7 +957,12 @@ export function renderModelsView(container) {
         </div>
         <div class="table-wrap" tabindex="-1">
           <table class="model-table">
-            <thead><tr><th>模型名称</th><th>模型ID</th><th>上下文/输出</th><th>状态</th></tr></thead>
+            <thead><tr>
+              <th class="sortable" data-sort="name" title="点击排序">模型名称<span class="sort-ind" hidden></span></th>
+              <th class="sortable" data-sort="modelId" title="点击排序">模型ID<span class="sort-ind" hidden></span></th>
+              <th class="sortable" data-sort="context" title="点击排序">上下文/输出<span class="sort-ind" hidden></span></th>
+              <th class="sortable" data-sort="status" title="点击排序">状态<span class="sort-ind" hidden></span></th>
+            </tr></thead>
             <tbody></tbody>
           </table>
           <div class="empty-hint" id="hint-no-match" hidden>无匹配模型</div>
@@ -933,8 +1008,23 @@ export function renderModelsView(container) {
     }
   }
 
+  // 表头排序指示器（aria-sort + ▲/▼，随 sortKey/sortDir 同步）
+  function updateSortIndicators() {
+    for (const th of container.querySelectorAll('th[data-sort]')) {
+      const active = th.dataset.sort === sortKey
+      const ind = th.querySelector('.sort-ind')
+      th.classList.toggle('sorted', active)
+      th.setAttribute('aria-sort', active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none')
+      if (!ind) continue
+      ind.hidden = !active
+      ind.textContent = sortDir === 'asc' ? '▲' : '▼'
+    }
+  }
+
   function renderTable() {
-    const rows = buildModelTableRows(items)
+    updateSortIndicators()
+    const getter = sortKey ? MODEL_SORT_GETTERS[sortKey] : null
+    const rows = buildModelTableRows(getter ? sortViewItems(items, getter, sortDir) : items)
     tbody.innerHTML = rows.map((r) => r.html).join('')
     for (const tr of tbody.querySelectorAll('tr')) {
       tr.classList.toggle('row-active', tr.dataset.modelId === selectedModelId)
@@ -1517,6 +1607,14 @@ export function renderModelsView(container) {
     applyFilter()
   })
 
+  // 表头点击排序：三态循环 未排序 → 升序 → 降序 → 未排序（纯前端，重渲染即可）
+  container.querySelector('.model-table thead').addEventListener('click', (e) => {
+    const th = e.target.closest('th[data-sort]')
+    if (!th) return
+    ;({ key: sortKey, dir: sortDir } = nextSortState(sortKey, sortDir, th.dataset.sort))
+    renderTable()
+  })
+
   keywordInput.addEventListener('input', () => {
     clearTimeout(debounceTimer)
     debounceTimer = setTimeout(() => {
@@ -1917,6 +2015,10 @@ function injectProvidersStyles() {
     .empty-hint { padding: 1.5rem; text-align: center; color: var(--muted); font-size: 0.9rem; }
     .provider-table th:nth-child(1), .provider-table td:nth-child(1) { min-width: 120px; }
     .provider-table th:nth-child(2), .provider-table td:nth-child(2) { min-width: 140px; }
+    /* 可排序表头：hover/激活态高亮，▲▼ 指示器小号显示 */
+    .provider-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+    .provider-table th.sortable:hover, .provider-table th.sorted { color: var(--accent); }
+    .provider-table .sort-ind { margin-left: 0.25em; font-size: 0.7rem; }
     .provider-table .btn-edit, .provider-table .btn-delete {
       background: transparent; color: var(--fg); border: 1px solid var(--border);
       border-radius: 6px; padding: 0.15rem 0.5rem; cursor: pointer; font-size: 0.85rem;
@@ -1945,6 +2047,8 @@ export function renderProvidersView(container) {
   // ── 视图局部状态 ────────────────────────────────────────
   let providers = []       // 展示数组（GET /api/providers 的 providers）
   let readonly = false     // 响应顶层 readonly（已知坑 4：不是每个 provider 的字段）
+  let sortKey = null       // 列排序（th[data-sort]，null = 后端默认顺序）
+  let sortDir = 'asc'      // 排序方向（asc/desc，sortKey=null 时无意义）
 
   // ── DOM 骨架（§4.1 结构）────────────────────────────────
   container.innerHTML = `
@@ -1955,7 +2059,14 @@ export function renderProvidersView(container) {
       </div>
       <div class="table-wrap">
         <table class="provider-table">
-          <thead><tr><th>slug</th><th>name</th><th>type</th><th>可见性</th><th>状态</th><th></th></tr></thead>
+          <thead><tr>
+            <th class="sortable" data-sort="slug" title="点击排序">slug<span class="sort-ind" hidden></span></th>
+            <th class="sortable" data-sort="name" title="点击排序">name<span class="sort-ind" hidden></span></th>
+            <th class="sortable" data-sort="type" title="点击排序">type<span class="sort-ind" hidden></span></th>
+            <th class="sortable" data-sort="visibility" title="点击排序">可见性<span class="sort-ind" hidden></span></th>
+            <th class="sortable" data-sort="mark" title="点击排序">状态<span class="sort-ind" hidden></span></th>
+            <th></th>
+          </tr></thead>
           <tbody></tbody>
         </table>
         <div class="empty-hint" id="hint-no-provider" hidden>无 Provider（点击「更新 Provider 列表」从云端拉取）</div>
@@ -1973,8 +2084,23 @@ export function renderProvidersView(container) {
   const emptyHint = container.querySelector('#hint-no-provider')
 
   // ── 渲染辅助 ────────────────────────────────────────────
+  // 表头排序指示器（aria-sort + ▲/▼，随 sortKey/sortDir 同步）
+  function updateSortIndicators() {
+    for (const th of container.querySelectorAll('th[data-sort]')) {
+      const active = th.dataset.sort === sortKey
+      const ind = th.querySelector('.sort-ind')
+      th.classList.toggle('sorted', active)
+      th.setAttribute('aria-sort', active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none')
+      if (!ind) continue
+      ind.hidden = !active
+      ind.textContent = sortDir === 'asc' ? '▲' : '▼'
+    }
+  }
+
   function renderTable() {
-    const rows = buildProviderTableRows(providers, readonly)
+    updateSortIndicators()
+    const getter = sortKey ? PROVIDER_SORT_GETTERS[sortKey] : null
+    const rows = buildProviderTableRows(getter ? sortViewItems(providers, getter, sortDir) : providers, readonly)
     tbody.innerHTML = rows.map((r) => r.html).join('')
     // 空状态（已知坑 10）：只读且本地也空 → 一并提示先配置管理 Token
     emptyHint.hidden = providers.length > 0
@@ -2185,6 +2311,14 @@ export function renderProvidersView(container) {
   }
 
   // ── 事件绑定 ────────────────────────────────────────────
+  // 表头点击排序：三态循环 未排序 → 升序 → 降序 → 未排序（纯前端，重渲染即可）
+  container.querySelector('.provider-table thead').addEventListener('click', (e) => {
+    const th = e.target.closest('th[data-sort]')
+    if (!th) return
+    ;({ key: sortKey, dir: sortDir } = nextSortState(sortKey, sortDir, th.dataset.sort))
+    renderTable()
+  })
+
   tbody.addEventListener('click', (e) => {
     const btn = e.target.closest('button')
     if (!btn) return
