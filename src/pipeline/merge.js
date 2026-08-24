@@ -4,21 +4,31 @@
  */
 
 /**
+ * 比较/合并时应忽略的字段（不影响「是否有真实更新」的判定）：
+ *   - id：冗余字段（与 state 的 key 重复），缺失时自动补全不应视为更新
+ *   - created：部分上游（如 OpenCode）每次请求都返回当前时间戳，
+ *     时间戳变化不代表模型本身有更新，否则每次同步都会误报更新
+ * @type {string[]}
+ */
+const VOLATILE_METADATA_FIELDS = ['id', 'created']
+
+/**
  * 比较两个 metadata 对象是否有差异（浅比较）
  * @param {object} a
  * @param {object} b
  * @returns {boolean}
  */
 function hasMetadataChanged(a, b) {
-  // id 是冗余字段（与 state 的 key 重复），缺失时自动补全不应视为更新
-  const filterId = (obj) => {
+  const filterVolatile = (obj) => {
     if (!obj || typeof obj !== 'object') return obj
-    if (!Object.prototype.hasOwnProperty.call(obj, 'id')) return obj
-    const { id: _id, ...rest } = obj
+    const rest = { ...obj }
+    for (const field of VOLATILE_METADATA_FIELDS) {
+      delete rest[field]
+    }
     return rest
   }
-  const fa = filterId(a)
-  const fb = filterId(b)
+  const fa = filterVolatile(a)
+  const fb = filterVolatile(b)
   const keysA = Object.keys(fa)
   const keysB = Object.keys(fb)
   if (keysA.length !== keysB.length) return true
