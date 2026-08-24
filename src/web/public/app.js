@@ -1363,13 +1363,13 @@ export function renderModelsView(container) {
     if (autoHideTimer) { clearTimeout(autoHideTimer); autoHideTimer = null }
   }
 
-  // 全部成功 → 5s 后自动收起；有失败/部分失败保留，等用户手动关闭
-  function scheduleAutoHide() {
+  // 结束态自动收起：全部成功 5s；有失败/异常 8s（给足阅读时间后仍自动消失，避免一直遮挡）
+  function scheduleAutoHide(ms = 5000) {
     clearTimeout(autoHideTimer)
     autoHideTimer = setTimeout(() => {
       autoHideTimer = null
       if (!progressDismissed) progressPanel.hidden = true
-    }, 5000)
+    }, ms)
   }
 
   function renderProgress(st) {
@@ -1438,9 +1438,12 @@ export function renderModelsView(container) {
       progressPanel.appendChild(body)
     }
 
-    // 结束态：全部成功自动收起；有失败保留（需用户关注）
-    if (isDone && errCount === 0 && !((st.summary && (st.summary.errors || []).length))) {
-      scheduleAutoHide()
+    // 结束态：无论成功或部分失败均定时自动收起（失败给更长阅读时间）
+    if (isDone) {
+      const hasError = errCount > 0 || !!((st.summary && (st.summary.errors || []).length))
+      scheduleAutoHide(hasError ? 8000 : 5000)
+    } else if (isError) {
+      scheduleAutoHide(8000)
     } else {
       clearTimeout(autoHideTimer)
       autoHideTimer = null
