@@ -10,12 +10,21 @@
  * @returns {boolean}
  */
 function hasMetadataChanged(a, b) {
-  const keysA = Object.keys(a)
-  const keysB = Object.keys(b)
+  // id 是冗余字段（与 state 的 key 重复），缺失时自动补全不应视为更新
+  const filterId = (obj) => {
+    if (!obj || typeof obj !== 'object') return obj
+    if (!Object.prototype.hasOwnProperty.call(obj, 'id')) return obj
+    const { id: _id, ...rest } = obj
+    return rest
+  }
+  const fa = filterId(a)
+  const fb = filterId(b)
+  const keysA = Object.keys(fa)
+  const keysB = Object.keys(fb)
   if (keysA.length !== keysB.length) return true
   for (const key of keysA) {
-    if (!Object.prototype.hasOwnProperty.call(b, key)) return true
-    if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) return true
+    if (!Object.prototype.hasOwnProperty.call(fb, key)) return true
+    if (JSON.stringify(fa[key]) !== JSON.stringify(fb[key])) return true
   }
   return false
 }

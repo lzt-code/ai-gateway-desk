@@ -818,8 +818,28 @@ function deepEqual(a, b) {
 }
 
 // dirty 判定：深度比较初始快照与当前状态（键序无关）
+// metadata.id 是冗余字段（与 state key 重复），缺失时自动补全不应视为脏
+function stripMetadataId(state) {
+  if (!state || typeof state !== 'object') return state
+  const out = {}
+  for (const [k, v] of Object.entries(state)) {
+    if (!v || typeof v !== 'object') {
+      out[k] = v
+      continue
+    }
+    const { metadata, ...rest } = v
+    if (metadata && typeof metadata === 'object' && Object.prototype.hasOwnProperty.call(metadata, 'id')) {
+      const { id: _id, ...mRest } = metadata
+      out[k] = { ...rest, metadata: mRest }
+    } else {
+      out[k] = v
+    }
+  }
+  return out
+}
+
 export function computeDirty(snapshot, current) {
-  return !deepEqual(snapshot, current)
+  return !deepEqual(stripMetadataId(snapshot), stripMetadataId(current))
 }
 
 // 视图局部样式（style.css 不在本任务改动范围内，随视图注入一次）

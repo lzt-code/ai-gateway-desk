@@ -489,8 +489,13 @@ export function createApp({
         }
       }
       // 同步完成后统一写盘一次（不逐模型写，与 TUI「合并后统一 dirty」一致）
+      // 仅当有实际变更（新增/更新/移除）时才落盘，避免无变更同步触发“未保存”误判
+      const hasChanges =
+        (result.summary.newModels && result.summary.newModels.length > 0) ||
+        (result.summary.updatedModels && result.summary.updatedModels.length > 0) ||
+        (result.summary.removedModels && result.summary.removedModels.length > 0)
       state = result.state
-      stateStore.save(state)
+      if (hasChanges) stateStore.save(state)
       emitEvent({ type: 'done', summary: result.summary })
       return c.json({ ok: true, summary: result.summary })
     } catch (err) {

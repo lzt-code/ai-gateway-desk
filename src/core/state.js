@@ -50,7 +50,7 @@ export function upsertModel(state, modelId, provider, metadata) {
   state[modelId] = {
     status: 'selected',
     provider,
-    metadata: { ...metadata }
+    metadata: { id: modelId, ...metadata, id: modelId }
   }
 }
 
