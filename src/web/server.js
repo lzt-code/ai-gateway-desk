@@ -441,6 +441,13 @@ export function createApp({
     })
   })
 
+  // GET /api/sync/ready — 方案 1 自动同步前置探测（轻量，不触网）
+  // 返回 { ready } 供前端判断是否具备同步条件；ready = Gateway Token 已配置
+  app.get('/api/sync/ready', (c) => {
+    const gatewayToken = process.env.GATEWAY_TOKEN || depsAll.readToken()
+    return c.json({ ok: true, ready: Boolean(gatewayToken) })
+  })
+
   // POST /api/sync — 触发同步流程（provider 同步 → discover → merge → enrich）
   // 等同步完成后返回汇总；过程进度由 SSE 推送（并发 POST → 409）
   app.post('/api/sync', async (c) => {

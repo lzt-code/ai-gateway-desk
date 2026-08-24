@@ -34,6 +34,9 @@ export const VIEW_HINTS = {
   account: '管理 API Token 与 Gateway Token（cfut_xxx）双槽位管理',
 }
 
+// 方案 1：首次切到模型页自动同步 — 会话级一次性标记（模块级，页面刷新重置）
+let _modelsAutoSyncDone = false
+
 // ── 全局状态 ───────────────────────────────────────────────
 // 返回 { currentView, setView, get, set, data }；纯内存对象，无 DOM 依赖。
 export function createState(initial = {}) {
@@ -1693,6 +1696,9 @@ export function renderModelsView(container) {
   }
 
   // ── 初始加载：进入视图拉一次 /api/state + /api/providers/list（§3.1 step 2）──
+  // 方案 1：本地数据先渲染（withBusy 内），完成后若为会话首次进入则探测
+  // Gateway Token 就绪后静默触发 startSync（复用已有同步流程与进度面板）；
+  // 未就绪/无 EventSource/探测失败均静默跳过，无弹窗打扰。
   ;(async () => {
     try {
       await withBusy('正在加载模型列表…', async () => {
@@ -1706,6 +1712,20 @@ export function renderModelsView(container) {
       })
     } catch (err) {
       flash(err.message, 'err')
+      return
+    }
+    // 首次进入自动同步（会话级一次性；Token 未就绪则跳过，依赖面板内手动同步）
+    if (_modelsAutoSyncDone) return
+    if (typeof EventSource === 'undefined') {
+      _modelsAutoSyncDone = true
+      return
+    }
+    _modelsAutoSyncDone = true
+    try {
+      const r = await api('/api/sync/ready')
+      if (r && r.ready) startSync()
+    } catch {
+      // 探测失败静默（不阻断本地已渲染的列表）
     }
   })()
 }
