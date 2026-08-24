@@ -52,6 +52,16 @@ body {
   white-space: nowrap;
 }
 
+/* 标题旁：应用版本徽标（/api/health 填充，获取失败保持隐藏） */
+.app-version {
+  font-size: 0.72rem;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.05rem 0.55rem;
+  white-space: nowrap;
+}
+
 /* ── 选项卡 ───────────────────────────────────────────── */
 #tab-bar {
   display: flex;

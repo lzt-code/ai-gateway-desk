@@ -9,6 +9,8 @@
 <body>
 <header id="app-header">
   <h1>ai-gateway-desk</h1>
+  <!-- 应用版本：由 /api/health 返回（健康检查脚本填充），获取失败保持隐藏 -->
+  <span id="app-version" class="app-version" hidden></span>
   <nav id="tab-bar">
     <!-- data-view 属性是任务 31-33 的绑定契约 -->
     <button data-view="providers">[1] Provider</button>
@@ -81,11 +83,16 @@
   // 后端健康检查（任务 25 占位逻辑保留，显示在页头右侧）
   ;(async () => {
     const el = document.getElementById('health-status')
+    const verEl = document.getElementById('app-version')
     let ok = false
     try {
       const res = await fetch('/api/health')
       const j = await res.json()
       ok = !!(j && j.ok)
+      if (verEl && j && j.version) {
+        verEl.textContent = 'v' + j.version
+        verEl.hidden = false
+      }
       el.textContent = ok ? '✓ 后端服务正常' : '✗ 后端异常'
     } catch {
       el.textContent = '✗ 无法连接后端'

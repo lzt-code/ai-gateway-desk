@@ -75,6 +75,18 @@ const DEFAULT_PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url))
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
+// 应用版本：读项目根 package.json（src/web/ 上溯两级）；读取失败降级 unknown
+const APP_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(path.resolve(__dirname, '..', '..', 'package.json'), 'utf8')
+    )
+    return pkg.version || 'unknown'
+  } catch {
+    return 'unknown'
+  }
+})()
+
 // 心跳自动退出（桌面应用式关闭语义）：页面存活期间前端定期上报心跳，全部页面
 // 关闭后服务器自动退出。GOODBYE_GRACE 覆盖刷新场景：pagehide/sendBeacon 发送
 // goodbye 加速退出，新页面首个心跳在宽限内到达即取消退出。
@@ -228,8 +240,8 @@ export function createApp({
     return c.json({ error: err.message || 'internal server error' }, 500)
   })
 
-  // 健康检查：前端确认后端存活
-  app.get('/api/health', (c) => c.json({ ok: true }))
+  // 健康检查：前端确认后端存活（附带应用版本供页头展示）
+  app.get('/api/health', (c) => c.json({ ok: true, version: APP_VERSION }))
 
   // 心跳：前端页面存活期间定期 POST；?goodbye=1（pagehide/sendBeacon）标记页面
   // 正在关闭，加速服务器退出。startServer 据此实现「全部页面关闭 → 自动退出」。
