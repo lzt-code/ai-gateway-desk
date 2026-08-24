@@ -18,3 +18,14 @@ AI Gateway 模型管理工具（本地 Web 界面）+ 转发封装 Worker。
 2. **不提交私有数据**：`data/` 目录下的运行时数据（如 `models.json`、`providers.json`）不得写入 git。
 3. **改动前先读上下文**：修改代码前先阅读相关文件，理解现有结构与约定，避免破坏既有行为。
 4. **保持简洁**：优先最小改动解决问题，避免过度设计或无关重构。
+
+## Skills 按需索引（低频，不常驻上下文）
+
+> 低频、大正文的 skill 仅在此表登记，LLM 按需 `read` 对应 `SKILL.md`，并避免污染上下文。
+
+| Skill | 功能 | 路径 | 触发词 |
+|-------|------|------|--------|
+| npm-publish | npm 四步发布：前置核验 → publish → tag+push → 验证 | `~/workspace/laoliu-skills/skills/npm-publish/SKILL.md` | 发布 npm / 打 tag / 发版 / publish / tag |
+
+
+* 按需加载示例：`read ~/workspace/laoliu-skills/skills/npm-publish/SKILL.md`
