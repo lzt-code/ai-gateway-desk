@@ -78,14 +78,21 @@ export function mergeDiscovery(state, discoveryResults) {
         const entry = newState[modelId]
 
         // 如果之前是 removed，复活为 selected
+        // 复活是真实变更（否则无计数 → 不落盘，重启后丢失），计入 updatedModels
         if (entry.status === 'removed') {
           entry.status = 'selected'
+          if (!updatedModels.includes(modelId)) {
+            updatedModels.push(modelId)
+          }
         }
 
         // 策略 A：provider 返回的字段覆盖 metadata
-        // 只覆盖 provider 返回了的字段，没返回的保留原值
+        // 只覆盖 provider 返回了的字段，没返回的保留原值；
+        // 易变字段（id/created）不回写，保证「无变化」时内存态与磁盘完全一致，
+        // 否则前端拉到新时间戳会误判为未保存（created 保持首次发现值）
         const oldMetadata = { ...entry.metadata }
         for (const [key, value] of Object.entries(model)) {
+          if (VOLATILE_METADATA_FIELDS.includes(key)) continue
           entry.metadata[key] = value
         }
 
