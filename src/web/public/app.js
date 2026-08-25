@@ -871,24 +871,24 @@ function injectModelsStyles() {
       transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out),
         box-shadow 0.15s var(--ease-out), color 0.15s var(--ease-out);
     }
-    .sidebar-item:hover { background: rgba(255, 255, 255, 0.045); border-color: var(--border); }
+    .sidebar-item:hover { background: var(--hover-overlay); border-color: var(--border); }
     .sidebar-item.active {
-      background: linear-gradient(180deg, #242a38, #181d28); color: var(--fg);
+      background: var(--seg-active-bg); color: var(--fg);
       border-color: var(--border);
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      box-shadow: var(--seg-active-shadow);
     }
     .sidebar-item.active::before {
       content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
       background: var(--accent); border-radius: 0 2px 2px 0;
-      box-shadow: 0 0 8px rgba(130, 163, 255, 0.6);
+      box-shadow: 0 0 8px var(--led-accent);
     }
     .models-main { min-width: 0; display: flex; flex-direction: column; }
     /* 筛选按钮组：分段控件化（凹陷轨道 + 浮起激活块，与页头选项卡同语言） */
     .filter-bar { margin-bottom: 0.6rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
     .filter-status-group {
       display: flex; gap: 2px; flex-shrink: 0; padding: 3px;
-      background: rgba(255, 255, 255, 0.045); border: 1px solid var(--border); border-radius: 8px;
-      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+      background: var(--track-bg); border: 1px solid var(--border); border-radius: 8px;
+      box-shadow: var(--track-inset);
     }
     .filter-status-btn {
       background: transparent; color: var(--muted); border: none;
@@ -897,10 +897,10 @@ function injectModelsStyles() {
       transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out),
         box-shadow 0.15s var(--ease-out);
     }
-    .filter-status-btn:hover { background: rgba(255, 255, 255, 0.05); color: var(--fg); }
+    .filter-status-btn:hover { background: var(--hover-overlay); color: var(--fg); }
     .filter-status-btn.active {
-      background: linear-gradient(180deg, #242a38, #181d28); color: var(--fg);
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      background: var(--seg-active-bg); color: var(--fg);
+      box-shadow: var(--seg-active-shadow);
     }
     .table-wrap { overflow-x: auto; }
     /* 表头跟随中间列表滚动而固定（仅独立滚动模式需要；整页滚动时 sticky top 由顶部页头决定，故限定 body.models-active） */
@@ -930,7 +930,7 @@ function injectModelsStyles() {
     .model-table tbody tr { cursor: pointer; transition: background 0.15s var(--ease-out); }
     .model-table tbody tr.row-active {
       background: var(--accent-soft);
-      box-shadow: inset 0 0 0 1px rgba(130, 163, 255, 0.4);
+      box-shadow: inset 0 0 0 1px var(--accent-border);
     }
     .model-table tbody tr.row-removed { opacity: 0.6; }
     .status-ok { color: var(--ok); }
@@ -948,17 +948,17 @@ function injectModelsStyles() {
     }
     .status-toggle:hover { border-color: var(--border-strong); }
     .status-toggle:has(.status-ok) {
-      background: rgba(74, 222, 128, 0.10); border-color: rgba(74, 222, 128, 0.35);
+      background: var(--ok-soft); border-color: var(--ok-border);
     }
-    .status-toggle:has(.status-ok):hover { box-shadow: 0 0 10px rgba(74, 222, 128, 0.2); }
+    .status-toggle:has(.status-ok):hover { box-shadow: 0 0 10px var(--led-ok); }
     .status-toggle:has(.status-warn) {
-      background: rgba(251, 191, 36, 0.10); border-color: rgba(251, 191, 36, 0.35);
+      background: var(--warn-soft); border-color: var(--warn-border);
     }
-    .status-toggle:has(.status-warn):hover { box-shadow: 0 0 10px rgba(251, 191, 36, 0.2); }
+    .status-toggle:has(.status-warn):hover { box-shadow: 0 0 10px var(--led-warn); }
     .status-toggle:has(.status-err) {
-      background: rgba(251, 113, 133, 0.10); border-color: rgba(251, 113, 133, 0.35);
+      background: var(--err-soft); border-color: var(--err-border);
     }
-    .status-toggle:has(.status-err):hover { box-shadow: 0 0 10px rgba(251, 113, 133, 0.2); }
+    .status-toggle:has(.status-err):hover { box-shadow: 0 0 10px var(--led-err); }
     .btn-hint { display: block; font-size: 0.7rem; font-weight: 400; opacity: 0.7; margin-top: 0.15rem; }
     .side-group { display: flex; flex-direction: column; gap: 0.4rem; }
     .side-group + .side-group { margin-top: 0.25rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
@@ -970,7 +970,7 @@ function injectModelsStyles() {
     /* 未保存标记：琥珀色小胶囊（比裸文字更醒目且不喧宾夺主） */
     .dirty-mark {
       color: var(--warn); font-size: 0.75rem; font-weight: 500;
-      background: rgba(251, 191, 36, 0.10); border: 1px solid rgba(251, 191, 36, 0.35);
+      background: var(--warn-soft); border: 1px solid var(--warn-border);
       border-radius: 999px; padding: 0.08rem 0.55rem; margin-left: 0.4rem;
       vertical-align: middle;
     }
@@ -2108,7 +2108,7 @@ function injectProvidersStyles() {
     /* .warn-bar：左侧 3px warn 光条 + 琥珀浅底（替代整框描边） */
     .warn-bar {
       position: relative;
-      background: rgba(251, 191, 36, 0.08); color: var(--warn);
+      background: var(--warn-soft); color: var(--warn);
       border: 1px solid var(--border); border-left: 3px solid var(--warn);
       border-radius: var(--radius-md);
       padding: 0.5rem 0.75rem 0.5rem 0.85rem; margin-bottom: 0.75rem; font-size: 0.85rem;
@@ -2128,17 +2128,17 @@ function injectProvidersStyles() {
       transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out), border-color 0.15s var(--ease-out);
     }
     .provider-table .btn-edit:hover {
-      background: var(--accent-soft); color: var(--accent); border-color: rgba(130, 163, 255, 0.35);
+      background: var(--accent-soft); color: var(--accent); border-color: var(--accent-border);
     }
     .provider-table .btn-delete:hover {
-      background: rgba(251, 113, 133, 0.12); color: var(--err); border-color: rgba(251, 113, 133, 0.35);
+      background: var(--err-soft); color: var(--err); border-color: var(--err-border);
     }
     .status-ok { color: var(--ok); }
     .status-err { color: var(--err); }
     .status-hidden { color: var(--muted); }
     /* 只读字段：下陷井底 + 发丝线，弱化但可读 */
     .field-readonly {
-      color: var(--muted); background: rgba(0, 0, 0, 0.22);
+      color: var(--muted); background: var(--field-bg);
       border: 1px solid var(--border); border-radius: var(--radius-md);
       padding: 0.35rem 0.55rem; margin-top: 0.15rem; font-size: 0.9rem;
     }
@@ -2577,20 +2577,18 @@ function injectWorkersAccountStyles() {
       content: ''; width: 0.45rem; height: 0.45rem; border-radius: 50%; flex-shrink: 0;
     }
     .status-item .v.ok { color: var(--ok); }
-    .status-item .v.ok::before { background: var(--ok); box-shadow: 0 0 8px rgba(74, 222, 128, 0.6); }
+    .status-item .v.ok::before { background: var(--ok); box-shadow: 0 0 8px var(--led-ok); }
     .status-item .v.warn { color: var(--warn); }
-    .status-item .v.warn::before { background: var(--warn); box-shadow: 0 0 8px rgba(251, 191, 36, 0.6); }
+    .status-item .v.warn::before { background: var(--warn); box-shadow: 0 0 8px var(--led-warn); }
     .status-item .v.muted { color: var(--muted); }
     .status-item .v.muted::before { background: var(--muted); opacity: 0.5; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
     /* 统一卡片化：顶光渐变 + 发丝线 + 内高光（与 .view 卡片同语言） */
     .account-view .panel {
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 90px),
-        var(--panel);
+      background: var(--card-sheen), var(--panel);
       border: 1px solid var(--border); border-radius: var(--radius-md);
       padding: 0.75rem 1rem; margin-bottom: 0.75rem;
-      box-shadow: var(--shadow-1), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+      box-shadow: var(--shadow-1), var(--highlight);
     }
     .account-view .panel.slot-card,
     .account-view .panel.gateway-card {
@@ -2610,10 +2608,10 @@ function injectWorkersAccountStyles() {
       transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out), border-color 0.15s var(--ease-out);
     }
     .slot-card .btn-update:hover {
-      background: var(--accent-soft); color: var(--accent); border-color: rgba(130, 163, 255, 0.35);
+      background: var(--accent-soft); color: var(--accent); border-color: var(--accent-border);
     }
     .slot-card .btn-clear:hover {
-      background: rgba(251, 113, 133, 0.12); color: var(--err); border-color: rgba(251, 113, 133, 0.35);
+      background: var(--err-soft); color: var(--err); border-color: var(--err-border);
     }
   `
   document.head.appendChild(style)

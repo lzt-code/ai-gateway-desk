@@ -1,21 +1,29 @@
 /* ============================================================
- * ai-gateway-desk Web UI — 精致暗色主题（Linear / Vercel 质感）
+ * ai-gateway-desk Web UI — 双主题精致设计（Linear / Vercel 质感）
  *
  * 设计语言：
- *  - 中性近黑背景 + 顶部环境光晕（去饱和冷灰调，替代高饱和主题色底）
- *  - 白色低透明发丝线描边 + 面板顶缘内高光（「浮起」层次感）
+ *  - 深浅双主题：全部视觉值收敛为设计令牌，亮色仅覆盖 :root 令牌块
+ *  - 发丝线描边 + 面板顶缘内高光（「浮起」层次感）
  *  - 品牌蓝仅用于主操作 / 激活态 / 焦点环，保持克制
  *  - 页头与底部面板毛玻璃化（backdrop-filter）
+ *  - 主题切换：html[data-theme='dark' | 'light']（index.html 内联脚本控制，
+ *    localStorage 手动偏好优先，否则跟随系统 prefers-color-scheme）
  * 颜色语义与原 TUI 一致：绿=成功 / 黄=警告 / 红=错误
  * 仅升级视觉样式，不改任何业务逻辑、DOM 结构与 class 名。
  * ============================================================ */
 
-/* ── 设计令牌 ────────────────────────────────────────── */
+/* ── 设计令牌：深色（默认） ───────────────────────────── */
 :root {
+  color-scheme: dark;
+
   /* 背景三级分层：页底近黑 → 面板 → 浮层（去饱和冷灰调） */
   --bg: #0a0c10;         /* 页面背景（最深） */
   --panel: #10131a;      /* 面板/卡片背景 */
   --elevated: #171c26;   /* 浮层 / hover 面板 */
+
+  /* 环境光晕（body 顶部径向渐变，营造纵深） */
+  --glow-1: rgba(111, 134, 255, 0.10);
+  --glow-2: rgba(96, 165, 250, 0.05);
 
   /* 文字 */
   --fg: #e7eaf0;         /* 主文字 */
@@ -24,14 +32,37 @@
   /* 品牌蓝：主按钮渐变深端 / 文字与描边用浅端 */
   --accent: #82a3ff;
   --accent-deep: #5d7df6;
+  --accent-soft: rgba(130, 163, 255, 0.12);  /* hover 底 */
+  --accent-border: rgba(130, 163, 255, 0.35);
+  --ring: rgba(130, 163, 255, 0.45);         /* 焦点环 */
 
+  /* 语义文字色 */
   --ok: #4ade80;         /* 成功（绿） */
   --warn: #fbbf24;       /* 警告（琥珀） */
   --err: #fb7185;        /* 错误（玫红） */
 
-  /* 发丝线描边：白色低透明，替代实色边框（高级感的关键） */
+  /* 语义软底/描边（状态 pill、警示条、幽灵按钮 hover） */
+  --ok-soft: rgba(74, 222, 128, 0.10);
+  --ok-border: rgba(74, 222, 128, 0.35);
+  --warn-soft: rgba(251, 191, 36, 0.10);
+  --warn-border: rgba(251, 191, 36, 0.35);
+  --err-soft: rgba(251, 113, 133, 0.12);
+  --err-border: rgba(251, 113, 133, 0.35);
+
+  /* 状态 LED 辉光（状态点 / 进度条 / toast 边缘） */
+  --led-ok: rgba(74, 222, 128, 0.6);
+  --led-warn: rgba(251, 191, 36, 0.6);
+  --led-err: rgba(251, 113, 133, 0.6);
+  --led-accent: rgba(130, 163, 255, 0.6);
+
+  /* 发丝线描边：白色低透明，替代实色边框 */
   --border: rgba(255, 255, 255, 0.07);
   --border-strong: rgba(255, 255, 255, 0.14);
+
+  /* 叠加层 */
+  --hover-overlay: rgba(255, 255, 255, 0.05);  /* 静默项 hover */
+  --row-hover: rgba(255, 255, 255, 0.03);      /* 表格行 hover */
+  --chip-bg: rgba(255, 255, 255, 0.03);        /* 徽标/计数胶囊底 */
 
   /* 圆角阶 */
   --radius-sm: 6px;
@@ -42,16 +73,53 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 8px 24px rgba(0, 0, 0, 0.4);
   --shadow-3: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --btn-drop: 0 1px 2px rgba(0, 0, 0, 0.35);
 
   /* 面板顶缘内高光：让平面「浮起」的 1px 细节 */
   --highlight: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 
-  /* 交互色衍生 */
-  --accent-soft: rgba(130, 163, 255, 0.12);  /* hover 底 */
-  --ring: rgba(130, 163, 255, 0.45);         /* 焦点环 */
+  /* 卡片顶光渐变（叠在面板底色之上） */
+  --card-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 120px);
 
-  /* 毛玻璃底（页头 / 底部面板共用） */
+  /* 分段控件（选项卡 / 筛选组）：凹陷轨道 + 浮起激活块 */
+  --track-bg: rgba(255, 255, 255, 0.045);
+  --track-inset: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+  --seg-active-bg: linear-gradient(180deg, #242a38, #181d28);
+  --seg-active-shadow: 0 1px 3px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+
+  /* 输入井 */
+  --field-bg: rgba(0, 0, 0, 0.28);
+  --field-inset: inset 0 1px 2px rgba(0, 0, 0, 0.22);
+  --placeholder: rgba(139, 147, 167, 0.55);
+  --well-bg: rgba(0, 0, 0, 0.40);   /* 进度条轨道井 */
+
+  /* 主按钮 / 危险按钮：渐变 + 同色辉光 */
+  --primary-gradient: linear-gradient(180deg, #8aa6ff, #5d7df6);
+  --primary-fg: #0a1024;
+  --primary-glow: 0 4px 16px rgba(93, 125, 246, 0.35);
+  --primary-glow-strong: 0 6px 22px rgba(93, 125, 246, 0.5);
+  --danger-gradient: linear-gradient(180deg, #fb85a0, #ef5377);
+  --danger-fg: #2b0812;
+  --danger-glow: 0 4px 16px rgba(239, 83, 119, 0.30);
+  --danger-glow-strong: 0 6px 22px rgba(239, 83, 119, 0.42);
+
+  /* 次级按钮底 */
+  --btn-default-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015)),
+    var(--panel);
+  --btn-default-bg-hover: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02)),
+    var(--elevated);
+
+  /* 开关关闭态轨道 */
+  --switch-off-bg: rgba(0, 0, 0, 0.35);
+
+  /* 毛玻璃与遮罩 */
   --glass: rgba(10, 12, 16, 0.72);
+  --backdrop: rgba(4, 6, 10, 0.65);
+  --flash-bg: rgba(23, 28, 38, 0.85);
+
+  /* 滚动条 / 选区 */
+  --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  --selection: rgba(130, 163, 255, 0.30);
 
   /* 缓动曲线：快出缓停，微交互更顺滑 */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
@@ -59,6 +127,89 @@
   /* 字体：等宽栈，用于模型 ID / 日志 / 部署输出 */
   --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, 'SF Mono',
     'Cascadia Code', 'Consolas', 'Liberation Mono', monospace;
+}
+
+/* ── 设计令牌：亮色（Stripe/Vercel 控制台风；仅覆盖令牌） ── */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --elevated: #ffffff;   /* 浮层靠阴影区分层次 */
+
+  --glow-1: rgba(61, 99, 242, 0.06);
+  --glow-2: rgba(96, 165, 250, 0.05);
+
+  --fg: #171b26;
+  --muted: #5f6775;
+
+  --accent: #3d63f2;
+  --accent-deep: #2f4fd8;
+  --accent-soft: rgba(61, 99, 242, 0.09);
+  --accent-border: rgba(61, 99, 242, 0.40);
+  --ring: rgba(61, 99, 242, 0.25);
+
+  --ok: #15803d;
+  --warn: #b45309;
+  --err: #e11d48;
+
+  --ok-soft: rgba(21, 128, 61, 0.08);
+  --ok-border: rgba(21, 128, 61, 0.30);
+  --warn-soft: rgba(180, 83, 9, 0.08);
+  --warn-border: rgba(180, 83, 9, 0.30);
+  --err-soft: rgba(225, 29, 72, 0.07);
+  --err-border: rgba(225, 29, 72, 0.30);
+
+  --led-ok: rgba(21, 128, 61, 0.40);
+  --led-warn: rgba(180, 83, 9, 0.40);
+  --led-err: rgba(225, 29, 72, 0.40);
+  --led-accent: rgba(61, 99, 242, 0.40);
+
+  --border: rgba(20, 26, 40, 0.09);
+  --border-strong: rgba(20, 26, 40, 0.16);
+
+  --hover-overlay: rgba(20, 26, 40, 0.05);
+  --row-hover: rgba(20, 26, 40, 0.035);
+  --chip-bg: rgba(20, 26, 40, 0.04);
+
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-2: 0 8px 24px rgba(16, 24, 40, 0.10);
+  --shadow-3: 0 24px 64px rgba(16, 24, 40, 0.20);
+  --btn-drop: 0 1px 2px rgba(16, 24, 40, 0.12);
+
+  --highlight: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --card-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0) 120px);
+
+  --track-bg: rgba(20, 26, 40, 0.05);
+  --track-inset: inset 0 1px 2px rgba(16, 24, 40, 0.06);
+  --seg-active-bg: #ffffff;
+  --seg-active-shadow: 0 1px 3px rgba(16, 24, 40, 0.14);
+
+  --field-bg: #ffffff;
+  --field-inset: inset 0 1px 2px rgba(16, 24, 40, 0.05);
+  --placeholder: rgba(95, 103, 117, 0.55);
+  --well-bg: rgba(20, 26, 40, 0.07);
+
+  --primary-gradient: linear-gradient(180deg, #4d70f5, #3556dc);
+  --primary-fg: #ffffff;
+  --primary-glow: 0 4px 14px rgba(61, 99, 242, 0.28);
+  --primary-glow-strong: 0 6px 20px rgba(61, 99, 242, 0.40);
+  --danger-gradient: linear-gradient(180deg, #f4536f, #df2350);
+  --danger-fg: #ffffff;
+  --danger-glow: 0 4px 14px rgba(225, 29, 72, 0.26);
+  --danger-glow-strong: 0 6px 20px rgba(225, 29, 72, 0.38);
+
+  --btn-default-bg: linear-gradient(180deg, #ffffff, #fafbfd);
+  --btn-default-bg-hover: linear-gradient(180deg, #ffffff, #f4f6fa);
+
+  --switch-off-bg: #e4e7ee;
+
+  --glass: rgba(247, 248, 250, 0.80);
+  --backdrop: rgba(16, 24, 40, 0.35);
+  --flash-bg: rgba(255, 255, 255, 0.92);
+
+  --scrollbar-thumb: rgba(20, 26, 40, 0.22);
+  --selection: rgba(61, 99, 242, 0.16);
 }
 
 * { box-sizing: border-box; }
@@ -71,8 +222,8 @@ html, body { margin: 0; padding: 0; }
 body {
   /* 环境光晕：顶部中央品牌蓝辉光 + 右上辅助冷光，营造纵深 */
   background:
-    radial-gradient(1100px 520px at 50% -160px, rgba(111, 134, 255, 0.10), transparent 65%),
-    radial-gradient(800px 420px at 108% -100px, rgba(96, 165, 250, 0.05), transparent 60%),
+    radial-gradient(1100px 520px at 50% -160px, var(--glow-1), transparent 65%),
+    radial-gradient(800px 420px at 108% -100px, var(--glow-2), transparent 60%),
     var(--bg);
   background-attachment: fixed;
   color: var(--fg);
@@ -88,7 +239,7 @@ body {
 
 /* ── 全局基础：选区 / 焦点环 / 滚动条 ─────────────────── */
 ::selection {
-  background: rgba(130, 163, 255, 0.30);
+  background: var(--selection);
   color: var(--fg);
 }
 
@@ -101,17 +252,17 @@ body {
 /* 自定义滚动条：细、半透明、hover 显色（webkit + Firefox 双写） */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--scrollbar-thumb);
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover { background: rgba(130, 163, 255, 0.40); background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-border); background-clip: content-box; }
 
 /* ── 页头（固定顶部，毛玻璃） ─────────────────────────── */
 #app-header {
@@ -158,8 +309,33 @@ body {
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0.05rem 0.55rem;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--chip-bg);
   white-space: nowrap;
+}
+
+/* ── 主题切换按钮（页头右侧）：明暗手动开关 ───────────── */
+.theme-toggle {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+  transition: color 0.15s var(--ease-out), border-color 0.15s var(--ease-out),
+    background 0.15s var(--ease-out);
+}
+.theme-toggle:hover {
+  color: var(--fg);
+  border-color: var(--border-strong);
+  background: var(--hover-overlay);
 }
 
 /* ── 选项卡：分段控件（凹陷轨道 + 浮起激活块） ────────── */
@@ -168,10 +344,10 @@ body {
   flex-wrap: wrap;
   gap: 2px;
   padding: 3px;
-  background: rgba(255, 255, 255, 0.045);
+  background: var(--track-bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--track-inset);
 }
 #tab-bar button {
   background: transparent;
@@ -185,11 +361,11 @@ body {
   transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out),
     box-shadow 0.15s var(--ease-out);
 }
-#tab-bar button:hover { background: rgba(255, 255, 255, 0.05); color: var(--fg); }
+#tab-bar button:hover { background: var(--hover-overlay); color: var(--fg); }
 #tab-bar button.active {
-  background: linear-gradient(180deg, #242a38, #181d28);
+  background: var(--seg-active-bg);
   color: var(--fg);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  box-shadow: var(--seg-active-shadow);
 }
 
 /* 页头右侧：后端健康状态（任务 25 占位逻辑保留），状态色带微辉光 */
@@ -199,8 +375,8 @@ body {
   color: var(--muted);
   white-space: nowrap;
 }
-.health-status.ok { color: var(--ok); text-shadow: 0 0 12px rgba(74, 222, 128, 0.35); }
-.health-status.bad { color: var(--err); text-shadow: 0 0 12px rgba(251, 113, 133, 0.35); }
+.health-status.ok { color: var(--ok); text-shadow: 0 0 12px var(--led-ok); }
+.health-status.bad { color: var(--err); text-shadow: 0 0 12px var(--led-err); }
 
 /* ── 全局加载指示（转圈圈）：页头右侧胶囊，异步操作期间显示 ── */
 /* display:inline-flex 与 [hidden] 冲突时由已知坑 8 的 !important 规则覆盖 */
@@ -210,9 +386,9 @@ body {
   gap: 0.45rem;
   margin-left: 0.75rem;
   padding: 0.15rem 0.7rem;
-  border: 1px solid rgba(130, 163, 255, 0.35);
+  border: 1px solid var(--accent-border);
   border-radius: 999px;
-  background: rgba(130, 163, 255, 0.10);
+  background: var(--accent-soft);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   color: var(--accent);
@@ -263,9 +439,7 @@ body {
 
 /* 卡片化视图容器：顶光渐变 + 发丝线 + 内高光 */
 .view {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 120px),
-    var(--panel);
+  background: var(--card-sheen), var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 1.1rem 1.3rem;
@@ -294,9 +468,7 @@ body {
   gap: 0.75rem;
 }
 #hint-bar {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 90px),
-    var(--panel);
+  background: var(--card-sheen), var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 0.75rem 1rem;
@@ -325,8 +497,8 @@ body {
 #progress-panel .progress-message { font-size: 0.85rem; margin-bottom: 0.35rem; }
 .progress-track {
   height: 7px;
-  background: rgba(0, 0, 0, 0.4);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.4);
+  background: var(--well-bg);
+  box-shadow: var(--track-inset);
   border-radius: 999px;
   overflow: hidden;
 }
@@ -334,13 +506,13 @@ body {
   display: block;
   height: 100%;
   width: 0;
-  background: linear-gradient(90deg, rgba(93, 125, 246, 0.65), var(--accent));
-  box-shadow: 0 0 12px rgba(130, 163, 255, 0.4);
+  background: linear-gradient(90deg, var(--accent-deep), var(--accent));
+  box-shadow: 0 0 12px var(--led-accent);
   border-radius: 999px;
   transition: width 0.2s var(--ease-out);
 }
-.progress-bar.ok { background: linear-gradient(90deg, rgba(74, 222, 128, 0.55), var(--ok)); box-shadow: 0 0 12px rgba(74, 222, 128, 0.35); }
-.progress-bar.err { background: linear-gradient(90deg, rgba(251, 113, 133, 0.55), var(--err)); box-shadow: 0 0 12px rgba(251, 113, 133, 0.35); }
+.progress-bar.ok { background: linear-gradient(90deg, var(--ok), var(--ok)); box-shadow: 0 0 12px var(--led-ok); }
+.progress-bar.err { background: linear-gradient(90deg, var(--err), var(--err)); box-shadow: 0 0 12px var(--led-err); }
 
 /* ── 底部处理过程日志栏（全局，所有操作写入；毛玻璃常驻）── */
 /* sticky bottom：内容少时位于文档流底部（#app-main flex:1 撑开），
@@ -377,7 +549,7 @@ body {
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 0 0.45rem;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--chip-bg);
 }
 .log-btn {
   background: transparent;
@@ -428,7 +600,7 @@ th {
 }
 td { color: var(--fg); }
 tbody tr { transition: background 0.15s var(--ease-out); }
-tbody tr:hover { background: rgba(255, 255, 255, 0.03); }
+tbody tr:hover { background: var(--row-hover); }
 tbody tr:last-child td { border-bottom-color: transparent; }
 
 /* ── 表单：下陷输入井 + 聚焦辉光 ──────────────────────── */
@@ -440,22 +612,22 @@ label {
 input, select, textarea {
   width: 100%;
   margin-top: 0.3rem;
-  background: rgba(0, 0, 0, 0.28);
+  background: var(--field-bg);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 0.48rem 0.65rem;
   font: inherit;
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22);
+  box-shadow: var(--field-inset);
   transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out),
     background 0.15s var(--ease-out);
 }
-input::placeholder, textarea::placeholder { color: rgba(139, 147, 167, 0.55); }
+input::placeholder, textarea::placeholder { color: var(--placeholder); }
 input:hover, select:hover, textarea:hover { border-color: var(--border-strong); }
 input:focus, select:focus, textarea:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--ring), 0 0 16px rgba(130, 163, 255, 0.12);
+  box-shadow: 0 0 0 3px var(--ring);
 }
 /* 表单字段下方提示（如 base URL 的 /v1 说明）：灰字小号，置于输入框下方 */
 .field-hint {
@@ -488,58 +660,41 @@ button { font: inherit; }
 .btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 
 .btn-primary {
-  background: linear-gradient(180deg, #8aa6ff, #5d7df6);
-  color: #0a1024;
+  background: var(--primary-gradient);
+  color: var(--primary-fg);
   border-color: rgba(255, 255, 255, 0.12);
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.35),
-    0 4px 16px rgba(93, 125, 246, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  box-shadow: var(--btn-drop), var(--primary-glow), inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 .btn-primary:hover {
   filter: brightness(1.06);
-  box-shadow:
-    0 2px 4px rgba(0, 0, 0, 0.35),
-    0 6px 22px rgba(93, 125, 246, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.32);
+  box-shadow: var(--btn-drop), var(--primary-glow-strong), inset 0 1px 0 rgba(255, 255, 255, 0.32);
 }
 .btn-danger {
-  background: linear-gradient(180deg, #fb85a0, #ef5377);
-  color: #2b0812;
+  background: var(--danger-gradient);
+  color: var(--danger-fg);
   border-color: rgba(255, 255, 255, 0.12);
-  box-shadow:
-    0 1px 2px rgba(0, 0, 0, 0.35),
-    0 4px 16px rgba(239, 83, 119, 0.30),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  box-shadow: var(--btn-drop), var(--danger-glow), inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 .btn-danger:hover {
   filter: brightness(1.06);
-  box-shadow:
-    0 2px 4px rgba(0, 0, 0, 0.35),
-    0 6px 22px rgba(239, 83, 119, 0.42),
-    inset 0 1px 0 rgba(255, 255, 255, 0.26);
+  box-shadow: var(--btn-drop), var(--danger-glow-strong), inset 0 1px 0 rgba(255, 255, 255, 0.26);
 }
 .btn-default {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.015)),
-    var(--panel);
+  background: var(--btn-default-bg);
   color: var(--fg);
   border-color: var(--border-strong);
-  box-shadow: var(--highlight), var(--shadow-1);
+  box-shadow: var(--highlight), var(--btn-drop);
 }
 .btn-default:hover {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02)),
-    var(--elevated);
-  border-color: rgba(255, 255, 255, 0.20);
+  background: var(--btn-default-bg-hover);
+  border-color: var(--border-strong);
+  filter: brightness(1.02);
 }
 .btn-hint { display: block; font-size: 0.7rem; font-weight: 400; opacity: 0.7; margin-top: 0.15rem; }
 
 /* ── 弹窗 <dialog>：渐变浮层 + 深阴影 + 磨砂遮罩 ──────── */
 dialog {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0) 90px),
-    var(--elevated);
+  background: var(--card-sheen), var(--elevated);
   color: var(--fg);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
@@ -560,7 +715,7 @@ dialog {
   to { opacity: 0; transform: scale(0.96) translateY(8px); }
 }
 dialog::backdrop {
-  background: rgba(4, 6, 10, 0.65);
+  background: var(--backdrop);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   animation: backdrop-in 0.18s ease-out;
@@ -600,7 +755,7 @@ dialog::backdrop {
   width: 40px;
   height: 22px;
   padding: 0;
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--switch-off-bg);
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   cursor: pointer;
@@ -616,17 +771,16 @@ dialog::backdrop {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--muted);
-  box-shadow: var(--shadow-1);
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   transition: transform 0.18s cubic-bezier(0.4, 0, 0.2, 1), background 0.18s ease;
 }
 .switch[aria-checked='true'] {
-  background: linear-gradient(180deg, #8aa6ff, #5d7df6);
+  background: var(--primary-gradient);
   border-color: transparent;
-  box-shadow: 0 0 12px rgba(93, 125, 246, 0.4);
+  box-shadow: var(--primary-glow);
 }
 .switch[aria-checked='true'] .switch-thumb {
-  background: #ffffff;
   transform: translateX(18px);
 }
 
@@ -644,7 +798,7 @@ dialog::backdrop {
   position: relative;
   padding: 0.55rem 1rem 0.55rem 1.1rem;
   border-radius: var(--radius-md);
-  background: rgba(23, 28, 38, 0.85);
+  background: var(--flash-bg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--border-strong);
@@ -666,13 +820,13 @@ dialog::backdrop {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 .flash-ok { color: var(--ok); }
-.flash-ok::before { background: var(--ok); box-shadow: 0 0 10px rgba(74, 222, 128, 0.6); }
+.flash-ok::before { background: var(--ok); box-shadow: 0 0 10px var(--led-ok); }
 .flash-warn { color: var(--warn); }
-.flash-warn::before { background: var(--warn); box-shadow: 0 0 10px rgba(251, 191, 36, 0.6); }
+.flash-warn::before { background: var(--warn); box-shadow: 0 0 10px var(--led-warn); }
 .flash-err { color: var(--err); }
-.flash-err::before { background: var(--err); box-shadow: 0 0 10px rgba(251, 113, 133, 0.6); }
+.flash-err::before { background: var(--err); box-shadow: 0 0 10px var(--led-err); }
 .flash-info { color: var(--fg); }
-.flash-info::before { background: var(--accent); box-shadow: 0 0 10px rgba(130, 163, 255, 0.6); }
+.flash-info::before { background: var(--accent); box-shadow: 0 0 10px var(--led-accent); }
 
 /* ── 响应式：<900px 右侧栏移到下方 ─────────────────────── */
 @media (max-width: 900px) {

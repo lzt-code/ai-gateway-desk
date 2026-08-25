@@ -4,6 +4,19 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ai-gateway-desk</title>
+<script>
+  // 主题首帧预设（置于样式表加载前，避免闪烁）：
+  // localStorage('aigd-theme') 手动偏好优先；无偏好时跟随系统 prefers-color-scheme。
+  ;(function () {
+    var KEY = 'aigd-theme'
+    var saved = null
+    try { saved = localStorage.getItem(KEY) } catch (e) {}
+    var system = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+      ? 'light' : 'dark'
+    document.documentElement.dataset.theme =
+      saved === 'light' || saved === 'dark' ? saved : system
+  })()
+</script>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -25,6 +38,8 @@
     <span class="busy-spinner" aria-hidden="true"></span>
     <span id="busy-text">处理中…</span>
   </span>
+  <!-- 明暗主题手动切换（初始图标由主题脚本填充） -->
+  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换主题"></button>
 </header>
 
 <div id="app-main">
@@ -99,6 +114,55 @@
     }
     el.classList.toggle('ok', ok)
     el.classList.toggle('bad', !ok)
+  })()
+</script>
+
+<script>
+  // 明暗主题切换：手动切换持久化到 localStorage；系统主题变化仅在
+  // 「无手动偏好」时跟随。图标用文本变体符号（☾ / ☀︎），随当前主题切换。
+  ;(function () {
+    var KEY = 'aigd-theme'
+    var rootEl = document.documentElement
+    var btn = document.getElementById('theme-toggle')
+
+    function savedTheme() {
+      try {
+        var v = localStorage.getItem(KEY)
+        return v === 'light' || v === 'dark' ? v : null
+      } catch (e) { return null }
+    }
+
+    function paint() {
+      if (!btn) return
+      var light = rootEl.dataset.theme === 'light'
+      btn.textContent = light ? '\u263E' : '\u2600\uFE0E'
+      var title = light ? '切换到深色主题' : '切换到浅色主题'
+      btn.title = title
+      btn.setAttribute('aria-label', title)
+    }
+
+    // 系统主题变化：仅无手动偏好时跟随（有偏好以用户选择为准）
+    if (window.matchMedia) {
+      var mql = window.matchMedia('(prefers-color-scheme: light)')
+      var onChange = function () {
+        if (!savedTheme()) {
+          rootEl.dataset.theme = mql.matches ? 'light' : 'dark'
+          paint()
+        }
+      }
+      if (mql.addEventListener) mql.addEventListener('change', onChange)
+      else if (mql.addListener) mql.addListener(onChange)
+    }
+
+    if (btn) {
+      btn.addEventListener('click', function () {
+        var next = rootEl.dataset.theme === 'light' ? 'dark' : 'light'
+        try { localStorage.setItem(KEY, next) } catch (e) {}
+        rootEl.dataset.theme = next
+        paint()
+      })
+    }
+    paint()
   })()
 </script>
 
