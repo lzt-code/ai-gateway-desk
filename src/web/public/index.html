@@ -94,6 +94,16 @@
 
 <div id="flash-root"></div>
 
+<!-- 阻塞式执行提示：拉取 Provider/模型列表、部署模型更新、部署 Worker 等长耗时任务
+     使用独立弹窗遮罩，阻止用户其他操作；不可取消/不可点击遮罩关闭 -->
+<div id="blocking-overlay" hidden>
+  <div class="blocking-backdrop" aria-hidden="true"></div>
+  <div class="blocking-panel" role="dialog" aria-modal="true" aria-label="处理中">
+    <span class="blocking-spinner" aria-hidden="true"></span>
+    <span id="blocking-text" class="blocking-text">处理中…</span>
+  </div>
+</div>
+
 <script>
   // 后端健康检查（任务 25 占位逻辑保留，显示在页头右侧）
   ;(async () => {

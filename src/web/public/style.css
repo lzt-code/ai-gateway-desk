@@ -819,6 +819,51 @@ dialog::backdrop {
   from { opacity: 0; transform: translateY(-8px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
+/* ── 阻塞式执行提示（拉取 Provider/模型列表、部署等）────────── */
+#blocking-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#blocking-overlay[hidden] { display: none !important; }
+.blocking-backdrop {
+  position: absolute;
+  inset: 0;
+  background: var(--backdrop);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.blocking-panel {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 1.1rem 1.6rem;
+  background: var(--card-sheen), var(--elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3), var(--highlight);
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--fg);
+  min-width: 240px;
+  max-width: min(90vw, 420px);
+  animation: dialog-in 0.2s var(--ease-out);
+}
+.blocking-spinner {
+  width: 1.1rem;
+  height: 1.1rem;
+  flex-shrink: 0;
+  border: 2px solid var(--accent);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: busy-spin 0.7s linear infinite;
+}
+.blocking-text { line-height: 1.4; }
+
 .flash-ok { color: var(--ok); }
 .flash-ok::before { background: var(--ok); box-shadow: 0 0 10px var(--led-ok); }
 .flash-warn { color: var(--warn); }
@@ -841,5 +886,10 @@ dialog::backdrop {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+  /* 加载/阻塞转圈为关键进度反馈，不应被降级为静止（否则“处理中”无动态提示） */
+  .busy-spinner,
+  .blocking-spinner {
+    animation: busy-spin 0.7s linear infinite !important;
   }
 }

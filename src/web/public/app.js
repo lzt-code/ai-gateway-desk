@@ -387,6 +387,47 @@ export async function withBusy(message, work) {
   }
 }
 
+// ── 阻塞式执行提示（拉取 Provider/模型列表、部署模型更新、部署 Worker 等）──
+// 与轻量指示 withBusy 不同：阻塞弹窗覆盖全屏、阻止交互、不可取消（无关闭按钮、
+// 不响应 Esc/遮罩点击），适合「执行期间不应让用户进行其他操作」的长耗时任务。
+// 实现同样用引用计数，支持并发/嵌套调用，仅全部结束才隐藏。
+let blockingCount = 0
+let blockingText = ''
+
+function renderBlocking() {
+  if (typeof document === 'undefined') return
+  const el = document.getElementById('blocking-overlay')
+  if (!el) return
+  el.hidden = blockingCount === 0
+  if (blockingCount > 0) {
+    const text = document.getElementById('blocking-text')
+    if (text) text.textContent = blockingText
+  }
+}
+
+// 显示阻塞弹窗（可叠加：每调一次 showBlocking，需对应一次 hideBlocking 才会隐藏）
+export function showBlocking(message) {
+  blockingCount += 1
+  blockingText = message || '处理中…'
+  renderBlocking()
+}
+
+// 隐藏阻塞弹窗（引用计数递减，全部并发操作结束才真正隐藏）
+export function hideBlocking() {
+  blockingCount = Math.max(0, blockingCount - 1)
+  renderBlocking()
+}
+
+// 便捷包装：work 为 Promise 或 ()=>Promise。期间显示阻塞弹窗，结束（含异常）自动隐藏。
+export async function withBlocking(message, work) {
+  showBlocking(message)
+  try {
+    return await (typeof work === 'function' ? work() : work)
+  } finally {
+    hideBlocking()
+  }
+}
+
 // ── 复制文本到剪贴板（模型名称复制按钮用）──────────────────
 // 返回 Promise<boolean>：true=成功；false=失败（无 Clipboard API / 无 DOM /
 // 权限拒绝）。失败时调用方应给出可见提示。
@@ -1381,7 +1422,7 @@ export function renderModelsView(container) {
   async function saveModels(deploy) {
     logActivity(deploy ? '开始保存并提交部署…' : '开始保存（写 model-states + models.json）…', 'info')
     try {
-      const res = await withBusy(deploy ? '正在保存并部署（同步 KV）…' : '正在保存…', api(deploy ? '/api/save-deploy' : '/api/save', { method: 'POST' }))
+      const res = await withBlocking(deploy ? '正在保存并部署（同步 KV）…' : '正在保存…', api(deploy ? '/api/save-deploy' : '/api/save', { method: 'POST' }))
       if (!res || res.ok === false) {
         // 已知坑 10：save-deploy 业务失败用 HTTP 200 + { ok:false, step, error }；
         // step 3 = 部署失败（正常反馈），step 1/2 才是保存失败
@@ -1544,11 +1585,12 @@ export function renderModelsView(container) {
     syncing = false
     appState().set('modelsSyncing', false)
     setSyncButtonsDisabled(false)
+    hideBlocking()
   }
 
   async function refreshAfterSync() {
     try {
-      await withBusy('正在刷新模型列表…', async () => {
+      await withBlocking('正在刷新模型列表…', async () => {
         const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
         state = s.state || {}
         providers = p.providers || []
@@ -1619,6 +1661,7 @@ export function renderModelsView(container) {
     appState().set('modelsSyncing', true)
     setSyncButtonsDisabled(true)
     showProgress('同步中…')
+    showBlocking('正在拉取云端数据…')
     logActivity('开始同步（Provider 同步 → 发现模型 → 合并 → 富化）…', 'info')
     es = new EventSource('/api/sync/progress')
     const streamEvents = []
@@ -1780,7 +1823,7 @@ export function renderModelsView(container) {
   // 未就绪/无 EventSource/探测失败均静默跳过，无弹窗打扰。
   ;(async () => {
     try {
-      await withBusy('正在加载模型列表…', async () => {
+      await withBlocking('正在加载模型列表…', async () => {
         const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
         state = s.state || {}
         providers = p.providers || []
@@ -2241,7 +2284,7 @@ export function renderProvidersView(container) {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT)
     try {
-      const res = await withBusy(force ? '正在更新 Provider 列表…' : '正在加载 Provider 列表…', api(force ? '/api/providers/refresh' : '/api/providers', {
+      const res = await withBlocking(force ? '正在更新 Provider 列表…' : '正在加载 Provider 列表…', api(force ? '/api/providers/refresh' : '/api/providers', {
         method: force ? 'POST' : 'GET',
         signal: controller.signal,
       }))
@@ -2692,7 +2735,7 @@ export function renderWorkersView(container) {
     btnDeploy.textContent = '部署中…'
     logActivity('开始部署 Worker…', 'info')
     try {
-      const res = await withBusy('正在部署 Worker（wrangler）…', api('/api/workers/deploy', { method: 'POST' }))
+      const res = await withBlocking('正在部署 Worker（wrangler）…', api('/api/workers/deploy', { method: 'POST' }))
       if (res && res.ok === true) {
         flash('部署成功', 'ok')
         logActivity('Worker 部署成功', 'ok')
