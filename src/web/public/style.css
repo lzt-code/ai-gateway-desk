@@ -562,6 +562,7 @@ body {
   transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out), border-color 0.15s var(--ease-out);
 }
 .log-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.log-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); font-weight: 600; }
 #btn-log-clear { margin-left: auto; }
 #activity-log-body {
   overflow-y: auto;

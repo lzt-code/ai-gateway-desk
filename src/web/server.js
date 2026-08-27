@@ -24,7 +24,7 @@ import { serve } from '@hono/node-server'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { streamSSE } from 'hono/streaming'
 import { loadState, saveState, upsertModel } from '../core/state.js'
-import { loadConfig } from '../core/config.js'
+import { loadConfig, setDebugFlag } from '../core/config.js'
 import { readToken, readManagementToken } from '../core/token-store.js'
 import { writeModelsJson } from '../output/generate.js'
 import { deployProviderRoutesToKV } from '../output/deploy.js'
@@ -134,6 +134,7 @@ const DEFAULT_DEPS = {
   buildWorkersStatus,
   checkKVKey,
   loadModelsJsonState,
+  setDebugFlag,
   spawnFn: spawn,
 }
 
@@ -446,6 +447,30 @@ export function createApp({
   app.get('/api/sync/ready', (c) => {
     const gatewayToken = process.env.GATEWAY_TOKEN || depsAll.readToken()
     return c.json({ ok: true, ready: Boolean(gatewayToken) })
+  })
+
+  // ─── 调试日志开关（providers.json 顶层 debug 字段，写盘持久化）───
+
+  // GET /api/settings/debug — 读取详细日志开关当前状态
+  app.get('/api/settings/debug', (c) => {
+    const config = configStore.load()
+    return c.json({ ok: true, enabled: config.debug === true })
+  })
+
+  // POST /api/settings/debug — 切换详细日志（开启后 discover 输出每个 provider
+  // /models 调用的完整请求/响应：终端全文，Web 日志栏脱敏 + 截断预览）
+  app.post('/api/settings/debug', async (c) => {
+    const body = await readJsonBody(c)
+    if (!body || typeof body.enabled !== 'boolean') {
+      return c.json({ ok: false, error: 'enabled (boolean) 必填' }, 400)
+    }
+    try {
+      depsAll.setDebugFlag(body.enabled)
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error)
+      return c.json({ ok: false, error: msg }, 500)
+    }
+    return c.json({ ok: true, enabled: body.enabled })
   })
 
   // POST /api/sync — 触发同步流程（provider 同步 → discover → merge → enrich）

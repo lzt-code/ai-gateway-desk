@@ -94,6 +94,7 @@ Hono 应用，`createApp` 支持依赖注入（测试可 mock stateStore / confi
 | 模型 | `GET /api/state`、`GET /api/models/filtered`、`POST /api/models/{toggle,remove,batch-toggle,batch-remove,edit,add}` |
 | Provider | `GET /api/providers`、`/api/providers/{list,refresh,update,create,delete}` |
 | 同步 | `GET /api/sync/progress`（SSE）、`POST /api/sync`、`POST /api/save`、`POST /api/save-deploy` |
+| 调试 | `GET /api/settings/debug`、`POST /api/settings/debug`（详细日志开关，持久化到 providers.json 顶层 `debug` 字段） |
 | Worker | `GET /api/workers/status`、`POST /api/workers/deploy` |
 | 账户 | `GET /api/account/status`、`POST /api/account/{update-token,clear-token,setup}` |
 
@@ -111,7 +112,7 @@ Vanilla JS 单页（`app.js` / `index.html` / `style.css`），四个视图 tab�
 - `api.js`：统一 `request()`（超时 + 错误归类），按资源分组——AI Gateway（创建/查询）、BYOK provider_configs（增删改查）、Custom Providers（增删改查）、KV namespace 创建
 - `kv.js`：管理端直读直写 KV 单键（读 404 返回 null 不抛错），用于跨 PC 同步 `provider-visibility`
 - `providers-sync.js`：并行拉取云端 Custom Providers + BYOK 配置，与本地 `providers.json` 合并（策略 A）
-- `discover.js`：模型发现，`/v1/models` 或由 pathPrefix 构造列表 URL
+- `discover.js`：模型发现，`/v1/models` 或由 pathPrefix 构造列表 URL；`config.debug === true` 时输出每个 provider 的完整请求/响应（终端全文、SSE `status:'debug'` 事件带脱敏请求头与截断响应体预览）
 
 ### 4.6 模型管道 — `src/pipeline/` + `src/output/`
 
@@ -122,7 +123,7 @@ Vanilla JS 单页（`app.js` / `index.html` / `style.css`），四个视图 tab�
 
 ### 4.7 数据与凭证 — `src/core/`
 
-- `config.js`：加载并强校验 `data/providers.json`（gateway / kv / providers 逐字段断言）
+- `config.js`：加载并强校验 `data/providers.json`（gateway / kv / providers 逐字段断言；顶层 `debug` 可选 boolean）；`setDebugFlag()` 写回 debug 开关（保留其余字段，写前备份 .bak）
 - `state.js`：`model-states.json` 读写 + upsert/remove/按状态查询
 - `token-store.js`：双凭证槽位（gateway `cfut_xxx` + management 管理 Token），Windows DPAPI / macOS Keychain / Linux 0600 文件，存 `~/.ai-gateway-desk/`；`AI_GW_TEST_DIR` 重定向测试隔离
 

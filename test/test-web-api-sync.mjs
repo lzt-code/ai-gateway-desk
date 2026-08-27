@@ -12,6 +12,7 @@
 
 import { createApp } from '../src/web/server.js'
 import { runSyncFlow } from '../src/web/sync-flow.js'
+import { setDebugFlag } from '../src/core/config.js'
 
 let failures = 0
 let checks = 0
@@ -521,6 +522,103 @@ section('测试 16: runSyncFlow enrich 失败静默')
   })
   check(result.summary.newModels.length === 1, 'enrich 失败不中断，newModels 完整')
   check(result.state['custom-agnes/agnes'] !== undefined, 'state 仍含新模型')
+}
+
+// ── 测试 17a：调试日志开关 API ──
+section('测试 17a: GET/POST /api/settings/debug')
+{
+  const setCalls = []
+  const app = createApp({
+    stateStore: makeStore(),
+    configStore: { load: () => ({ ...fakeConfig, debug: true }) },
+    deps: { setDebugFlag: (v) => { setCalls.push(v); return { backupPath: null } } },
+  })
+  const res = await app.request('/api/settings/debug')
+  const body = await res.json()
+  check(res.status === 200 && body.ok === true && body.enabled === true, 'GET 返回 config.debug 状态')
+
+  const resOn = await app.request('/api/settings/debug', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: true }),
+  })
+  const bodyOn = await resOn.json()
+  check(resOn.status === 200 && bodyOn.ok === true && bodyOn.enabled === true, 'POST enabled:true → 200 ok')
+  check(setCalls.length === 1 && setCalls[0] === true, 'setDebugFlag 收到 true')
+
+  const resBad = await app.request('/api/settings/debug', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  check(resBad.status === 400, '缺 enabled 字段 → 400')
+
+  const resNonJson = await app.request('/api/settings/debug', { method: 'POST', body: 'not json' })
+  check(resNonJson.status === 400, '非法 JSON 体 → 400')
+
+  const appFail = createApp({
+    stateStore: makeStore(),
+    configStore: { load: () => fakeConfig },
+    deps: { setDebugFlag: () => { throw new Error('写盘失败') } },
+  })
+  const resFail = await appFail.request('/api/settings/debug', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: true }),
+  })
+  const bodyFail = await resFail.json()
+  check(resFail.status === 500 && (bodyFail.error || '').includes('写盘失败'), '写盘抛错 → 500 + error 透传')
+
+  const appOff = createApp({
+    stateStore: makeStore(),
+    configStore: { load: () => fakeConfig },
+    deps: { setDebugFlag: () => ({ backupPath: null }) },
+  })
+  const resOff = await appOff.request('/api/settings/debug')
+  const bodyOff = await resOff.json()
+  check(bodyOff.ok === true && bodyOff.enabled === false, 'debug 未配置 → enabled:false')
+}
+
+// ── 测试 17b：setDebugFlag（注入内存 fs，零写盘）──
+section('测试 17b: setDebugFlag 写回 providers.json')
+{
+  const makeMemFs = (initial) => {
+    const files = { ...initial }
+    return {
+      files,
+      readFileSync: (p) => {
+        if (!(p in files)) throw new Error('ENOENT')
+        return files[p]
+      },
+      writeFileSync: (p, c) => { files[p] = c },
+      existsSync: (p) => p in files,
+      configPath: 'cfg',
+      backupPath: 'bak',
+    }
+  }
+  const original = JSON.stringify({
+    gateway: { host: 'h', accountId: 'a', gatewayId: 'g' },
+    kv: { namespaceId: 'n' },
+    providers: [{ id: 'p1', name: 'P1', enabled: true }],
+  })
+  const fsMem = makeMemFs({ cfg: original })
+  setDebugFlag(true, fsMem)
+  const after = JSON.parse(fsMem.files.cfg)
+  check(after.debug === true, '开启 → 顶层 debug:true')
+  check(!!after.gateway && after.kv.namespaceId === 'n' && after.providers.length === 1, '其余字段原样保留')
+  check(fsMem.files.bak === original, '写前备份原文件内容')
+  setDebugFlag(false, fsMem)
+  check(!('debug' in JSON.parse(fsMem.files.cfg)), '关闭 → debug 字段移除')
+  {
+    const fsMissing = makeMemFs({})
+    let threw = false
+    try { setDebugFlag(true, fsMissing) } catch { threw = true }
+    check(threw, 'providers.json 缺失 → 抛错不创建')
+    const fsBroken = makeMemFs({ cfg: '{ broken' })
+    let threwBroken = false
+    try { setDebugFlag(true, fsBroken) } catch { threwBroken = true }
+    check(threwBroken && !('bak' in fsBroken.files), 'JSON 损坏 → 抛错且不覆盖（无备份/写入）')
+  }
 }
 
 // ── 测试 17：回归——任务 26 模型 API 仍可用 ──

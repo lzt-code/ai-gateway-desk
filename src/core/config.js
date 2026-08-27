@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
@@ -64,6 +64,11 @@ export function loadConfig() {
     raw.kv.key = 'models'
   }
 
+  // debug 可选：详细日志开关（discover 输出完整请求/响应），存在时必须是 boolean
+  if (raw.debug !== undefined) {
+    assertField(raw, 'debug', 'boolean', 'debug')
+  }
+
   // 校验 providers 字段
   if (!Array.isArray(raw.providers)) {
     throw new Error('缺少必需字段: providers (array)')
@@ -83,6 +88,47 @@ export function loadConfig() {
   }
 
   return raw
+}
+
+/**
+ * 写回 data/providers.json 的顶层 debug 开关（开启设 true，关闭删除字段），
+ * 其余字段原样保留；写前备份原文件为 providers.json.bak（与
+ * writeProvidersConfigFile 同约定）。依赖以命名参数注入，测试可传 mock / 临时路径。
+ * @param {boolean} enabled
+ * @param {object} [deps] - { readFileSync, writeFileSync, existsSync, configPath, backupPath }
+ * @returns {{ backupPath: string|null }} 备份路径（原文件不存在时 null）
+ * @throws {Error} providers.json 不存在或 JSON 非法时抛出（避免覆盖损坏数据）
+ */
+export function setDebugFlag(enabled, deps = {}) {
+  const {
+    readFileSync: read = readFileSync,
+    writeFileSync: write = writeFileSync,
+    existsSync: exists = existsSync,
+    configPath = resolveData('providers.json'),
+    backupPath = resolveData('providers.json.bak'),
+  } = deps
+
+  if (!exists(configPath)) {
+    throw new Error('data/providers.json 不存在，无法更新 debug 开关')
+  }
+  let raw
+  try {
+    raw = JSON.parse(read(configPath, 'utf-8'))
+  } catch (err) {
+    if (err instanceof SyntaxError) {
+      throw new Error(`data/providers.json 格式错误，无法更新 debug 开关：${err.message}`)
+    }
+    throw err
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('data/providers.json 顶层必须是对象，无法更新 debug 开关')
+  }
+
+  if (enabled) raw.debug = true
+  else delete raw.debug
+  write(backupPath, read(configPath, 'utf-8'))
+  write(configPath, JSON.stringify(raw, null, 2) + '\n')
+  return { backupPath }
 }
 
 /**

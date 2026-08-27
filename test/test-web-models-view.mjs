@@ -19,6 +19,7 @@ const {
   buildModelTableRows,
   parseSSEEvents,
   buildSyncProgressState,
+  buildDebugLogLines,
   filterQuery,
   computeDirty,
   copyToClipboard,
@@ -208,6 +209,44 @@ section('buildSyncProgressState')
     '空事件 → providers 空对象 + phase null',
   )
 }
+{
+  // debug 事件不影响进度：done 之后的 debug 事件不得把状态改回 pending
+  const st = buildSyncProgressState([
+    { event: 'discover', data: { provider: 'p1', status: 'pending' } },
+    { event: 'discover', data: { provider: 'p1', status: 'debug', debug: { phase: 'request', method: 'GET', url: 'u', headers: {} } } },
+    { event: 'discover', data: { provider: 'p1', status: 'done', models: 2 } },
+    { event: 'discover', data: { provider: 'p1', status: 'debug', debug: { phase: 'response', httpStatus: 200, headers: {}, bytes: 10, elapsedMs: 5, bodyPreview: 'x', truncated: false } } },
+  ])
+  check(st.providers['p1'].status === 'done' && st.providers['p1'].models === 2, 'debug 事件被忽略（done 状态保持）')
+  check(Object.keys(st.providers).length === 1, '仅 debug 事件的 provider 不入映射不受影响')
+}
+
+// ── buildDebugLogLines（debug 事件 → 日志行）──────────────
+section('buildDebugLogLines')
+{
+  check(buildDebugLogLines('p1', null).length === 0, '载荷缺失 → 空数组')
+  check(buildDebugLogLines('p1', { phase: 'unknown' }).length === 0, '未知 phase → 空数组')
+  const reqLines = buildDebugLogLines('p1', {
+    phase: 'request', method: 'GET', url: 'https://gw/v1/p1/v1/models',
+    headers: { 'cf-aig-authorization': 'Bearer cfut_abcd****ef12', accept: 'application/json' },
+  })
+  check(reqLines.length === 2, 'request → 2 行（请求行 + 请求头）')
+  check(reqLines[0].text.includes('GET https://gw/v1/p1/v1/models'), '请求行含 method + url')
+  check(reqLines[1].text.includes('cf-aig-authorization'), '请求头行含脱敏头')
+  const respLines = buildDebugLogLines('p1', {
+    phase: 'response', httpStatus: 200, statusText: 'OK', headers: { 'content-type': 'application/json' },
+    bytes: 5000, elapsedMs: 123, bodyPreview: '{"data": [...', truncated: true,
+  })
+  check(respLines.length === 3, 'response → 3 行（状态行 + 响应头 + 预览）')
+  check(respLines[0].type === 'ok' && respLines[0].text.includes('HTTP 200 OK'), '2xx 状态行为 ok 类型')
+  check(respLines[2].text.includes('完整响应体见服务器终端'), 'truncated → 提示看服务器终端')
+  const errLines = buildDebugLogLines('bad', {
+    phase: 'response', httpStatus: 400, statusText: 'Bad Request', headers: {},
+    bytes: 60, elapsedMs: 9, bodyPreview: '{"error":"x"}', truncated: false,
+  })
+  check(errLines[0].type === 'warn', '非 2xx 状态行为 warn 类型')
+  check(!errLines.some((l) => l.text.includes('服务器终端')), '未截断 → 不提示终端')
+}
 
 // ── 13-15：filterQuery ───────────────────────────────────
 section('filterQuery')
@@ -238,7 +277,7 @@ section('computeDirty')
 
 // ── 18-19：导出存在性 + 任务 30 回归 ─────────────────────
 section('导出存在性')
-for (const fn of [buildModelTableRows, parseSSEEvents, buildSyncProgressState, filterQuery, computeDirty, copyToClipboard]) {
+for (const fn of [buildModelTableRows, parseSSEEvents, buildSyncProgressState, buildDebugLogLines, filterQuery, computeDirty, copyToClipboard]) {
   check(typeof fn === 'function', `新纯函数 ${fn.name} 已导出`)
 }
 check((await copyToClipboard('x')) === false, 'copyToClipboard 无 DOM 安全返回 false')

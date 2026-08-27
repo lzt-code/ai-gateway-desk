@@ -533,6 +533,64 @@ function initActivityLog() {
       }
     })
   }
+  // 调试日志开关：状态持久化在服务器 providers.json（debug 字段），影响下次同步
+  const btnDebug = document.getElementById('btn-log-debug')
+  if (btnDebug) {
+    const paintDebug = (enabled) => {
+      btnDebug.textContent = `调试日志: ${enabled ? '开' : '关'}`
+      btnDebug.classList.toggle('active', enabled)
+      btnDebug.dataset.on = enabled ? '1' : '0'
+    }
+    api('/api/settings/debug')
+      .then((res) => { if (res && res.ok) paintDebug(res.enabled === true) })
+      .catch(() => {}) // 后端未就绪时保持默认「关」文案
+    btnDebug.addEventListener('click', async () => {
+      const next = btnDebug.dataset.on !== '1'
+      try {
+        const res = await api('/api/settings/debug', { method: 'POST', body: { enabled: next } })
+        if (res && res.ok) {
+          paintDebug(res.enabled === true)
+          logActivity(
+            res.enabled
+              ? '已开启调试日志：下次同步将在本栏输出每个 Provider /models 的请求/响应（脱敏+预览），全文见服务器终端'
+              : '已关闭调试日志',
+            res.enabled ? 'warn' : 'info'
+          )
+        } else {
+          logActivity(`切换调试日志失败：${(res && res.error) || '未知错误'}`, 'err')
+        }
+      } catch (err) {
+        logActivity(`切换调试日志失败：${err.message}`, 'err')
+      }
+    })
+  }
+}
+
+// /models 调用 debug 事件 → 日志行数组 [{ text, type }]（纯函数，可单测）
+// 载荷来自 discover.js 的 status:'debug' 事件（config.debug 开启时产生）：
+//   phase 'request'  → { method, url, headers }（authorization 已脱敏）
+//   phase 'response' → { httpStatus, statusText, headers, bytes, elapsedMs, bodyPreview, truncated }
+export function buildDebugLogLines(provider, d) {
+  if (!d || typeof d !== 'object') return []
+  const lines = []
+  if (d.phase === 'request') {
+    lines.push({ text: `[debug] → [${provider}] ${d.method || 'GET'} ${d.url || ''}`, type: 'info' })
+    if (d.headers) lines.push({ text: `[debug]   请求头 ${JSON.stringify(d.headers)}`, type: 'info' })
+  } else if (d.phase === 'response') {
+    const st = d.statusText ? ` ${d.statusText}` : ''
+    const okHttp = typeof d.httpStatus === 'number' && d.httpStatus >= 200 && d.httpStatus < 300
+    lines.push({
+      text: `[debug] ← [${provider}] HTTP ${d.httpStatus}${st}（${d.bytes} 字节, ${d.elapsedMs}ms）`,
+      type: okHttp ? 'ok' : 'warn',
+    })
+    if (d.headers) lines.push({ text: `[debug]   响应头 ${JSON.stringify(d.headers)}`, type: 'info' })
+    const preview = String(d.bodyPreview || '').replace(/\s+/g, ' ')
+    if (preview) {
+      const tail = d.truncated ? ` …（共 ${d.bytes} 字节，完整响应体见服务器终端日志）` : ''
+      lines.push({ text: `[debug]   响应体 ${preview}${tail}`, type: 'info' })
+    }
+  }
+  return lines
 }
 
 // ── 渲染分派 + 切换 ────────────────────────────────────────
@@ -810,6 +868,7 @@ export function buildSyncProgressState(events) {
     if (ev.event === 'phase' && data && typeof data.phase === 'string') {
       phase = data.phase
     } else if (ev.event === 'discover' && data && typeof data.provider === 'string') {
+      if (data.status === 'debug') continue // debug 事件仅进日志栏，不影响进度状态
       const status = data.status === 'done' || data.status === 'error' ? data.status : 'pending'
       const rec = { status }
       if (status === 'done' && data.models != null) rec.models = data.models
@@ -1630,7 +1689,9 @@ export function renderModelsView(container) {
         logActivity(`Provider 同步失败：${data.message || '未知错误'}`, 'warn')
       }
     } else if (evtName === 'discover') {
-      if (data.status === 'done') logActivity(`发现模型：${data.provider} 完成（${data.models} 个）`, 'ok')
+      if (data.status === 'debug' && data.debug) {
+        for (const l of buildDebugLogLines(data.provider, data.debug)) logActivity(l.text, l.type)
+      } else if (data.status === 'done') logActivity(`发现模型：${data.provider} 完成（${data.models} 个）`, 'ok')
       else if (data.status === 'error') logActivity(`发现模型：${data.provider} 失败：${data.error || '未知错误'}`, 'err')
       else logActivity(`发现模型：${data.provider} 进行中…`, 'info')
     } else if (evtName === 'enrich') {

@@ -31,7 +31,9 @@ import { enrichModel as enrichModelImpl } from '../pipeline/enrich.js'
  *                                  mergeDiscovery / enrichModel（缺省绑定真实模块）
  * @param {(event: object) => void} [options.onEvent] - 进度事件回调（SSE 转发）
  *    事件对象：{ type: 'phase', phase: 'provider-sync'|'discover'|'enrich' }
- *            | { type: 'discover', ...onProgress 载荷 }
+ *            | { type: 'discover', ...onProgress 载荷 }（status:
+ *              'pending'|'done'|'error'|'debug'；debug 事件为 /models 调用详情，
+ *              仅 config.debug === true 时产生，见 discover.js）
  *            | { type: 'enrich', enriched: number, total: number }
  *            | { type: 'provider-sync', ok: boolean, message?: string, skipped?: boolean,
  *                newProviders?: string[], removedProviders?: string[],
