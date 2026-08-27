@@ -133,9 +133,13 @@ export async function runSyncFlow({
   // 3. 合并（策略 A：provider 覆盖，消失模型标记 removed）+ 富化新模型
   emit({ type: 'phase', phase: 'enrich' })
   const merged = mergeDiscovery(state, discovery)
-  const total = merged.newModels.length
+  // 新模型 + 已更新模型都执行 enrich：
+  //   - 新模型：补全缺失字段
+  //   - 已更新模型：重新匹配，修正历史错误富化（如 matchModel bug 导致的误匹配）
+  const enrichIds = [...merged.newModels, ...merged.updatedModels]
+  const total = enrichIds.length
   let enriched = 0
-  for (const modelId of merged.newModels) {
+  for (const modelId of enrichIds) {
     const entry = merged.state[modelId]
     if (entry) {
       try {

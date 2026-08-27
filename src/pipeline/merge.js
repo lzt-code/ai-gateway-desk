@@ -102,6 +102,16 @@ export function mergeDiscovery(state, discoveryResults) {
             updatedModels.push(modelId)
           }
         }
+
+        // provider 不返回 name 但 metadata 有 name（可能是历史 enrich 填的错误值），
+        // 标记为 updatedModel 使 enrich 能重新匹配修正
+        if (
+          !Object.prototype.hasOwnProperty.call(model, 'name') &&
+          entry.metadata.name !== undefined &&
+          !updatedModels.includes(modelId)
+        ) {
+          updatedModels.push(modelId)
+        }
       } else {
         // ---- 新模型 ----
         newState[modelId] = {

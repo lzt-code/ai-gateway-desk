@@ -107,6 +107,17 @@ function matchModel(modelId, orModels) {
   const shortMatch = orModels.find((m) => m.id === shortId)
   if (shortMatch) return shortMatch
 
+  // 优先级 b1: OpenRouter 模型 id 去掉其 provider 前缀后等于 shortId
+  // 例：modelId="custom-glm/glm-5" → shortId="glm-5"
+  //     OpenRouter id="z-ai/glm-5" → 去前缀="glm-5" → 精确匹配
+  // 避免落入优先级 c 模糊匹配时 "glm 5" 成为 "glm 5.3 flash" 子串而误匹配
+  const prefixlessMatch = orModels.find((m) => {
+    if (!m.id || !m.id.includes('/')) return false
+    const mShort = m.id.split('/').slice(1).join('/')
+    return mShort === shortId
+  })
+  if (prefixlessMatch) return prefixlessMatch
+
   // 优先级 c: name 模糊匹配 modelId 的 name 部分
   const namePart = shortId.replace(/[-_]/g, ' ').toLowerCase()
   const nameMatch = orModels.find((m) => {
@@ -181,8 +192,8 @@ export async function enrichModel(modelId, existingMetadata) {
     result.id = matched.id
   }
 
-  // name — 不覆盖
-  if (result.name === undefined && matched.name) {
+  // name — 重新匹配覆盖：修正历史错误匹配（matchModel 修复后结果可能不同）
+  if (matched.name) {
     result.name = matched.name
   }
 
