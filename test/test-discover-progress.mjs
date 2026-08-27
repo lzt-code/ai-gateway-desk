@@ -219,7 +219,7 @@ try {
   {
     const masked = maskHeaders({
       'cf-aig-authorization': 'Bearer cfut_abcdefghij1234',
-      authorization: 'Basic QWxhZGRpbjpPcGVuU2VzYW1l',
+      authorization: 'Basic QWxhZGRpbjpPcGVuU2VtYW1l',
       accept: 'application/json',
     })
     // token 'cfut_abcdefghij1234' 长度 19 → 首 4 + '*'×(19-8) + 尾 4
@@ -230,6 +230,90 @@ try {
       true,
     )
     check('场景9 普通头原样', masked.accept, 'application/json')
+  }
+
+  // ── 场景 10：providerFilter 仅拉取匹配的单个 provider ──
+  {
+    const config = {
+      gateway: { host: 'gateway.ai.cloudflare.com', accountId: 'acc-1', gatewayId: 'gw-1' },
+      providers: [
+        { id: 'p1', enabled: true },
+        { id: 'p2', enabled: true },
+        { id: 'p3', enabled: false },
+      ],
+    }
+    const events = []
+    const r = await discoverModels(config, 'cfut_test', (p) => events.push(p), 'p1')
+    check('场景10 仅 p1 → results 长度 1', r.results.length, 1)
+    check('场景10 results[0].provider', r.results[0]?.provider, 'p1')
+    check('场景10 errors 为空（p2 未被拉取）', r.errors.length, 0)
+    check('场景10 仅 p1 产生 pending 事件', events.filter((e) => e.status === 'pending').map((e) => e.provider), ['p1'])
+    check('场景10 total=1', events.every((e) => e.total === 1), true)
+  }
+
+  // ── 场景 11：providerFilter 匹配 custom-provider 网关 slug ──
+  {
+    const config = {
+      gateway: { host: 'gateway.ai.cloudflare.com', accountId: 'acc-1', gatewayId: 'gw-1' },
+      providers: [
+        { id: 'agnes', type: 'custom-provider', enabled: true },
+        { id: 'p1', enabled: true },
+      ],
+    }
+    const r = await discoverModels(config, 'cfut_test', null, 'custom-agnes')
+    check('场景11 按 slug 过滤 custom-provider', r.results.length, 1)
+    check('场景11 results[0].provider 用网关 slug', r.results[0]?.provider, 'custom-agnes')
+    check('场景11 模型 id 带前缀', r.results[0]?.models[0]?.id, 'custom-agnes/agnes-2.0-flash')
+  }
+
+  // ── 场景 12：providerFilter 也支持按原始 id 匹配 ──
+  {
+    const config = {
+      gateway: { host: 'gateway.ai.cloudflare.com', accountId: 'acc-1', gatewayId: 'gw-1' },
+      providers: [{ id: 'openrouter', type: 'byok', enabled: true }],
+    }
+    const r = await discoverModels(config, 'cfut_test', null, 'openrouter')
+    check('场景12 按原始 id 过滤 byok', r.results.length, 1)
+    check('场景12 模型 id 前缀', r.results[0]?.models[0]?.id, 'openrouter/inclusionai/ling-3.0-tiny:free')
+  }
+
+  // ── 场景 13：providerFilter 无匹配 → 空结果（不抛错） ──
+  {
+    const events = []
+    const config = {
+      gateway: { host: 'gateway.ai.cloudflare.com', accountId: 'acc-1', gatewayId: 'gw-1' },
+      providers: [{ id: 'p1', enabled: true }],
+    }
+    const r = await discoverModels(config, 'cfut_test', (p) => events.push(p), 'nonexistent')
+    check('场景13 无匹配 results 为空', r.results, [])
+    check('场景13 无匹配 errors 为空', r.errors, [])
+    check('场景13 无匹配无事件', events, [])
+  }
+
+  // ── 场景 14：providerFilter 不匹配已禁用的 provider ──
+  {
+    const config = {
+      gateway: { host: 'gateway.ai.cloudflare.com', accountId: 'acc-1', gatewayId: 'gw-1' },
+      providers: [
+        { id: 'p1', enabled: true },
+        { id: 'p3', enabled: false },
+      ],
+    }
+    const r = await discoverModels(config, 'cfut_test', null, 'p3')
+    check('场景14 禁用 provider 过滤 → 空结果', r.results, [])
+  }
+
+  // ── 场景 15：无 providerFilter 向后兼容（全量） ──
+  {
+    const config = {
+      gateway: { host: 'gateway.ai.cloudflare.com', accountId: 'acc-1', gatewayId: 'gw-1' },
+      providers: [
+        { id: 'p1', enabled: true },
+        { id: 'p2', enabled: true },
+      ],
+    }
+    const r = await discoverModels(config, 'cfut_test')
+    check('场景15 无 filter 仍全量', r.results.length + r.errors.length, 2)
   }
 } finally {
   globalThis.fetch = originalFetch

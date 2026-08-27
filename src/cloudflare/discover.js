@@ -134,12 +134,25 @@ export function gatewaySlug(provider) {
  * @param {object} config - loadConfig() 返回的配置对象；config.debug === true 开启详细日志
  * @param {string} gatewayToken - Cloudflare AI Gateway token
  * @param {(p: { provider: string, status: 'pending'|'done'|'error'|'debug', models?: number, error?: string, debug?: object, done: number, total: number }) => void} [onProgress] - 可选进度回调
+ * @param {string} [providerFilter] - 可选：只拉取指定 provider（按网关 slug 或原始 id 匹配）。
+ *   传入时仅发现该 provider，merge 阶段也只对其模型执行「未发现→移除」规则（见 merge.js discoveredProviders 限定）。
+ *   未匹配任何启用 provider → 返回空结果（不抛错），与「无启用 Provider」语义一致。
  * @returns {Promise<{ results: Array<{ provider: string, models: Array<object> }>, errors: Array<{ provider: string, error: string }> }>}
  */
-export async function discoverModels(config, gatewayToken, onProgress) {
+export async function discoverModels(config, gatewayToken, onProgress, providerFilter) {
   const { gateway, providers } = config
   const debug = config?.debug === true
-  const enabledProviders = providers.filter((p) => p.enabled)
+  let enabledProviders = providers.filter((p) => p.enabled)
+  if (providerFilter) {
+    enabledProviders = enabledProviders.filter(
+      (p) => gatewaySlug(p) === providerFilter || p.id === providerFilter
+    )
+    if (enabledProviders.length === 0) {
+      console.log(`[discover] providerFilter "${providerFilter}" 无匹配的启用 Provider，跳过模型发现`)
+      return { results: [], errors: [] }
+    }
+    console.log(`[discover] 单 Provider 模式：仅拉取 ${enabledProviders.map((p) => gatewaySlug(p)).join(', ')}`)
+  }
 
   if (enabledProviders.length === 0) {
     console.log('[discover] 无启用的 Provider，跳过模型发现')

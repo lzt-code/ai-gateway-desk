@@ -1158,6 +1158,7 @@ export function renderModelsView(container) {
   const hintNoProvider = container.querySelector('#hint-no-provider')
   const dirtyMark = container.querySelector('.dirty-mark')
   const btnSync = document.getElementById('mbtn-sync')
+  const btnSyncOne = document.getElementById('mbtn-sync-one')
   const btnSaveDeploy = document.getElementById('mbtn-save-deploy')
   const btnSave = document.getElementById('mbtn-save')
   const btnBatchToggle = document.getElementById('mbtn-batch-toggle')
@@ -1185,6 +1186,7 @@ export function renderModelsView(container) {
       btn.textContent = displayName
       sidebar.appendChild(btn)
     }
+    updateSyncOneButton()
   }
 
   // 表头排序指示器（aria-sort + ▲/▼，随 sortKey/sortDir 同步）
@@ -1628,10 +1630,33 @@ export function renderModelsView(container) {
 
   function setSyncButtonsDisabled(v) {
     btnSync.disabled = v
+    btnSyncOne.disabled = v
     btnSaveDeploy.disabled = v
     btnSave.disabled = v
     btnBatchToggle.disabled = v
     btnBatchRemove.disabled = v
+  }
+
+  // 「拉取当前 Provider」按钮态：选中某 provider 时启用并显示其名称，选中「全部」时禁用
+  // syncing 期间强制禁用（由 setSyncButtonsDisabled 接管，此处仅在非同步态刷新文案/可用性）
+  function updateSyncOneButton() {
+    if (syncing) return
+    if (provider) {
+      btnSyncOne.disabled = false
+      btnSyncOne.textContent = `拉取 ${providerDisplayName(provider)}`
+      btnSyncOne.title = `仅拉取 ${providerDisplayName(provider)} 的模型列表`
+    } else {
+      btnSyncOne.disabled = true
+      btnSyncOne.textContent = '拉取当前 Provider'
+      btnSyncOne.title = '请先在左侧选择一个 Provider'
+    }
+  }
+
+  // 按 provider id 查展示名（与 renderSidebar 的 displayName 逻辑一致）
+  function providerDisplayName(id) {
+    const p = providers.find((x) => (typeof x === 'string' ? x : x.id) === id)
+    if (!p) return id
+    return typeof p === 'string' ? p : (p.name && p.name !== 'default' ? p.name : p.id)
   }
 
   function finishSync() {
@@ -1644,6 +1669,8 @@ export function renderModelsView(container) {
     syncing = false
     appState().set('modelsSyncing', false)
     setSyncButtonsDisabled(false)
+    // setSyncButtonsDisabled(false) 会无脑启用 btnSyncOne，需按当前 provider 选择修正
+    updateSyncOneButton()
     hideBlocking()
   }
 
@@ -1711,19 +1738,28 @@ export function renderModelsView(container) {
     }
   }
 
-  function startSync() {
+  // 触发同步。providerFilter 传入时为单 Provider 刷新模式：
+  //   - 跳过 Provider 同步步（后端 runSyncFlow providerFilter 分支）
+  //   - POST /api/sync 带 body { provider } 指定只拉取该 provider
+  //   - 遮罩/进度/日志文案区分单 Provider 与全量
+  function startSync({ providerFilter } = {}) {
     if (syncing) return
     if (typeof EventSource === 'undefined') {
       flash('当前环境不支持 EventSource', 'err')
       return
     }
+    const isOne = !!providerFilter
+    const providerName = isOne ? providerDisplayName(providerFilter) : ''
     syncing = true
     finished = false
     appState().set('modelsSyncing', true)
     setSyncButtonsDisabled(true)
-    showProgress('同步中…')
-    showBlocking('正在拉取云端数据…')
-    logActivity('开始同步（Provider 同步 → 发现模型 → 合并 → 富化）…', 'info')
+    showProgress(isOne ? `拉取 ${providerName}…` : '同步中…')
+    showBlocking(isOne ? `正在拉取 ${providerName} 模型…` : '正在拉取云端数据…')
+    logActivity(
+      isOne ? `开始拉取 ${providerName} 模型…` : '开始同步（Provider 同步 → 发现模型 → 合并 → 富化）…',
+      'info',
+    )
     es = new EventSource('/api/sync/progress')
     const streamEvents = []
     const collect = (evtName) => (e) => {
@@ -1753,7 +1789,7 @@ export function renderModelsView(container) {
     es.onopen = () => {
       // 先订阅后触发（任务 27 已知坑 1）：open 后再 POST，否则丢事件
       if (!es) return
-      api('/api/sync', { method: 'POST' })
+      api('/api/sync', { method: 'POST', body: isOne ? { provider: providerFilter } : undefined })
         .then(() => {
           // 结果由 SSE done 事件承载（summary 同源），POST 仅负责触发
         })
@@ -1855,7 +1891,14 @@ export function renderModelsView(container) {
     toggleModel(selectedModelId)
   })
 
-  btnSync.addEventListener('click', startSync)
+  btnSync.addEventListener('click', () => startSync())
+  btnSyncOne.addEventListener('click', () => {
+    if (!provider) {
+      flash('请先在左侧选择一个 Provider', 'warn')
+      return
+    }
+    startSync({ providerFilter: provider })
+  })
   btnSaveDeploy.addEventListener('click', () => saveModels(true))
   btnSave.addEventListener('click', () => saveModels(false))
   btnBatchToggle.addEventListener('click', batchToggle)

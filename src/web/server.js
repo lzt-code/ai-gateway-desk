@@ -475,6 +475,8 @@ export function createApp({
 
   // POST /api/sync — 触发同步流程（provider 同步 → discover → merge → enrich）
   // 等同步完成后返回汇总；过程进度由 SSE 推送（并发 POST → 409）
+  // 可选 body { provider: <网关 slug> }：只拉取指定 provider（跳过 provider 同步步），
+  // merge 的「未发现→移除」规则仅作用于该 provider，其他 provider 模型原样保留。
   app.post('/api/sync', async (c) => {
     if (syncing) return c.json({ error: 'sync already in progress' }, 409)
     // Token 优先级：Gateway = env GATEWAY_TOKEN > 本地槽位；管理 = env CLOUDFLARE_API_TOKEN > 本地槽位
@@ -483,6 +485,10 @@ export function createApp({
       return c.json({ error: 'gateway token not configured' }, 400)
     }
     const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    // 读取可选 body { provider }：单 Provider 刷新模式（无 body / 非法 JSON → null = 全量同步）
+    const body = await readJsonBody(c)
+    const providerFilter = body && typeof body.provider === 'string' && body.provider.trim()
+      ? body.provider.trim() : null
     syncing = true
     try {
       const config = configStore.load()
@@ -503,6 +509,7 @@ export function createApp({
         mgmtToken,
         state,
         visibilityMap,
+        providerFilter,
         deps: { ...depsAll, applyVisibility: depsAll.applyVisibility },
         onEvent: emitEvent,
       })

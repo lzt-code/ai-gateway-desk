@@ -68,9 +68,11 @@ function makeDeps({
 } = {}) {
   const calls = []
   const tokens = []
-  const discoverModels = async (config, token, onProgress) => {
+  const discoverFilters = []
+  const discoverModels = async (config, token, onProgress, providerFilter) => {
     calls.push('discover')
     tokens.push(token)
+    discoverFilters.push(providerFilter ?? null)
     if (gate) await gate
     onProgress?.({ provider: 'custom-agnes', status: 'pending', done: 0, total: 1 })
     if (discoverFail) throw new Error('discover 网络错误')
@@ -130,6 +132,7 @@ function makeDeps({
   return {
     calls,
     tokens,
+    discoverFilters,
     get saveAndDeployArgs() {
       return saveAndDeployArgs
     },
@@ -636,6 +639,113 @@ section('测试 17: 回归——任务 26 toggle 端点')
   const body = await res.json()
   check(res.status === 200 && body.ok === true, 'toggle 端点正常')
   check(body.entry.status === 'hidden', '状态已切换')
+}
+
+// ── 测试 18：单 Provider 同步 — body { provider } 跳过 provider-sync ──
+section('测试 18: POST /api/sync { provider } 跳过 provider-sync')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const { app, deps } = makeApp()
+    const res = await app.request('/api/sync', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'custom-agnes' }),
+    })
+    const body = await res.json()
+    check(res.status === 200 && body.ok === true, 'HTTP 200 ok')
+    check(!deps.calls.includes('provider-sync'), '未调用 provider-sync（跳过）')
+    check(deps.calls.includes('discover'), '仍调用 discover')
+    check(deps.calls.includes('enrich'), '仍调用 enrich')
+    check(
+      deps.discoverFilters[0] === 'custom-agnes',
+      'discoverModels 收到 providerFilter=custom-agnes'
+    )
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 19：单 Provider 同步 — SSE 无 provider-sync 阶段事件 ──
+section('测试 19: 单 Provider 同步 SSE 事件序列')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const { app } = makeApp()
+    const ssePromise = app.request('/api/sync/progress')
+    const postRes = await app.request('/api/sync', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'custom-agnes' }),
+    })
+    check(postRes.status === 200, 'POST /api/sync { provider } 200')
+    const sseRes = await ssePromise
+    const events = parseSseEvents(await sseRes.text())
+    const types = events.map((e) => e.type)
+    // 单 Provider 模式：无 provider-sync 事件，也无 provider-sync phase
+    check(!types.includes('provider-sync'), 'SSE 无 provider-sync 事件')
+    // 必需事件：discover phase → discover → enrich phase → enrich → done
+    const required = ['phase', 'discover', 'phase', 'enrich', 'done']
+    let i = 0
+    for (const t of types) {
+      if (t === required[i]) i++
+    }
+    check(i === required.length, `事件序列含全部必需阶段（实际: ${types.join(',')}）`)
+    const doneEv = events.find((e) => e.type === 'done')
+    check(!!doneEv && doneEv.data.summary.newModels.length === 1, 'done summary 正确')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 20：无 body / 空 provider → 全量同步（向后兼容） ──
+section('测试 20: 无 body / 空 provider 向后兼容')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    // 无 body（原始调用方式）
+    const { app: app1, deps: deps1 } = makeApp()
+    const res1 = await app1.request('/api/sync', { method: 'POST' })
+    check(res1.status === 200, '无 body → 200')
+    check(deps1.calls.includes('provider-sync'), '无 body 仍执行 provider-sync')
+    check(deps1.discoverFilters[0] === null, '无 body → providerFilter=null')
+
+    // body.provider 为空字符串
+    const { app: app2, deps: deps2 } = makeApp()
+    const res2 = await app2.request('/api/sync', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: '  ' }),
+    })
+    check(res2.status === 200, '空 provider → 200')
+    check(deps2.calls.includes('provider-sync'), '空 provider 仍执行 provider-sync')
+    check(deps2.discoverFilters[0] === null, '空 provider → providerFilter=null')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 21：runSyncFlow providerFilter 纯函数 ──
+section('测试 21: runSyncFlow providerFilter 纯函数')
+{
+  const deps = makeDeps()
+  const events = []
+  const result = await runSyncFlow({
+    config: fakeConfig,
+    gatewayToken: 't',
+    mgmtToken: 'm',
+    state: {},
+    providerFilter: 'custom-agnes',
+    deps,
+    onEvent: (ev) => events.push(ev),
+  })
+  check(!deps.calls.includes('provider-sync'), '纯函数：跳过 provider-sync')
+  check(deps.calls.includes('discover'), '纯函数：仍 discover')
+  check(deps.discoverFilters[0] === 'custom-agnes', '纯函数：providerFilter 透传')
+  check(result.summary.newModels.length === 1, 'summary.newModels 正确')
+  const phaseEvents = events.filter((e) => e.type === 'phase').map((e) => e.phase)
+  check(!phaseEvents.includes('provider-sync'), '无 provider-sync phase 事件')
+  check(phaseEvents.includes('discover') && phaseEvents.includes('enrich'), '含 discover/enrich phase')
 }
 
 console.log(`\n${'='.repeat(56)}`)

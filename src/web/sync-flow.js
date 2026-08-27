@@ -27,6 +27,9 @@ import { enrichModel as enrichModelImpl } from '../pipeline/enrich.js'
  * @param {string} options.gatewayToken - cfut_xxx
  * @param {string} [options.mgmtToken] - 管理 Token（可空，空则跳过 provider 同步）
  * @param {object} options.state - 当前 model-states 对象（会被合并出新对象，原对象不修改）
+ * @param {string} [options.providerFilter] - 可选：只拉取指定 provider（网关 slug）。
+ *   传入时跳过 provider 同步步（不重拉云端 provider 列表），仅 discover 该 provider → merge → enrich。
+ *   merge 的「未发现→移除」规则只作用于该 provider，其他 provider 的模型原样保留（见 merge.js discoveredProviders 限定）。
  * @param {object} [options.deps] - 依赖覆盖，字段：syncProvidersToConfig / discoverModels /
  *                                  mergeDiscovery / enrichModel（缺省绑定真实模块）
  * @param {(event: object) => void} [options.onEvent] - 进度事件回调（SSE 转发）
@@ -51,6 +54,7 @@ export async function runSyncFlow({
   mgmtToken,
   state,
   visibilityMap = null,
+  providerFilter = null,
   deps = {},
   onEvent,
 }) {
@@ -65,37 +69,40 @@ export async function runSyncFlow({
 
   const providerSync = { ok: true }
 
-  // 1. provider 同步（管理 Token 缺失 / 失败均不中断，与 TUI 语义一致）
-  emit({ type: 'phase', phase: 'provider-sync' })
-  if (mgmtToken) {
-    const r = await syncProvidersToConfig(config, mgmtToken)
-    if (r.ok) {
-      const newProviders = Array.isArray(r.result?.newProviders) ? r.result.newProviders : []
-      const removedProviders = Array.isArray(r.result?.removedProviders) ? r.result.removedProviders : []
-      // errors 为 [{ source, error: Error }]，SSE JSON 序列化会丢 Error.message，转字符串
-      const errors = (r.result?.errors ?? []).map((e) => ({
-        source: e.source,
-        message: e.error instanceof Error ? e.error.message : String(e.error ?? '未知错误'),
-      }))
-      providerSync.ok = true
-      providerSync.message = `新增 ${newProviders.length} / 移除 ${removedProviders.length}`
-      emit({
-        type: 'provider-sync',
-        ok: true,
-        message: providerSync.message,
-        newProviders,
-        removedProviders,
-        errors,
-      })
+  // 1. provider 同步（单 Provider 刷新时跳过：不重拉云端 provider 列表，直接进入 discover）
+  //    语义：providerFilter 模式是「只刷新这一个 provider 的模型」，不需要也不应触碰 provider 列表
+  if (!providerFilter) {
+    emit({ type: 'phase', phase: 'provider-sync' })
+    if (mgmtToken) {
+      const r = await syncProvidersToConfig(config, mgmtToken)
+      if (r.ok) {
+        const newProviders = Array.isArray(r.result?.newProviders) ? r.result.newProviders : []
+        const removedProviders = Array.isArray(r.result?.removedProviders) ? r.result.removedProviders : []
+        // errors 为 [{ source, error: Error }]，SSE JSON 序列化会丢 Error.message，转字符串
+        const errors = (r.result?.errors ?? []).map((e) => ({
+          source: e.source,
+          message: e.error instanceof Error ? e.error.message : String(e.error ?? '未知错误'),
+        }))
+        providerSync.ok = true
+        providerSync.message = `新增 ${newProviders.length} / 移除 ${removedProviders.length}`
+        emit({
+          type: 'provider-sync',
+          ok: true,
+          message: providerSync.message,
+          newProviders,
+          removedProviders,
+          errors,
+        })
+      } else {
+        providerSync.ok = false
+        providerSync.message = r.error?.message || 'provider 同步失败'
+        emit({ type: 'provider-sync', ok: false, message: providerSync.message })
+      }
     } else {
       providerSync.ok = false
-      providerSync.message = r.error?.message || 'provider 同步失败'
-      emit({ type: 'provider-sync', ok: false, message: providerSync.message })
+      providerSync.skipped = true
+      emit({ type: 'provider-sync', ok: false, skipped: true })
     }
-  } else {
-    providerSync.ok = false
-    providerSync.skipped = true
-    emit({ type: 'provider-sync', ok: false, skipped: true })
   }
 
   // 2. 发现模型（onProgress 载荷原样透传）
@@ -107,7 +114,7 @@ export async function runSyncFlow({
   }
   const discovery = await discoverModels(discoverConfig, gatewayToken, (p) => {
     emit({ type: 'discover', ...p })
-  })
+  }, providerFilter)
 
   // 无结果：不抛错，返回空汇总（errors 携带失败原因，与 TUI「未发现任何模型」一致）
   if (discovery.results.length === 0) {
