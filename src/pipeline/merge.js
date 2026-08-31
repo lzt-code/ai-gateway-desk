@@ -127,7 +127,9 @@ export function mergeDiscovery(state, discoveryResults) {
   // 处理 state 中存在但本次发现没返回的模型
   // 注意：只对成功被查询的 provider 执行「未发现→移除」规则。
   // 如果 provider 不支持模型列表接口（如火山方舟），它的模型不应被标记为 removed。
+  // 手工添加的模型（entry.manual === true）跳过自动移除，避免因上游 /models 不完整而被误删
   for (const [modelId, entry] of Object.entries(newState)) {
+    if (entry.manual) continue
     if (!discoveredIds.has(modelId) && discoveredProviders.has(entry.provider)) {
       if (entry.status !== 'removed') {
         entry.status = 'removed'

@@ -366,7 +366,7 @@ export function createApp({
     ) {
       return c.json({ error: 'metadata must be an object' }, 400)
     }
-    upsertModel(state, body.modelId, body.provider, body.metadata || {})
+    upsertModel(state, body.modelId, body.provider, body.metadata || {}, { manual: true })
     stateStore.save(state)
     return c.json({ ok: true, entry: state[body.modelId] })
   })
