@@ -28,6 +28,45 @@ function resolveData(...segments) {
   return path.resolve(__dirname, '..', '..', 'data', ...segments)
 }
 
+// ─── 脱敏工具 ────────────────────────────────────────────
+
+/**
+ * API Key 脱敏：保留首 4 与尾 4，中间以 *** 替代（例 abcd***defg）
+ * 长度 ≤8 时返回 ***（避免泄露过短 key）；空值返回空串
+ * @param {string} value
+ * @returns {string}
+ */
+export function maskApiKey(value) {
+  const s = String(value || '')
+  if (!s) return ''
+  if (s.length <= 8) return '***'
+  return `${s.slice(0, 4)}***${s.slice(-4)}`
+}
+
+/**
+ * 从 custom-provider 的 headers 字符串中提取 Bearer token
+ * headers 形如 '{"Authorization":"Bearer sk-xxx"}'（JSON 字符串）
+ * 失败返回 null
+ * @param {string} headersStr
+ * @returns {string|null}
+ */
+function extractBearerToken(headersStr) {
+  if (!headersStr || typeof headersStr !== 'string') return null
+  try {
+    const h = JSON.parse(headersStr)
+    const auth = h.Authorization || h.authorization || h.AUTHORIZATION
+    if (typeof auth === 'string') {
+      const m = auth.match(/^Bearer\s+(.+)$/i)
+      if (m) return m[1].trim()
+      if (auth.trim()) return auth.trim()
+    }
+  } catch {
+    const m = headersStr.match(/Bearer\s+(\S+)/i)
+    if (m) return m[1]
+  }
+  return null
+}
+
 // ─── 云端拉取 ────────────────────────────────────────────
 
 /**
@@ -56,10 +95,24 @@ export async function fetchCloudProviders(apiToken, accountId, gatewayId) {
   // 追加 provider：同 id 时保留 custom-provider（显式创建、名称信息更完整），
   // 丢弃 byok —— 否则同一 slug 会重复出现，F4 同步时 discover 会对同一 URL 发
   // 两次请求，且 mergeProviders 按 Map 去重会把 custom 条目覆盖丢失。
+  // 特殊处理脱敏预览：agnes 等在两源同时存在时（custom headers 为 null，BYOK 有 secret_preview），
+  // 需把 BYOK 的 apiKeyPreview 合并给 custom，避免列表页显示为 -。
   const pushUnique = (p) => {
     const existing = byId.get(p.id)
-    if (!existing || (existing.type !== 'custom-provider' && p.type === 'custom-provider')) {
+    if (!existing) {
       byId.set(p.id, p)
+      return
+    }
+    if (existing.type !== 'custom-provider' && p.type === 'custom-provider') {
+      // BYOK 已存在，新来 custom 优先，但若 custom 预览为空则继承 BYOK 预览
+      if (!p.apiKeyPreview && existing.apiKeyPreview) p.apiKeyPreview = existing.apiKeyPreview
+      byId.set(p.id, p)
+      return
+    }
+    if (existing.type === 'custom-provider' && p.type !== 'custom-provider') {
+      // custom 已存在，新来 BYOK：若 custom 预览为空则用 BYOK 预览补全，仍保留 custom
+      if (!existing.apiKeyPreview && p.apiKeyPreview) existing.apiKeyPreview = p.apiKeyPreview
+      return
     }
   }
 
@@ -70,6 +123,7 @@ export async function fetchCloudProviders(apiToken, accountId, gatewayId) {
   if (customResult.status === 'fulfilled') {
     const items = Array.isArray(customResult.value) ? customResult.value : []
     for (const item of items) {
+      const token = extractBearerToken(item.headers)
       pushUnique({
         id: item.slug,
         cloudId: item.id,
@@ -77,6 +131,7 @@ export async function fetchCloudProviders(apiToken, accountId, gatewayId) {
         type: 'custom-provider',
         enabled: item.enable !== false,
         base_url: item.base_url,
+        apiKeyPreview: token ? maskApiKey(token) : '',
       })
     }
   } else {
@@ -89,6 +144,8 @@ export async function fetchCloudProviders(apiToken, accountId, gatewayId) {
   if (byokResult.status === 'fulfilled') {
     const items = Array.isArray(byokResult.value) ? byokResult.value : []
     for (const item of items) {
+      // BYOK 云端返回 secret_preview（已脱敏，如 sk-***xxxx），直接展示
+      const preview = item.secret_preview || item.secretPreview || ''
       pushUnique({
         id: item.provider_slug,
         cloudId: item.id,
@@ -97,6 +154,7 @@ export async function fetchCloudProviders(apiToken, accountId, gatewayId) {
         name: (item.alias && item.alias !== 'default') ? item.alias : item.provider_slug,
         type: 'byok',
         enabled: true,
+        apiKeyPreview: preview ? String(preview) : '',
       })
     }
   } else {

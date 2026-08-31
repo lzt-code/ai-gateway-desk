@@ -1965,8 +1965,17 @@ registerViewRenderer('models', renderModelsView)
 // 语义同 GET，任务 28 决策 3）；变更操作走 POST 端点并用响应更新内存态再重渲染
 // （不整页重拉，已知坑 5）。
 
+// Provider API Key 脱敏：首 4 尾 4 中间 ***（例 abcd***defg），供列表与编辑框展示
+// 长度 ≤8 时返回 ***；空值返回空串（调用方决定占位符）
+export function maskApiKey(value) {
+  const s = String(value || '')
+  if (!s) return ''
+  if (s.length <= 8) return '***'
+  return `${s.slice(0, 4)}***${s.slice(-4)}`
+}
+
 // Provider 展示数组 → 表格行 HTML
-// 列：slug（id）/ name / type（Custom|BYOK）/ 状态（启用|隐藏，status-toggle 按钮点击切换）/
+// 列：slug（id）/ name / type（Custom|BYOK）/ API Key（脱敏）/ 状态（启用|隐藏，status-toggle 按钮点击切换）/
 //     mark（new→「新增」(ok) / removed→「云端已删」(err) / null→无）
 // readonly=true → 状态切换/编辑/删除按钮加 disabled；返回 [{ id, html }]
 export function buildProviderTableRows(providers, readonly = false) {
@@ -1976,6 +1985,11 @@ export function buildProviderTableRows(providers, readonly = false) {
     const isByok = p.type === 'byok'
     const typeText = isByok ? 'BYOK' : 'Custom'
     const enabled = p.enabled !== false
+    // API Key 脱敏展示：优先已脱敏的 apiKeyPreview（BYOK 的 secret_preview / Custom 的 headers 提取后脱敏），无则 -
+    const rawPreview = p.apiKeyPreview != null ? String(p.apiKeyPreview) : (p.secret_preview != null ? String(p.secret_preview) : '')
+    const apiKeyHtml = rawPreview
+      ? `<span class="api-key-preview" title="${escapeHtml(rawPreview)}">${escapeHtml(rawPreview)}</span>`
+      : '<span class="muted">-</span>'
     // 状态列 pill 按钮：点击切换启用/隐藏（原编辑对话框「隐藏 Provider」开关迁移至此）
     const statusText =
       `<button class="status-toggle" type="button" title="点击切换启用/隐藏"${readonly ? ' disabled' : ''}>` +
@@ -1989,6 +2003,7 @@ export function buildProviderTableRows(providers, readonly = false) {
       `<td>${escapeHtml(p.id)}</td>` +
       `<td>${escapeHtml(p.name != null ? String(p.name) : '')}</td>` +
       `<td>${typeText}</td>` +
+      `<td>${apiKeyHtml}</td>` +
       `<td>${statusText}</td>` +
       `<td>${markHtml}</td>` +
       `<td><button class="btn-edit" type="button"${disabledAttr}>编辑</button> ` +
@@ -2008,15 +2023,19 @@ const BASE_URL_HINT = 'Cloudflare 网关会自动拼接 /v1 路径，请填写�
 // byok：name + apiKey(password) + slug(readonly)
 // 可见性（启用/隐藏）已迁移至列表状态列点击切换，编辑对话框不再提供
 // readonly 模式下全部字段 disabled
+// apiKey 输入框下方以 hint 展示已配置的脱敏版本（如 abcd***defg），便于编辑时核对
 export function buildEditFields(provider, { readonly = false } = {}) {
   const p = provider || {}
   const fields = [
     { name: 'name', label: '名称', type: 'text', value: p.name != null ? String(p.name) : '' },
   ]
+  const preview = p.apiKeyPreview != null ? String(p.apiKeyPreview) : (p.secret_preview != null ? String(p.secret_preview) : '')
+  const apiKeyHint = preview ? `当前已配置：${preview}` : ''
   if (p.type === 'byok') {
     fields.push({
       name: 'apiKey', label: 'API Key', type: 'password', value: '',
       placeholder: '输入新 key 覆盖，留空不修改',
+      ...(apiKeyHint ? { hint: apiKeyHint } : {}),
     })
   } else {
     // custom provider：Base URL + API Key + 路径前缀
@@ -2030,6 +2049,7 @@ export function buildEditFields(provider, { readonly = false } = {}) {
     fields.push({
       name: 'apiKey', label: 'API Key', type: 'password', value: '',
       placeholder: '输入新 key 覆盖，留空不修改',
+      ...(apiKeyHint ? { hint: apiKeyHint } : {}),
     })
     fields.push({
       name: 'pathPrefix', label: 'API 路径前缀', type: 'text',
@@ -2297,6 +2317,9 @@ function injectProvidersStyles() {
     }
     .provider-table .status-toggle:has(.status-ok):hover { box-shadow: 0 0 10px var(--led-ok); }
     .provider-table .status-toggle:has(.status-hidden) { background: var(--field-bg); }
+    /* API Key 脱敏预览：等宽淡色，悬停可看完整 title */
+    .api-key-preview { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); letter-spacing: 0.02em; }
+    .muted { color: var(--muted); }
     /* 只读字段：下陷井底 + 发丝线，弱化但可读 */
     .field-readonly {
       color: var(--muted); background: var(--field-bg);
@@ -2334,6 +2357,7 @@ export function renderProvidersView(container) {
             <th class="sortable" data-sort="slug" title="点击排序">slug<span class="sort-ind" hidden></span></th>
             <th class="sortable" data-sort="name" title="点击排序">name<span class="sort-ind" hidden></span></th>
             <th class="sortable" data-sort="type" title="点击排序">type<span class="sort-ind" hidden></span></th>
+            <th>API Key</th>
             <th class="sortable" data-sort="visibility" title="点击排序">可见性<span class="sort-ind" hidden></span></th>
             <th class="sortable" data-sort="mark" title="点击排序">状态<span class="sort-ind" hidden></span></th>
             <th></th>

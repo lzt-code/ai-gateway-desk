@@ -161,6 +161,14 @@ function countByType(providers) {
   return { custom, byok }
 }
 
+// API Key 脱敏：首 4 尾 4 中间 ***（例 abcd***defg），供 provider 列表与编辑后即时回显
+function maskApiKey(value) {
+  const s = String(value || '')
+  if (!s) return ''
+  if (s.length <= 8) return '***'
+  return `${s.slice(0, 4)}***${s.slice(-4)}`
+}
+
 /**
  * 任务 29 缺省 loadModelsJsonState：读 data/models.json → { exists, count }
  * （测试注入 mock 免读真实文件；缺失 / 解析失败按不存在处理，不抛错）
@@ -832,6 +840,19 @@ export function createApp({
     // 重新合并展示（无云端上下文 → mark null），返回该条目的最新形态
     const display = depsAll.mergeProviderViews(local, null)
     const providerView = display.providers.find((p) => p.id === body.id)
+    if (providerView) {
+      if (apiKey) {
+        // 本次更新包含新 key，立即回显脱敏版本（云端 secret_preview 需下次刷新才返回，此处先用本地提交值脱敏展示）
+        providerView.apiKeyPreview = maskApiKey(apiKey)
+      } else if (mgmtToken && gateway.accountId && gateway.gatewayId) {
+        // 未改 key 时尝试拉取云端最新脱敏版本，失败静默（下次刷新恢复）
+        try {
+          const cloudResult = await depsAll.fetchCloudProviders(mgmtToken, gateway.accountId, gateway.gatewayId)
+          const cloudItem = cloudResult?.providers?.find((p) => p.id === body.id)
+          if (cloudItem && cloudItem.apiKeyPreview) providerView.apiKeyPreview = cloudItem.apiKeyPreview
+        } catch {}
+      }
+    }
     return c.json({
       ok: true,
       provider: providerView,
@@ -940,6 +961,10 @@ export function createApp({
     // 重新合并展示（无云端上下文 → mark null），返回新条目
     const display = depsAll.mergeProviderViews(local, null)
     const providerView = display.providers.find((p) => p.id === body.id)
+    // 新建时若带 apiKey，立即回显脱敏版本（下次刷新后由 secret_preview / headers 脱敏覆盖）
+    if (providerView && body.apiKey) {
+      providerView.apiKeyPreview = maskApiKey(String(body.apiKey).trim())
+    }
     return c.json({
       ok: true,
       provider: providerView,
