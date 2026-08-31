@@ -1966,18 +1966,20 @@ registerViewRenderer('models', renderModelsView)
 // （不整页重拉，已知坑 5）。
 
 // Provider 展示数组 → 表格行 HTML
-// 列：slug（id）/ name / type（Custom|BYOK）/ 状态（启用|隐藏，本地可见性）/
+// 列：slug（id）/ name / type（Custom|BYOK）/ 状态（启用|隐藏，status-toggle 按钮点击切换）/
 //     mark（new→「新增」(ok) / removed→「云端已删」(err) / null→无）
-// readonly=true → 编辑/删除按钮加 disabled；返回 [{ id, html }]
+// readonly=true → 状态切换/编辑/删除按钮加 disabled；返回 [{ id, html }]
 export function buildProviderTableRows(providers, readonly = false) {
   const rows = []
   for (const p of providers || []) {
     if (!p || !p.id) continue
     const isByok = p.type === 'byok'
     const typeText = isByok ? 'BYOK' : 'Custom'
-    const statusText = p.enabled === false
-      ? '<span class="status-hidden">隐藏</span>'
-      : '<span class="status-ok">启用</span>'
+    const enabled = p.enabled !== false
+    // 状态列 pill 按钮：点击切换启用/隐藏（原编辑对话框「隐藏 Provider」开关迁移至此）
+    const statusText =
+      `<button class="status-toggle" type="button" title="点击切换启用/隐藏"${readonly ? ' disabled' : ''}>` +
+      `<span class="${enabled ? 'status-ok' : 'status-hidden'}">${enabled ? '启用' : '隐藏'}</span></button>`
     let markHtml = ''
     if (p.mark === 'new') markHtml = '<span class="status-ok">新增</span>'
     else if (p.mark === 'removed') markHtml = '<span class="status-err">云端已删</span>'
@@ -2002,9 +2004,10 @@ export function buildProviderTableRows(providers, readonly = false) {
 const BASE_URL_HINT = 'Cloudflare 网关会自动拼接 /v1 路径，请填写去掉结尾 /v1 的 base URL；若上游 API 路径不是 /v1（如火山方舟 /api/v3），请用下方「API 路径前缀」字段指定。'
 
 // provider → 编辑表单字段定义（供 promptDialog 扩展渲染）
-// custom-provider：name + baseUrl + apiKey + pathPrefix + 隐藏开关 + slug(readonly)
-// byok：name + apiKey(password) + 隐藏开关 + slug(readonly)
-// readonly 模式下全部字段 disabled（可见性写 KV 需管理 Token）
+// custom-provider：name + baseUrl + apiKey + pathPrefix + slug(readonly)
+// byok：name + apiKey(password) + slug(readonly)
+// 可见性（启用/隐藏）已迁移至列表状态列点击切换，编辑对话框不再提供
+// readonly 模式下全部字段 disabled
 export function buildEditFields(provider, { readonly = false } = {}) {
   const p = provider || {}
   const fields = [
@@ -2034,8 +2037,6 @@ export function buildEditFields(provider, { readonly = false } = {}) {
       placeholder: '如 /api/v3，留空使用默认 /v1',
     })
   }
-  // 「隐藏」语义：开关打开 = 隐藏（enabled=false），不同步模型且模型页不展示
-  fields.push({ name: 'hidden', label: '隐藏 Provider', type: 'switch', value: p.enabled === false })
   fields.push({ name: 'slug', label: 'slug（只读）', type: 'readonly', value: p.id || '' })
   if (readonly) {
     for (const f of fields) f.disabled = true
@@ -2068,16 +2069,12 @@ export function buildEditChanges(provider, values) {
   return { name, apiKey, baseUrl }
 }
 
-// 表单值 → 本地变更对象（可见性写本地 + KV，需管理 Token；null = 无变化不发）
+// 表单值 → 本地变更对象（pathPrefix 写本地 + KV 路由；null = 无变化不发）
+// 可见性切换已迁移至列表状态列（toggleProviderVisibility），此处不再处理 hidden
 export function buildLocalChanges(provider, values) {
   const p = provider || {}
   const v = values || {}
   const changes = {}
-  // hidden 开关取反为 localEnabled（enabled=true 表示显示）
-  if (v.hidden === true || v.hidden === false) {
-    const nextEnabled = !v.hidden
-    if (nextEnabled !== (p.enabled !== false)) changes.localEnabled = nextEnabled
-  }
   // pathPrefix：空串视为清除，与现有值不同才发
   const pathVal = typeof v.pathPrefix === 'string' ? v.pathPrefix : ''
   const curPath = p.pathPrefix || ''
@@ -2283,6 +2280,23 @@ function injectProvidersStyles() {
     .status-ok { color: var(--ok); }
     .status-err { color: var(--err); }
     .status-hidden { color: var(--muted); }
+    /* 状态列 pill 按钮：点击切换启用/隐藏（与模型表 status-toggle 同款视觉；
+       模型视图样式按需注入，Provider 视图需自带一份）。
+       不支持 :has 的浏览器忽略着色规则，回退为纯文字样式，功能无损。 */
+    .provider-table .status-toggle {
+      background: transparent; color: inherit; border: 1px solid var(--border);
+      border-radius: 999px; padding: 0.15rem 0.6rem; cursor: pointer; font-size: 0.75rem;
+      letter-spacing: 0.01em;
+      transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out),
+        box-shadow 0.15s var(--ease-out);
+    }
+    .provider-table .status-toggle:hover { border-color: var(--border-strong); }
+    .provider-table .status-toggle:disabled { cursor: not-allowed; opacity: 0.5; }
+    .provider-table .status-toggle:has(.status-ok) {
+      background: var(--ok-soft); border-color: var(--ok-border);
+    }
+    .provider-table .status-toggle:has(.status-ok):hover { box-shadow: 0 0 10px var(--led-ok); }
+    .provider-table .status-toggle:has(.status-hidden) { background: var(--field-bg); }
     /* 只读字段：下陷井底 + 发丝线，弱化但可读 */
     .field-readonly {
       color: var(--muted); background: var(--field-bg);
@@ -2418,12 +2432,43 @@ export function renderProvidersView(container) {
   }
 
   // ── 变更操作（响应驱动更新内存态，再重渲染；已知坑 5）────
+  // 点击状态列切换启用/隐藏（本地可见性，写本地 + KV；原编辑对话框「隐藏 Provider」开关迁移至此）
+  // readonly 模式下按钮 disabled 不可达（可见性写 KV 需管理 Token）
+  async function toggleProviderVisibility(id) {
+    const provider = providers.find((p) => p.id === id)
+    if (!provider) return
+    const nextEnabled = provider.enabled === false // 隐藏 → 启用；启用 → 隐藏
+    try {
+      const res = await withBusy('正在切换 Provider 可见性…', api('/api/providers/update', {
+        method: 'POST',
+        body: { id, changes: { localEnabled: nextEnabled } },
+      }))
+      // 已知坑 5：用响应 provider 替换本地数组对应项再重渲染（不整页重拉）
+      if (res.provider) {
+        const idx = providers.findIndex((p) => p.id === id)
+        if (idx >= 0) providers[idx] = res.provider
+        else providers.push(res.provider)
+        renderTable()
+      }
+      const kvWarn = res.kvDeployed === false && res.kvSkipped !== true
+      const stateText = nextEnabled ? '启用' : '隐藏'
+      flash(kvWarn
+        ? `已${stateText}，但同步 KV 失败：${res.kvError || '未知错误'}（可到模型页点【部署更改】重试）`
+        : `已${stateText} ${id}`, kvWarn ? 'warn' : 'ok')
+      logActivity(`切换 Provider：${id}（状态 → ${stateText}；${kvWarn ? 'KV 同步失败' : '已同步 KV'}）`,
+        kvWarn ? 'warn' : 'ok')
+    } catch (err) {
+      flash(err.message, 'err')
+      logActivity(`切换 Provider 可见性失败：${id}（${err.message}）`, 'err')
+    }
+  }
+
   async function editProvider(id) {
     const provider = providers.find((p) => p.id === id)
     if (!provider) return
     const values = await promptDialog(`编辑 Provider：${id}`, buildEditFields(provider, { readonly }))
     if (!values) return
-    // 云端变更（name/apiKey）+ 本地变更（hidden/pathPrefix）分离组装
+    // 云端变更（name/apiKey/baseUrl）+ 本地变更（pathPrefix）分离组装；可见性已在列表状态列直接切换
     const cloudChanges = buildEditChanges(provider, values)
     if (cloudChanges.blocked) {
       flash(cloudChanges.blocked, 'warn')
@@ -2431,7 +2476,6 @@ export function renderProvidersView(container) {
     }
     const localChanges = buildLocalChanges(provider, values)
     const hasCloudChange = cloudChanges.name !== null || cloudChanges.apiKey !== null || cloudChanges.baseUrl !== null
-    const visibilityChanged = localChanges && typeof localChanges.localEnabled === 'boolean'
     if (!hasCloudChange && !localChanges) return // 无任何变更，不发请求
     try {
       const res = await withBusy('正在更新 Provider…', api('/api/providers/update', {
@@ -2455,15 +2499,12 @@ export function renderProvidersView(container) {
       if (cloudChanges.name) parts.push(`名称 → ${cloudChanges.name}`)
       if (cloudChanges.apiKey) parts.push('覆盖 API Key')
       if (cloudChanges.baseUrl) parts.push(`Base URL → ${cloudChanges.baseUrl}`)
-      if (visibilityChanged) {
-        parts.push(`状态 → ${localChanges.localEnabled ? '启用' : '隐藏'}`)
-      }
       if (localChanges && typeof localChanges.pathPrefix === 'string') {
         parts.push(localChanges.pathPrefix ? `路由前缀 → ${localChanges.pathPrefix}` : '清除路由前缀')
       }
       const scope = hasCloudChange ? '云端 + 本地' : '本地'
       let tail = scope
-      if (visibilityChanged || (localChanges && typeof localChanges.pathPrefix === 'string')) {
+      if (localChanges && typeof localChanges.pathPrefix === 'string') {
         tail += kvWarn ? '；KV 同步失败' : '；已同步 KV'
       }
       logActivity(`更新 Provider：${id}（${parts.join('、') || '无字段变更'}；${tail}）`,
@@ -2581,7 +2622,8 @@ export function renderProvidersView(container) {
     if (!btn) return
     const tr = btn.closest('tr[data-provider-id]')
     if (!tr || !tr.dataset.providerId) return
-    if (btn.classList.contains('btn-edit')) editProvider(tr.dataset.providerId)
+    if (btn.classList.contains('status-toggle')) toggleProviderVisibility(tr.dataset.providerId)
+    else if (btn.classList.contains('btn-edit')) editProvider(tr.dataset.providerId)
     else if (btn.classList.contains('btn-delete')) deleteProvider(tr.dataset.providerId)
   })
 

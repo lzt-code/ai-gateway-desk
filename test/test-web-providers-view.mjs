@@ -1,11 +1,11 @@
 /**
  * 任务 32 验证脚本：前端 Provider 视图纯函数
  *
- * 覆盖（交付包 §5.1 的 18 个用例）：
- *  - buildProviderTableRows：三态 mark / type 映射 / enabled 列 / 只读禁用 / 空数组
- *  - buildEditFields：custom 字段集 / byok 字段集 / 只读禁用云端字段
+ * 覆盖（交付包 §5.1 的 18 个用例 + 可见性迁移）：
+ *  - buildProviderTableRows：三态 mark / type 映射 / enabled 列（status-toggle 按钮）/ 只读禁用 / 空数组
+ *  - buildEditFields：custom 字段集 / byok 字段集 / 只读禁用云端字段（hidden 开关已迁移至列表状态列）
  *  - buildEditChanges：改名 / 云端启用 boolean / key 覆盖 / 改名+key / 改名无 key blocked / 无变化
- *  - buildLocalChanges：本地开关变化 / 无变化 null
+ *  - buildLocalChanges：pathPrefix 变化 / 无变化 null（hidden 入参不再生效）
  *  - 导出存在性：4 个新函数 + 任务 30/31 导出回归
  *
  * 无 DOM 环境，视图交互（警告条 / 弹窗 / 删除确认 / 刷新按钮）由浏览器手工验收（交付包 §6）。
@@ -75,29 +75,30 @@ check(!!rowNull && rowNull.html.includes('<td>Custom</td>'), 'custom-provider �
 const byokRow = buildProviderTableRows([byok])[0]
 check(!!byokRow && byokRow.html.includes('<td>BYOK</td>'), 'byok → 显示 BYOK')
 
-// 3：可见性列（启用/隐藏，本地状态）
+// 3：可见性列（启用/隐藏 → 可点击切换的 status-toggle 按钮）
 check(!!rowNull && rowNull.html.includes('>启用<'), 'custom 行 → 显示「启用」')
 check(!!byokRow && byokRow.html.includes('>启用<'), 'byok 行 → 显示「启用」')
 const hiddenRow = buildProviderTableRows([{ ...custom, enabled: false }])[0]
 check(!!hiddenRow && hiddenRow.html.includes('隐藏'), 'enabled=false → 显示「隐藏」')
+check(!!rowNull && rowNull.html.includes('class="status-toggle"'), '状态列为 status-toggle 按钮（点击切换）')
+check(!!rowNull && rowNull.html.includes('title="点击切换启用/隐藏"'), '状态切换按钮带 title 提示')
 
-// 4：只读禁用
+// 4：只读禁用（状态切换/编辑/删除）
 const roRows = buildProviderTableRows([custom], true)
-check(roRows.length === 1 && (roRows[0].html.match(/disabled/g) || []).length >= 2, 'readonly=true → 编辑/删除按钮均含 disabled')
+check(roRows.length === 1 && (roRows[0].html.match(/disabled/g) || []).length >= 3, 'readonly=true → 状态/编辑/删除按钮均含 disabled')
 
 check(Array.isArray(buildProviderTableRows([])) && buildProviderTableRows([]).length === 0, '空数组 → 返回 []')
 
 // ── 6-8：buildEditFields ──────────────────────────────────
 section('buildEditFields')
 
-// 6：custom 字段集（name / baseUrl / apiKey / pathPrefix / hidden / slug；无 cloudEnabled）
+// 6：custom 字段集（name / baseUrl / apiKey / pathPrefix / slug；无 cloudEnabled；hidden 已迁移至列表）
 const cf = buildEditFields(custom)
 const cfNames = cf.map((f) => f.name)
-check(cfNames.join(',') === 'name,baseUrl,apiKey,pathPrefix,hidden,slug', 'custom 字段序：name/baseUrl/apiKey/pathPrefix/hidden/slug')
+check(cfNames.join(',') === 'name,baseUrl,apiKey,pathPrefix,slug', 'custom 字段序：name/baseUrl/apiKey/pathPrefix/slug')
 check(cf.find((f) => f.name === 'slug').type === 'readonly', 'slug 为 readonly 类型')
 check(!cfNames.includes('cloudEnabled'), 'custom 无 cloudEnabled 字段（云端启用已移除）')
-check(cf.find((f) => f.name === 'hidden').type === 'switch', 'hidden 为 switch（开关按钮）')
-check(cf.find((f) => f.name === 'hidden').value === false, 'enabled=true → hidden 开关值 false')
+check(!cfNames.includes('hidden'), 'custom 无 hidden 字段（可见性已迁移至列表状态列）')
 check(cf.find((f) => f.name === 'pathPrefix').type === 'text', 'pathPrefix 为 text 类型')
 check(cf.find((f) => f.name === 'pathPrefix').value === '', 'pathPrefix 预填为空（无 pathPrefix）')
 check(cfNames.includes('apiKey'), 'custom 有 apiKey 字段')
@@ -110,21 +111,20 @@ check(typeof cBaseField.hint === 'string' && cBaseField.hint.includes('/v1'), 'b
 const cBasePrefill = buildEditFields({ ...custom, base_url: 'https://api.example.com/v1' }).find((f) => f.name === 'baseUrl')
 check(cBasePrefill.value === 'https://api.example.com/v1', 'baseUrl 预填云端 base_url（snake_case）')
 
-// 7：byok 字段集（含 apiKey password；无 cloudEnabled；有 hidden）
+// 7：byok 字段集（含 apiKey password；无 cloudEnabled；hidden 已迁移至列表）
 const bf = buildEditFields(byok)
 const bfNames = bf.map((f) => f.name)
-check(bfNames.join(',') === 'name,apiKey,hidden,slug', 'byok 字段序：name/apiKey/hidden/slug')
+check(bfNames.join(',') === 'name,apiKey,slug', 'byok 字段序：name/apiKey/slug')
 const keyField = bf.find((f) => f.name === 'apiKey')
 check(keyField.type === 'password' && keyField.placeholder.includes('留空不修改'), 'apiKey 为 password + placeholder「…留空不修改」')
 check(keyField.value === '', 'apiKey 预填为空（仅覆盖不查看）')
 check(!bfNames.includes('cloudEnabled'), 'byok 无 cloudEnabled 字段')
-check(bf.find((f) => f.name === 'hidden').type === 'switch', 'byok 也有 hidden 开关')
+check(!bfNames.includes('hidden'), 'byok 无 hidden 字段（可见性已迁移至列表状态列）')
 
-// 8：只读模式全部字段 disabled（可见性写 KV 也需 Token）
+// 8：只读模式全部字段 disabled
 const roCf = buildEditFields(custom, { readonly: true })
 check(roCf.find((f) => f.name === 'name').disabled === true, 'readonly → name disabled')
 check(roCf.find((f) => f.name === 'baseUrl').disabled === true, 'readonly → baseUrl disabled')
-check(roCf.find((f) => f.name === 'hidden').disabled === true, 'readonly → hidden disabled')
 check(roCf.find((f) => f.name === 'pathPrefix').disabled === true, 'readonly → pathPrefix disabled')
 const roBf = buildEditFields(byok, { readonly: true })
 check(roBf.find((f) => f.name === 'apiKey').disabled === true, 'readonly → apiKey disabled')
@@ -165,34 +165,26 @@ check(custBase && custBase.baseUrl === 'https://new.com' && custBase.name === nu
 const custSame = buildEditChanges({ ...custom, base_url: 'https://same.com' }, { name: '', apiKey: '', baseUrl: 'https://same.com' })
 check(custSame && custSame.baseUrl === null, 'custom baseUrl 未变 → baseUrl null')
 
-// ── 14-17：buildLocalChanges（hidden 开关 → localEnabled 取反）──
+// ── 14-16：buildLocalChanges（pathPrefix；hidden 开关已迁移至列表状态列）──
 section('buildLocalChanges')
 
-// 14：勾选隐藏（hidden=true）→ localEnabled:false
+// 14：pathPrefix 变化 → 进入 localChanges
 check(
-  eqObj(buildLocalChanges(custom, { hidden: true }), { localEnabled: false }),
-  'hidden=true（原启用）→ {localEnabled:false}',
-)
-// 15：取消隐藏（hidden=false）→ localEnabled:true
-check(
-  eqObj(buildLocalChanges({ ...custom, enabled: false }, { hidden: false }), { localEnabled: true }),
-  'hidden=false（原隐藏）→ {localEnabled:true}',
-)
-// 16：无变化 → null（不发）
-check(buildLocalChanges(custom, { hidden: false }) === null, 'hidden 未变 → null（不发）')
-// 17：pathPrefix 变化 → 进入 localChanges
-check(
-  eqObj(buildLocalChanges(custom, { hidden: false, pathPrefix: '/api/v3' }), { pathPrefix: '/api/v3' }),
+  eqObj(buildLocalChanges(custom, { pathPrefix: '/api/v3' }), { pathPrefix: '/api/v3' }),
   'pathPrefix 变化 → {pathPrefix:新值}',
 )
 check(
-  buildLocalChanges({ ...custom, pathPrefix: '/api/v3' }, { hidden: false, pathPrefix: '/api/v3' }) === null,
+  buildLocalChanges({ ...custom, pathPrefix: '/api/v3' }, { pathPrefix: '/api/v3' }) === null,
   'pathPrefix 无变化 → null（不发）',
 )
+// 15：pathPrefix 清空 → 空串（后端清除）
 check(
-  eqObj(buildLocalChanges({ ...custom, pathPrefix: '/api/v3' }, { hidden: false, pathPrefix: '' }), { pathPrefix: '' }),
+  eqObj(buildLocalChanges({ ...custom, pathPrefix: '/api/v3' }, { pathPrefix: '' }), { pathPrefix: '' }),
   'pathPrefix 清空 → {pathPrefix:""}',
 )
+// 16：hidden 入参不再生效（可见性已迁移至列表状态列点击切换）
+check(buildLocalChanges(custom, { hidden: true }) === null, 'hidden 入参不再生效 → null')
+check(buildLocalChanges(custom, {}) === null, '空表单值 → null（不发）')
 
 // ── 17-22：buildProviderLogText ──────────────────────────
 section('buildProviderLogText')
