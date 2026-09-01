@@ -3,12 +3,26 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { gatewaySlug } from '../cloudflare/discover.js'
+import { readManagementToken } from '../core/token-store.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 const MODELS_JSON_PATH = path.resolve(__dirname, '..', '..', 'data', 'models.json')
 const PROVIDER_ROUTES_KV_KEY = 'provider-routes'
+
+/**
+ * 构建子进程环境变量，注入 CLOUDFLARE_API_TOKEN。
+ * wrangler 在非交互环境（execFile spawn）下无法走 OAuth 刷新，
+ * 必须通过环境变量提供 Token；否则报 400 Bad Request 后要求交互登录。
+ * 优先级：process.env.CLOUDFLARE_API_TOKEN > 本地安全存储的管理 Token。
+ * @returns {NodeJS.ProcessEnv}
+ */
+function buildChildEnv() {
+  const token = process.env.CLOUDFLARE_API_TOKEN || readManagementToken()
+  if (!token) return process.env
+  return { ...process.env, CLOUDFLARE_API_TOKEN: token }
+}
 
 /**
  * 解析 wrangler 命令路径和 exec 参数。
@@ -65,6 +79,7 @@ function runKvPut(namespaceId, key, value) {
       {
         timeout: 15_000,
         maxBuffer: 10 * 1024 * 1024,
+        env: buildChildEnv(),
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -163,6 +178,7 @@ export async function deployToKV(config) {
       {
         timeout: 30_000,
         maxBuffer: 10 * 1024 * 1024, // 10MB
+        env: buildChildEnv(),
       },
       (error, stdout, stderr) => {
         if (error) {
