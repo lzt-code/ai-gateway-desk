@@ -9,19 +9,21 @@
  * - 选项卡 data-view 与视图容器 view-<name> 的 id 是任务 31-33 的绑定契约。
  */
 
-// ── 视图定义（与 TUI keys.js 四视图对应）────────────────────
+// ── 视图定义（Web 五视图；TUI keys.js 仍为四视图，routes 仅 Web 有）────
 export const VIEWS = {
   PROVIDERS: 'providers',  // 选项卡 1：Provider
   MODELS: 'models',        // 选项卡 2：模型
-  WORKERS: 'workers',      // 选项卡 3：Worker
-  ACCOUNT: 'account',      // 选项卡 4：账户
+  ROUTES: 'routes',        // 选项卡 3：动态路由（只读展示 Cloudflare Dynamic Routes fallback 链）
+  WORKERS: 'workers',      // 选项卡 4：Worker
+  ACCOUNT: 'account',      // 选项卡 5：账户
 }
 
 // 视图顺序 + 选项卡文案（纯数据）
-export const VIEW_ORDER = ['providers', 'models', 'workers', 'account']
+export const VIEW_ORDER = ['providers', 'models', 'routes', 'workers', 'account']
 export const VIEW_LABELS = {
   providers: 'Provider',
   models: '模型',
+  routes: '动态路由',
   workers: 'Worker',
   account: '账户',
 }
@@ -30,6 +32,7 @@ export const VIEW_LABELS = {
 export const VIEW_HINTS = {
   providers: '云端合并展示 Provider；「隐藏」开关会同步 KV，跨 PC 生效',
   models: 'Provider 侧栏 + 模型表格；space 切换选中/隐藏；同步后保存并部署',
+  routes: '动态路由 fallback 链只读展示；数据随「拉取云端数据」同步更新，编辑请到 Cloudflare 后台',
   workers: 'Worker 代码无需修改，此视图仅管理部署',
   account: '管理 API Token 与 Gateway Token（cfut_xxx）双槽位管理',
 }
@@ -45,6 +48,35 @@ export function buildCfDynamicRoutesUrl(accountId, gatewayId) {
   if (!valid(accountId) || !valid(gatewayId)) return CF_GATEWAY_FALLBACK_URL
   const enc = (v) => encodeURIComponent(v.trim())
   return `https://dash.cloudflare.com/${enc(accountId)}/ai/ai-gateway/gateways/${enc(gatewayId)}/routing`
+}
+
+// ── 动态路由视图：路由收集（纯函数，Node 测试可直接 import）──────
+// 从 /api/state 全集中收集动态路由条目（modelId 以 dynamic/ 开头），
+// 归一化 fallback 链供 renderRoutesView 展示。保持 state 插入顺序（即同步顺序）。
+//  - metadata.route_models：discover.js 归一化后的字符串数组（顺序即尝试顺序）
+//  - 旧数据（route_models 字段出现前同步）chain 为空数组，前端按「无链信息」降级
+//  - status 原样透出（selected/hidden/removed），视图自行决定展示过滤
+export function collectDynamicRoutes(state) {
+  const out = []
+  if (!state || typeof state !== 'object') return out
+  for (const [modelId, entry] of Object.entries(state)) {
+    if (!modelId.startsWith('dynamic/')) continue
+    const meta = (entry && entry.metadata) || {}
+    let chain = []
+    if (Array.isArray(meta.route_models)) {
+      chain = meta.route_models.filter((m) => typeof m === 'string' && m.trim() !== '')
+    } else if (typeof meta.route_models === 'string' && meta.route_models.trim()) {
+      chain = [meta.route_models.trim()]
+    }
+    out.push({
+      modelId,
+      name: typeof meta.name === 'string' && meta.name.trim() ? meta.name : modelId.slice('dynamic/'.length),
+      chain,
+      created: typeof meta.created === 'number' ? meta.created : null,
+      status: entry && typeof entry.status === 'string' ? entry.status : null,
+    })
+  }
+  return out
 }
 
 // 方案 1：首次切到模型页自动同步 — 会话级一次性标记（模块级，页面刷新重置）
@@ -2040,6 +2072,199 @@ export function renderModelsView(container) {
 
 // 注册模型视图渲染器（覆盖任务 30 的占位渲染器，分派契约）
 registerViewRenderer('models', renderModelsView)
+
+// ── 动态路由视图（view-routes）：只读展示 Cloudflare Dynamic Routes ────
+// 数据来源：/api/state（随「拉取云端数据」同步更新）；fallback 链来自
+// metadata.route_models（discover.js 归一化，数组顺序即尝试顺序）。
+// 只读定位：编辑仍在 Cloudflare 后台，视图内提供精化后的外链跳转。
+
+function injectRoutesStyles() {
+  if (document.getElementById('routes-view-styles')) return
+  const style = document.createElement('style')
+  style.id = 'routes-view-styles'
+  style.textContent = `
+    .routes-list { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.75rem; }
+    .route-card {
+      background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-md);
+      padding: 0.7rem 0.9rem; box-shadow: var(--highlight);
+    }
+    .route-card.row-removed { opacity: 0.55; }
+    .route-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+    .route-name { font-weight: 500; font-size: 0.9rem; color: var(--fg); }
+    .route-badge {
+      font-size: 0.68rem; color: var(--accent); background: var(--accent-soft);
+      border: 1px solid var(--accent-border); border-radius: 999px; padding: 0.05rem 0.5rem;
+    }
+    .route-badge.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-border); }
+    .route-badge.err { color: var(--err); background: var(--err-soft); border-color: var(--err-border); }
+    .route-inv { margin-left: auto; font-family: ui-monospace, monospace; font-size: 0.72rem; color: var(--muted); }
+    .route-chain { display: flex; align-items: center; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.55rem; }
+    .route-step {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      font-family: ui-monospace, monospace; font-size: 0.74rem; color: var(--fg);
+      background: var(--chip-bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 0.2rem 0.5rem;
+    }
+    .route-step .step-idx {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 1.1em; height: 1.1em; border-radius: 50%;
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 0.66rem; font-weight: 500; padding: 0 0.15rem;
+    }
+    .route-arrow { color: var(--muted); font-size: 0.7rem; }
+    .route-chain-empty { font-size: 0.75rem; color: var(--muted); margin-top: 0.55rem; }
+    .routes-empty { color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem; }
+    .routes-foot {
+      display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem;
+      font-size: 0.72rem; color: var(--muted); flex-wrap: wrap;
+    }
+  `
+  document.head.appendChild(style)
+}
+
+export function renderRoutesView(container) {
+  if (!container || typeof document === 'undefined') return
+  if (container.dataset.routesRendered) return // 幂等保护（renderView 已保证懒渲染一次）
+  container.dataset.routesRendered = '1'
+
+  injectRoutesStyles()
+
+  container.innerHTML = `
+    <h2 class="view-title">动态路由</h2>
+    <div class="routes-toolbar" style="display:flex;gap:0.5rem;align-items:center;margin-top:0.5rem;">
+      <button id="routes-refresh" class="btn btn-default" type="button">刷新</button>
+      <span id="routes-count" class="route-badge" hidden></span>
+    </div>
+    <div class="routes-list" id="routes-list"></div>
+    <div class="routes-empty" id="routes-empty" hidden>未发现动态路由。需先在 Cloudflare 后台创建路由，再点「刷新」从云端拉取。</div>
+    <div class="routes-foot">
+      <span>fallback 链自左向右依次尝试（前一级失败才降级）；「刷新」从云端拉取最新路由，全量同步（拉取云端数据）也会顺带更新</span>
+      <a id="routes-cf-link" href="${CF_GATEWAY_FALLBACK_URL}" target="_blank" rel="noopener noreferrer">在 Cloudflare 中编辑 ↗</a>
+    </div>
+  `
+
+  const listEl = container.querySelector('#routes-list')
+  const emptyEl = container.querySelector('#routes-empty')
+  const countEl = container.querySelector('#routes-count')
+  const btnRefresh = container.querySelector('#routes-refresh')
+  const cfLink = container.querySelector('#routes-cf-link')
+
+  // 单条路由卡片 HTML（escapeHtml 已在模块内定义，转义所有动态值）
+  function routeCardHtml(route) {
+    const removed = route.status === 'removed'
+    const badge = removed
+      ? '<span class="route-badge err">已移除</span>'
+      : route.chain.length === 1
+        ? '<span class="route-badge">直连</span>'
+        : route.chain.length > 1
+          ? `<span class="route-badge">${route.chain.length} 级 fallback</span>`
+          : ''
+    const chainHtml = route.chain.length
+      ? route.chain
+          .map(
+            (m, i) =>
+              `${i > 0 ? '<span class="route-arrow">失败 ↓</span>' : ''}` +
+              `<span class="route-step"><span class="step-idx">${i + 1}</span>${escapeHtml(m)}</span>`,
+          )
+          .join('')
+      : '<div class="route-chain-empty">暂无路由链信息（重新同步后展示）</div>'
+    return `
+      <div class="route-card${removed ? ' row-removed' : ''}">
+        <div class="route-head">
+          <span class="route-name">${escapeHtml(route.name)}</span>
+          ${badge}
+          <span class="route-inv">${escapeHtml(route.modelId)}</span>
+        </div>
+        <div class="route-chain">${chainHtml}</div>
+      </div>
+    `
+  }
+
+  async function load() {
+    try {
+      const s = await api('/api/state')
+      const routes = collectDynamicRoutes((s && s.state) || {})
+      listEl.innerHTML = routes.map(routeCardHtml).join('')
+      emptyEl.hidden = routes.length > 0
+      countEl.hidden = routes.length === 0
+      countEl.textContent = `${routes.length} 条路由`
+    } catch (err) {
+      emptyEl.hidden = false
+      emptyEl.textContent = `路由数据加载失败：${err.message}`
+      listEl.innerHTML = ''
+      countEl.hidden = true
+    }
+  }
+
+  // Cloudflare 外链按账户状态精化（未配置保持回退；静默失败）
+  ;(async () => {
+    try {
+      const res = await api('/api/account/status')
+      const g = (res && res.gateway) || {}
+      cfLink.href = buildCfDynamicRoutesUrl(g.accountId, g.gatewayId)
+    } catch {
+      // 保持回退链接
+    }
+  })()
+
+  // 「刷新」= 从云端拉取最新路由（POST /api/sync + provider:'dynamic'，仅拉路由不动其他
+  // provider）→ 完成后重读 /api/state 重渲染。管理 Token 缺失时后端会静默空转
+  // （discover fetchRoutes=false → 空结果无报错），故前端先探账户状态提前拦截提示。
+  let syncingRoutes = false
+  async function syncRoutes() {
+    if (syncingRoutes) return
+    // 前置检查：管理 Token 是否可用（env CLOUDFLARE_API_TOKEN 或本地槽位）
+    let hasMgmt = true
+    try {
+      const st = await api('/api/account/status')
+      hasMgmt = Boolean(st && st.tokens && st.tokens.management && st.tokens.management.mark === '●')
+    } catch {
+      // 状态拉取失败：放行，由后端兜底（拉取失败会在响应中体现）
+    }
+    if (!hasMgmt) {
+      flash('未配置管理 API Token，无法从云端拉取路由（请在「账户」视图配置）', 'warn')
+      logActivity('刷新动态路由失败：未配置管理 API Token', 'err')
+      await load()
+      return
+    }
+    syncingRoutes = true
+    btnRefresh.disabled = true
+    const prevText = btnRefresh.textContent
+    btnRefresh.textContent = '同步中…'
+    try {
+      // 阻塞遮罩（withBlocking）：与模型页「拉取云端数据」一致，同步期间禁止其他操作
+      const res = await withBlocking('正在从云端拉取动态路由…', async () =>
+        api('/api/sync', { method: 'POST', body: { provider: 'dynamic' } }),
+      )
+      const s = (res && res.summary) || {}
+      const parts = []
+      if (s.newModels && s.newModels.length) parts.push(`新增 ${s.newModels.length}`)
+      if (s.updatedModels && s.updatedModels.length) parts.push(`更新 ${s.updatedModels.length}`)
+      if (s.removedModels && s.removedModels.length) parts.push(`移除 ${s.removedModels.length}`)
+      flash(`路由同步完成${parts.length ? '：' + parts.join(' / ') : '（无变化）'}`, 'ok')
+      logActivity(`动态路由同步完成：${parts.join(' / ') || '无变化'}`, 'ok')
+    } catch (err) {
+      if (err && err.status === 409) {
+        flash('已有同步任务进行中，请稍后再试', 'warn')
+        logActivity('刷新动态路由跳过：已有同步任务进行中', 'warn')
+      } else {
+        flash(`路由同步失败：${(err && err.message) || '未知错误'}`, 'err')
+        logActivity(`动态路由同步失败：${(err && err.message) || '未知错误'}`, 'err')
+      }
+    } finally {
+      syncingRoutes = false
+      btnRefresh.disabled = false
+      btnRefresh.textContent = prevText
+      await load() // 无论成败都重读本地状态（同步成功带新链，失败保持原样）
+    }
+  }
+
+  btnRefresh.addEventListener('click', syncRoutes)
+  load()
+}
+
+// 注册动态路由视图渲染器（覆盖占位渲染器，分派契约）
+registerViewRenderer('routes', renderRoutesView)
 
 // ── 任务 32：前端 Provider 管理视图（纯函数 + 渲染器）─────────────────
 // 数据流（交付包 §3.1）：进入视图拉一次 GET /api/providers 到内存（providers/readonly，

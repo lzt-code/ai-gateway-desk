@@ -451,6 +451,32 @@ export async function listDynamicRoutes(apiToken, accountId, gatewayId) {
   return payload?.data?.routes ?? payload?.result ?? []
 }
 
+/**
+ * 获取单个动态路由详情
+ *
+ * 列表端点（listDynamicRoutes）只返回路由元数据（id/name/version/deployment），
+ * **不含 fallback 链**。链信息在详情端点的 result.version.data 中——一个流程图
+ * 结构：START 节点 → model 节点（properties.provider/model）→ outputs.fallback
+ * 逐级降级 → END（2026-09-01 实测确认）。
+ *
+ * @param {string} apiToken - 管理 API Token（账户级）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @param {string} gatewayId - gateway id
+ * @param {string} routeId - 路由 id（列表项的 id 字段，UUID）
+ * @returns {Promise<object|null>} 路由详情（含 version.data 流程图），无内容时 null
+ */
+export async function getDynamicRouteDetail(apiToken, accountId, gatewayId, routeId) {
+  guard(accountId, 'accountId')
+  guard(gatewayId, 'gatewayId')
+  guard(routeId, 'routeId')
+
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/routes/${encodeURIComponent(routeId)}`
+  )
+  return payload?.result ?? null
+}
+
 // ─── KV Namespace ────────────────────────────────────────
 
 /**

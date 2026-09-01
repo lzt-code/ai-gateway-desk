@@ -3,9 +3,70 @@
  * @module ai-gateway-desk/src/cloudflare/discover
  */
 
-import { listDynamicRoutes } from './api.js'
+import { listDynamicRoutes, getDynamicRouteDetail } from './api.js'
 
 const FETCH_TIMEOUT = 15_000 // 15 秒超时
+
+/**
+ * 归一化动态路由的目标模型链（route.model 字段）
+ *
+ * Cloudflare 管理 API 返回的 route.model 可能是：
+ *   - 字符串（直连单个模型，无 fallback）→ 归一化为单元素数组
+ *   - 字符串数组（fallback 顺序链，数组顺序即尝试顺序）→ 过滤空值后原样保留
+ *   - 缺失 / 其他类型（如未命名默认路由）→ undefined（前端显示为「未指定」）
+ *
+ * @param {unknown} model - route 对象的 model 字段
+ * @returns {string[]|undefined} 归一化后的模型链（至少一个非空字符串），无有效值时 undefined
+ */
+export function normalizeRouteModelChain(model) {
+  if (typeof model === 'string') {
+    const s = model.trim()
+    return s ? [s] : undefined
+  }
+  if (Array.isArray(model)) {
+    const chain = model.filter((m) => typeof m === 'string' && m.trim() !== '')
+    return chain.length > 0 ? chain : undefined
+  }
+  return undefined
+}
+
+/**
+ * 解析动态路由详情 version.data 流程图 → fallback 模型链
+ *
+ * Cloudflare 路由详情的 version.data 是节点数组（2026-09-01 实测）：
+ *   - { id: 'START', type: 'start', outputs.next.elementId } → 首个模型节点
+ *   - { type: 'model', properties: { provider, model },
+ *       outputs: { success → END, fallback → 下一级模型节点 } }
+ *   - { id: 'END', type: 'end' }
+ * 链 = 从 START 沿 next 进入首个 model 节点，再沿 fallback 逐级走到底。
+ *
+ * @param {unknown} versionData - 路由详情 result.version.data（节点数组）
+ * @returns {string[]|undefined} 形如 ['provider-a/model-x', 'provider-b/model-y']
+ *   的尝试顺序链（至少一级），无法解析（旧版结构/脏数据/无模型节点）时 undefined
+ */
+export function parseRouteFallbackChain(versionData) {
+  if (!Array.isArray(versionData)) return undefined
+  const byId = new Map()
+  for (const node of versionData) {
+    if (node && typeof node === 'object' && typeof node.id === 'string') byId.set(node.id, node)
+  }
+  const start = byId.get('START')
+  const firstId = start && start.outputs && start.outputs.next && start.outputs.next.elementId
+  let cur = typeof firstId === 'string' ? byId.get(firstId) : null
+  const chain = []
+  const visited = new Set() // 防环：fallback 指回已访问节点时立即终止
+  while (cur && cur.type === 'model' && !visited.has(cur.id)) {
+    visited.add(cur.id)
+    const provider = cur.properties && cur.properties.provider
+    const model = cur.properties && cur.properties.model
+    if (typeof provider === 'string' && provider.trim() && typeof model === 'string' && model.trim()) {
+      chain.push(`${provider.trim()}/${model.trim()}`)
+    }
+    const nextId = cur.outputs && cur.outputs.fallback && cur.outputs.fallback.elementId
+    cur = typeof nextId === 'string' ? byId.get(nextId) : null
+  }
+  return chain.length > 0 ? chain : undefined
+}
 
 // SSE debug 事件的响应体预览长度上限；完整响应体只输出到服务器终端日志，
 // 避免大 JSON（OpenRouter 全量模型可达数 MB）塞爆前端 200 行日志栏
@@ -314,15 +375,36 @@ export async function discoverModels(config, gatewayToken, onProgress, providerF
       console.log(`[discover] 请求动态路由列表 [${slug}]`)
       const routes = await listDynamicRoutes(mgmtToken, gateway.accountId, gateway.gatewayId)
 
+      // 列表端点不含 fallback 链，需逐条拉详情（version.data 流程图）。
+      // N+1 调用但路由数通常个位数；单条详情失败只丢该条链信息，不中断同步
+      const details = await Promise.all(
+        routes.map((r) =>
+          r && typeof r.id === 'string' && r.id
+            ? getDynamicRouteDetail(mgmtToken, gateway.accountId, gateway.gatewayId, r.id).catch(() => null)
+            : Promise.resolve(null),
+        ),
+      )
+
       const models = routes
         .filter((r) => r && typeof r.name === 'string' && r.name.trim())
-        .map((route) => ({
-          id: `dynamic/${route.name}`,
-          object: 'model',
-          name: route.name,
-          ...(route.created_at ? { created: Math.floor(new Date(route.created_at).getTime() / 1000) } : {}),
-          owned_by: '动态路由',
-        }))
+        .map((route, i) => {
+          const detail = details[i]
+          // 链来源优先级：详情流程图（实测唯一来源）→ 列表 route.model 字段（容错，
+          // 当前 API 不返回该字段，保留兼容未来 API 直接下发链的场景）
+          const chain =
+            parseRouteFallbackChain(detail && detail.version && detail.version.data) ||
+            normalizeRouteModelChain(route.model)
+          return {
+            id: `dynamic/${route.name}`,
+            object: 'model',
+            name: route.name,
+            ...(route.created_at ? { created: Math.floor(new Date(route.created_at).getTime() / 1000) } : {}),
+            owned_by: '动态路由',
+            // fallback 链（provider/model 数组，顺序即尝试顺序）；缺失时不写字段，
+            // 前端动态路由视图对无链数据按「无链信息」降级展示
+            ...(chain ? { route_models: chain } : {}),
+          }
+        })
 
       const elapsed = Date.now() - routeStartTime
       console.log(`[discover] 成功 [${slug}] 获取 ${models.length} 个动态路由 (${elapsed}ms)`)

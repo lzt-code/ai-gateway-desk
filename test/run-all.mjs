@@ -44,6 +44,7 @@ const TESTS = [
   'test-web-provider-add-view.mjs',   // 添加 Provider FP4：前端添加视图纯函数（字段/载荷校验/结果日志）
   'test-web-sorting.mjs',             // 表格列排序：sortViewItems/nextSortState/两表取值器（纯函数）
   'test-web-dynamic-routes-link.mjs', // 动态路由入口：buildCfDynamicRoutesUrl 纯函数（外链构建/回退/转义）
+  'test-dynamic-routes-view.mjs',     // 动态路由视图：链归一化 + collectDynamicRoutes + tab 骨架契约
 ]
 
 const results = []

@@ -28,6 +28,7 @@
     <!-- data-view 属性是任务 31-33 的绑定契约 -->
     <button data-view="providers">Provider</button>
     <button data-view="models">模型</button>
+    <button data-view="routes">动态路由</button>
     <button data-view="workers">Worker</button>
     <button data-view="account">账户</button>
   </nav>
@@ -47,6 +48,7 @@
     <!-- 四视图容器：id 约定 view-<name>，hidden 切换（任务 31-33 填充内容） -->
     <section class="view" id="view-providers" hidden></section>
     <section class="view" id="view-models" hidden></section>
+    <section class="view" id="view-routes" hidden></section>
     <section class="view" id="view-workers" hidden></section>
     <section class="view" id="view-account" hidden></section>
   </main>
@@ -77,7 +79,8 @@
         <div class="side-group-title">Cloudflare</div>
         <!-- 动态路由（Dynamic Routes）外部入口：新窗口打开。默认指向 AI Gateway
              列表页；app.js 启动拉取账户状态后，按 accountId/gatewayId 精化到
-             当前网关的动态路由页（未配置保持回退）。后续以自研路由配置页替换 -->
+             当前网关的动态路由页（未配置保持回退）。
+             只读展示见「动态路由」选项卡（view-routes）；编辑仍在 Cloudflare 后台 -->
         <a id="cf-routes-link" class="btn btn-default side-ext-link"
            href="https://dash.cloudflare.com/?to=/:account/ai/ai-gateway"
            target="_blank" rel="noopener noreferrer"

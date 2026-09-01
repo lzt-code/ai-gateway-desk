@@ -40,13 +40,13 @@ const html = await readFile(htmlPath, 'utf8')
 check(html.length > 0, 'index.html 存在且非空')
 
 const viewButtons = [...html.matchAll(/data-view="([^"]+)"/g)].map((m) => m[1])
-check(viewButtons.length === 4, '含 4 个 data-view 按钮契约（providers/models/workers/account）')
+check(viewButtons.length === 5, '含 5 个 data-view 按钮契约（providers/models/routes/workers/account）')
 check(
-  JSON.stringify(viewButtons) === JSON.stringify(['providers', 'models', 'workers', 'account']),
-  'data-view 顺序与 VIEW_ORDER 一致',
+  JSON.stringify(viewButtons) === JSON.stringify(['providers', 'models', 'routes', 'workers', 'account']),
+  'data-view 顺序与 VIEW_ORDER 一致（routes 紧随 models 之后）',
 )
 
-for (const v of ['providers', 'models', 'workers', 'account']) {
+for (const v of ['providers', 'models', 'routes', 'workers', 'account']) {
   const re = new RegExp(`<section\\s+class="view"\\s+id="view-${v}"\\s+hidden>`)
   check(re.test(html), `视图容器 <section class="view" id="view-${v}" hidden>`)
 }
@@ -129,20 +129,21 @@ check(logActivity('测试日志') === false, 'logActivity 无 DOM 环境返回 f
 
 // 8：VIEWS / VIEW_ORDER / VIEW_LABELS
 check(
-  Object.keys(VIEWS).length === 4 && Object.values(VIEWS).every((v) => VIEW_ORDER.includes(v)),
-  'VIEWS 四视图常量且均含于 VIEW_ORDER',
+  Object.keys(VIEWS).length === 5 && Object.values(VIEWS).every((v) => VIEW_ORDER.includes(v)),
+  'VIEWS 五视图常量且均含于 VIEW_ORDER',
 )
 check(
-  VIEW_ORDER.length === 4 &&
-    ['providers', 'models', 'workers', 'account'].every((v) => VIEW_ORDER.includes(v)),
-  'VIEW_ORDER 长度 4 且含全部 4 个视图名',
+  VIEW_ORDER.length === 5 &&
+    ['providers', 'models', 'routes', 'workers', 'account'].every((v) => VIEW_ORDER.includes(v)),
+  'VIEW_ORDER 长度 5 且含全部 5 个视图名',
 )
 check(
   VIEW_LABELS.providers === 'Provider' &&
     VIEW_LABELS.models === '模型' &&
+    VIEW_LABELS.routes === '动态路由' &&
     VIEW_LABELS.workers === 'Worker' &&
     VIEW_LABELS.account === '账户',
-  'VIEW_LABELS 文案（含 模型）',
+  'VIEW_LABELS 文案（含 模型 / 动态路由）',
 )
 
 // 9：VIEW_HINTS 覆盖全部视图
