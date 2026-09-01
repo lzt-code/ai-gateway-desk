@@ -851,10 +851,15 @@ export function buildModelTableRows(items) {
     const contextText = formatContextOutput(meta.context_length, meta.max_output_length)
     // 名称缺失时回退到 modelId 最后一段（如 openrouter/x-ai/grok-4.20 → grok-4.20）
     const modelName = meta.name || modelId.split('/').pop() || ''
+    const isDynamic = modelId.startsWith('dynamic/')
     // 复制按钮复制完整 modelId（含 provider 前缀，如 custom-agnes/agnes-2.5-flash），可直接用于 agent 添加模型
+    const rowCls = `row-${statusKey}` + (isDynamic ? ' row-dynamic' : '')
+    const badge = isDynamic
+      ? `<span class="dynamic-tag" title="Cloudflare 网关动态路由">动态路由</span>`
+      : ''
     const html =
-      `<tr data-model-id="${escapeHtml(modelId)}" class="row-${statusKey}">` +
-      `<td><span class="model-name-text" title="${escapeHtml(modelName)}">${escapeHtml(modelName)}</span></td>` +
+      `<tr data-model-id="${escapeHtml(modelId)}" class="${rowCls}">` +
+      `<td>${badge}<span class="model-name-text" title="${escapeHtml(modelName)}">${escapeHtml(modelName)}</span></td>` +
       `<td><span class="model-id-text">${escapeHtml(modelId)}</span>` +
       `<button class="model-copy" data-copy-model="${escapeHtml(modelId)}" title="复制完整模型名称（含 Provider）" type="button">⧉</button></td>` +
       `<td>${contextText}</td>` +
@@ -1023,6 +1028,19 @@ function injectModelsStyles() {
       background: var(--accent); border-radius: 0 2px 2px 0;
       box-shadow: 0 0 8px var(--led-accent);
     }
+    /* 动态路由侧栏项：accent 浅底 + 描述小字 */
+    .sidebar-item-dynamic {
+      border-color: var(--accent-border);
+      background: var(--accent-soft);
+    }
+    .sidebar-item-dynamic.active {
+      background: var(--seg-active-bg);
+    }
+    .sidebar-dynamic-label { display: block; }
+    .sidebar-dynamic-desc {
+      display: block; font-size: 0.68rem; color: var(--muted);
+      font-weight: 400; margin-top: 0.1rem;
+    }
     .models-main { min-width: 0; display: flex; flex-direction: column; }
     /* 筛选按钮组：分段控件化（凹陷轨道 + 浮起激活块，与页头选项卡同语言） */
     .filter-bar { margin-bottom: 0.6rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
@@ -1074,6 +1092,16 @@ function injectModelsStyles() {
       box-shadow: inset 0 0 0 1px var(--accent-border);
     }
     .model-table tbody tr.row-removed { opacity: 0.6; }
+    /* 动态路由行：浅 accent 底色区分 */
+    .model-table tbody tr.row-dynamic { background: var(--accent-soft); }
+    .model-table tbody tr.row-dynamic.row-active { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-border); }
+    /* 动态路由标签：名称列前置小胶囊 */
+    .dynamic-tag {
+      font-size: 0.62rem; color: var(--accent); background: var(--accent-soft);
+      border: 1px solid var(--accent-border); border-radius: 999px;
+      padding: 0 0.35rem; margin-right: 0.3rem; vertical-align: middle;
+      white-space: nowrap; display: inline-block;
+    }
     .status-ok { color: var(--ok); }
     .status-warn { color: var(--warn); }
     .status-err { color: var(--err); }
@@ -1219,12 +1247,25 @@ export function renderModelsView(container) {
     allBtn.textContent = '全部'
     sidebar.appendChild(allBtn)
     for (const p of providers) {
+      const pid = typeof p === 'string' ? p : p.id
       const btn = document.createElement('button')
       btn.type = 'button'
-      btn.className = 'sidebar-item' + (provider === (typeof p === 'string' ? p : p.id) ? ' active' : '')
-      btn.dataset.provider = typeof p === 'string' ? p : p.id
-      const displayName = typeof p === 'string' ? p : (p.name && p.name !== 'default' ? p.name : p.id)
-      btn.textContent = displayName
+      btn.className = 'sidebar-item' + (provider === pid ? ' active' : '')
+      if (pid === 'dynamic') btn.className += ' sidebar-item-dynamic'
+      btn.dataset.provider = pid
+      const displayName = typeof p === 'string' ? p : (p.name && p.name !== 'default' ? p.name : pid)
+      if (pid === 'dynamic') {
+        const label = document.createElement('span')
+        label.className = 'sidebar-dynamic-label'
+        label.textContent = displayName
+        btn.appendChild(label)
+        const desc = document.createElement('span')
+        desc.className = 'sidebar-dynamic-desc'
+        desc.textContent = '网关路由规则'
+        btn.appendChild(desc)
+      } else {
+        btn.textContent = displayName
+      }
       sidebar.appendChild(btn)
     }
     updateSyncOneButton()

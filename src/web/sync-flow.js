@@ -114,7 +114,7 @@ export async function runSyncFlow({
   }
   const discovery = await discoverModels(discoverConfig, gatewayToken, (p) => {
     emit({ type: 'discover', ...p })
-  }, providerFilter)
+  }, providerFilter, mgmtToken)
 
   // 无结果：不抛错，返回空汇总（errors 携带失败原因，与 TUI「未发现任何模型」一致）
   if (discovery.results.length === 0) {

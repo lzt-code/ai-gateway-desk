@@ -422,6 +422,35 @@ export async function deleteCustomProvider(apiToken, accountId, id) {
   return payload?.result ?? null
 }
 
+// ─── Dynamic Routes ──────────────────────────────────────
+
+/**
+ * 列出 AI Gateway 下所有动态路由（Dynamic Routes）
+ *
+ * 动态路由是 Cloudflare AI Gateway 的功能：用户在 Dashboard 或通过 API
+ * 创建命名路由流（如 "dynamic/support"），通过 compat 端点以
+ * model: "dynamic/<route-name>" 方式调用。本函数拉取路由列表，
+ * 供 discoverModels 将动态路由作为虚拟 "dynamic" provider 的模型展示。
+ *
+ * 注意：该端点响应格式为 { data: { routes: [...] }, success: true }，
+ * 与标准 result 数组不同（2026-09-01 实测确认）。
+ *
+ * @param {string} apiToken - 管理 API Token（账户级）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @param {string} gatewayId - gateway id
+ * @returns {Promise<Array<object>>} 动态路由数组（每项含 id / name / elements 等）
+ */
+export async function listDynamicRoutes(apiToken, accountId, gatewayId) {
+  guard(accountId, 'accountId')
+  guard(gatewayId, 'gatewayId')
+
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/routes`
+  )
+  return payload?.data?.routes ?? payload?.result ?? []
+}
+
 // ─── KV Namespace ────────────────────────────────────────
 
 /**

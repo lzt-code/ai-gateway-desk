@@ -380,6 +380,12 @@ export function createApp({
     const hidden = hiddenProviderSlugs(Array.isArray(config.providers) ? config.providers : [])
     const visibleState = filterVisibleState(state, hidden)
     const items = applyModelFilters(visibleState, { provider, keyword, status })
+    // 动态路由模型排在最前（id 以 dynamic/ 开头），其余保持插入顺序
+    items.sort((a, b) => {
+      const ad = a.modelId.startsWith('dynamic/') ? 0 : 1
+      const bd = b.modelId.startsWith('dynamic/') ? 0 : 1
+      return ad - bd
+    })
     return c.json({ ok: true, count: items.length, items })
   })
   // GET /api/providers/list — 返回 config 中所有启用 provider + state 中出现的 provider
@@ -389,6 +395,7 @@ export function createApp({
     const localProviders = Array.isArray(config.providers) ? config.providers : []
     // 构建名称映射：同时匹配原始 id 和 gateway slug（custom-provider 带 custom- 前缀）
     const nameMap = new Map()
+    nameMap.set('dynamic', '动态路由')
     for (const p of localProviders) {
       nameMap.set(p.id, p.name || p.id)
       if (p.type === 'custom-provider' && !p.id.startsWith('custom-')) {
@@ -404,7 +411,12 @@ export function createApp({
         .filter((p) => p.enabled)
         .map((p) => (p.type === 'custom-provider' && !String(p.id).startsWith('custom-') ? `custom-${p.id}` : p.id))
     )
-    const allSlugs = [...new Set([...slugs, ...enabledSlugs])].sort()
+    // 动态路由始终排在首位，其余按字母序
+    const allSlugs = [...new Set([...slugs, ...enabledSlugs])].sort((a, b) => {
+      if (a === 'dynamic') return -1
+      if (b === 'dynamic') return 1
+      return a.localeCompare(b)
+    })
     const providers = allSlugs.map((id) => {
       let name = nameMap.get(id) || id
       // Cloudflare 将「未设置别名」的 BYOK provider 返回 alias: "default"，

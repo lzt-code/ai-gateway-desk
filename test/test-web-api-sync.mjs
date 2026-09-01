@@ -69,7 +69,7 @@ function makeDeps({
   const calls = []
   const tokens = []
   const discoverFilters = []
-  const discoverModels = async (config, token, onProgress, providerFilter) => {
+  const discoverModels = async (config, token, onProgress, providerFilter, _mgmtToken) => {
     calls.push('discover')
     tokens.push(token)
     discoverFilters.push(providerFilter ?? null)

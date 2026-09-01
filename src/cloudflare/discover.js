@@ -3,6 +3,8 @@
  * @module ai-gateway-desk/src/cloudflare/discover
  */
 
+import { listDynamicRoutes } from './api.js'
+
 const FETCH_TIMEOUT = 15_000 // 15 秒超时
 
 // SSE debug 事件的响应体预览长度上限；完整响应体只输出到服务器终端日志，
@@ -136,38 +138,48 @@ export function gatewaySlug(provider) {
  * @param {(p: { provider: string, status: 'pending'|'done'|'error'|'debug', models?: number, error?: string, debug?: object, done: number, total: number }) => void} [onProgress] - 可选进度回调
  * @param {string} [providerFilter] - 可选：只拉取指定 provider（按网关 slug 或原始 id 匹配）。
  *   传入时仅发现该 provider，merge 阶段也只对其模型执行「未发现→移除」规则（见 merge.js discoveredProviders 限定）。
+ *   传入 'dynamic' 时仅拉取动态路由。
  *   未匹配任何启用 provider → 返回空结果（不抛错），与「无启用 Provider」语义一致。
+ * @param {string} [mgmtToken] - 可选：管理 API Token（账户级）。传入时额外拉取 AI Gateway
+ *   动态路由列表，作为虚拟 "dynamic" provider 加入结果。动态路由模型 id 为
+ *   "dynamic/<route-name>"，通过 compat 端点调用（worker 自动路由）。
  * @returns {Promise<{ results: Array<{ provider: string, models: Array<object> }>, errors: Array<{ provider: string, error: string }> }>}
  */
-export async function discoverModels(config, gatewayToken, onProgress, providerFilter) {
+export async function discoverModels(config, gatewayToken, onProgress, providerFilter, mgmtToken) {
   const { gateway, providers } = config
   const debug = config?.debug === true
   let enabledProviders = providers.filter((p) => p.enabled)
+
+  // 判断是否拉取动态路由（需要管理 Token；单 Provider 模式仅当 filter='dynamic' 时拉取）
+  const fetchRoutes = !!mgmtToken && (!providerFilter || providerFilter === 'dynamic')
+
   if (providerFilter) {
     enabledProviders = enabledProviders.filter(
       (p) => gatewaySlug(p) === providerFilter || p.id === providerFilter
     )
-    if (enabledProviders.length === 0) {
+    if (enabledProviders.length === 0 && !fetchRoutes) {
       console.log(`[discover] providerFilter "${providerFilter}" 无匹配的启用 Provider，跳过模型发现`)
       return { results: [], errors: [] }
     }
-    console.log(`[discover] 单 Provider 模式：仅拉取 ${enabledProviders.map((p) => gatewaySlug(p)).join(', ')}`)
+    if (enabledProviders.length > 0) {
+      console.log(`[discover] 单 Provider 模式：仅拉取 ${enabledProviders.map((p) => gatewaySlug(p)).join(', ')}`)
+    }
   }
 
-  if (enabledProviders.length === 0) {
+  if (enabledProviders.length === 0 && !fetchRoutes) {
     console.log('[discover] 无启用的 Provider，跳过模型发现')
     return { results: [], errors: [] }
   }
 
   const baseUrl = `https://${gateway.host}/v1/${gateway.accountId}/${gateway.gatewayId}`
   const startTime = Date.now()
-  console.log(`[discover] 开始拉取模型列表 — Gateway: ${gateway.host}/${gateway.gatewayId}，启用 Provider 数: ${enabledProviders.length}`)
+  const total = enabledProviders.length + (fetchRoutes ? 1 : 0)
+  console.log(`[discover] 开始拉取模型列表 — Gateway: ${gateway.host}/${gateway.gatewayId}，启用 Provider 数: ${enabledProviders.length}${fetchRoutes ? ' + 动态路由' : ''}`)
   for (const p of enabledProviders) {
     console.log(`[discover]   Provider: ${p.id} (${p.type || 'byok'})`)
   }
 
   let finished = 0
-  const total = enabledProviders.length
 
   const requests = enabledProviders.map(async (provider) => {
     const slug = gatewaySlug(provider)
@@ -287,6 +299,48 @@ export async function discoverModels(config, gatewayToken, onProgress, providerF
         provider: providerId,
         error: reason instanceof Error ? reason.message : String(reason),
       })
+    }
+  }
+
+  // ─── 拉取动态路由（作为虚拟 "dynamic" provider） ───
+  // 动态路由通过管理 API 获取（需 mgmtToken），不经过 AI Gateway /v1/models 端点。
+  // 路由名作为模型 id 前缀 "dynamic/<name>"，worker 通过 compat 端点自动路由。
+  if (fetchRoutes) {
+    const slug = 'dynamic'
+    const routeStartTime = Date.now()
+    if (onProgress) onProgress({ provider: slug, status: 'pending', done: finished, total })
+
+    try {
+      console.log(`[discover] 请求动态路由列表 [${slug}]`)
+      const routes = await listDynamicRoutes(mgmtToken, gateway.accountId, gateway.gatewayId)
+
+      const models = routes
+        .filter((r) => r && typeof r.name === 'string' && r.name.trim())
+        .map((route) => ({
+          id: `dynamic/${route.name}`,
+          object: 'model',
+          name: route.name,
+          ...(route.created_at ? { created: Math.floor(new Date(route.created_at).getTime() / 1000) } : {}),
+          owned_by: '动态路由',
+        }))
+
+      const elapsed = Date.now() - routeStartTime
+      console.log(`[discover] 成功 [${slug}] 获取 ${models.length} 个动态路由 (${elapsed}ms)`)
+      if (models.length > 0) {
+        const sampleIds = models.slice(0, 3).map((m) => m.id).join(', ')
+        console.log(`[discover] 路由示例 [${slug}]: ${sampleIds}${models.length > 3 ? '…' : ''}`)
+      }
+
+      finished++
+      if (onProgress) onProgress({ provider: slug, status: 'done', models: models.length, done: finished, total })
+      results.push({ provider: slug, models })
+    } catch (err) {
+      finished++
+      const error = err instanceof Error ? err.message : String(err)
+      const elapsed = Date.now() - routeStartTime
+      console.log(`[discover] 失败 [${slug}] ${error} (${elapsed}ms)`)
+      if (onProgress) onProgress({ provider: slug, status: 'error', error, done: finished, total })
+      errors.push({ provider: slug, error })
     }
   }
 
