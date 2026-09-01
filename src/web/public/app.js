@@ -681,6 +681,8 @@ export function renderView(name) {
   if (sideActions) sideActions.hidden = name !== 'providers'
   const modelSideActions = document.getElementById('model-side-actions')
   if (modelSideActions) modelSideActions.hidden = name !== 'models'
+  const routesSideActions = document.getElementById('routes-side-actions')
+  if (routesSideActions) routesSideActions.hidden = name !== 'routes'
 }
 
 function appState() {
@@ -2083,22 +2085,23 @@ function injectRoutesStyles() {
   const style = document.createElement('style')
   style.id = 'routes-view-styles'
   style.textContent = `
-    .routes-list { display: flex; flex-direction: column; gap: 0.6rem; margin-top: 0.75rem; }
-    .route-card {
-      background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-md);
-      padding: 0.7rem 0.9rem; box-shadow: var(--highlight);
+    .routes-view .table-wrap { margin-top: 0.75rem; overflow-x: auto; }
+    .route-table { font-size: 0.82rem; }
+    .route-table th:nth-child(1), .route-table td:nth-child(1) { min-width: 150px; }
+    .route-table th:nth-child(2), .route-table td:nth-child(2) { white-space: nowrap; }
+    .route-table tbody tr.row-removed { opacity: 0.55; }
+    .route-name { font-weight: 500; color: var(--fg); }
+    .route-inv {
+      display: block; font-family: var(--font-mono); font-size: 0.7rem;
+      color: var(--muted); margin-top: 0.1rem;
     }
-    .route-card.row-removed { opacity: 0.55; }
-    .route-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
-    .route-name { font-weight: 500; font-size: 0.9rem; color: var(--fg); }
     .route-badge {
       font-size: 0.68rem; color: var(--accent); background: var(--accent-soft);
       border: 1px solid var(--accent-border); border-radius: 999px; padding: 0.05rem 0.5rem;
     }
     .route-badge.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-border); }
     .route-badge.err { color: var(--err); background: var(--err-soft); border-color: var(--err-border); }
-    .route-inv { margin-left: auto; font-family: ui-monospace, monospace; font-size: 0.72rem; color: var(--muted); }
-    .route-chain { display: flex; align-items: center; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.55rem; }
+    .route-chain { display: flex; align-items: center; flex-wrap: wrap; gap: 0.3rem; }
     .route-step {
       display: inline-flex; align-items: center; gap: 0.35rem;
       font-family: ui-monospace, monospace; font-size: 0.74rem; color: var(--fg);
@@ -2111,7 +2114,13 @@ function injectRoutesStyles() {
       background: var(--accent-soft); color: var(--accent);
       font-size: 0.66rem; font-weight: 500; padding: 0 0.15rem;
     }
-    .route-arrow { color: var(--muted); font-size: 0.7rem; }
+    .route-arrow {
+      display: inline-flex; flex-direction: column; align-items: center;
+      color: var(--muted); user-select: none; line-height: 1;
+      margin: 0 0.15rem; vertical-align: middle;
+    }
+    .route-arrow .arrow-label { font-size: 0.62rem; margin-bottom: 2px; }
+    .route-arrow svg { display: block; }
     .route-chain-empty { font-size: 0.75rem; color: var(--muted); margin-top: 0.55rem; }
     .routes-empty { color: var(--muted); font-size: 0.85rem; margin-top: 0.75rem; }
     .routes-foot {
@@ -2126,31 +2135,41 @@ export function renderRoutesView(container) {
   if (!container || typeof document === 'undefined') return
   if (container.dataset.routesRendered) return // 幂等保护（renderView 已保证懒渲染一次）
   container.dataset.routesRendered = '1'
+  container.classList.add('routes-view')
 
   injectRoutesStyles()
 
   container.innerHTML = `
-    <h2 class="view-title">动态路由</h2>
-    <div class="routes-toolbar" style="display:flex;gap:0.5rem;align-items:center;margin-top:0.5rem;">
-      <button id="routes-refresh" class="btn btn-default" type="button">刷新</button>
-      <span id="routes-count" class="route-badge" hidden></span>
+    <h2 class="view-title">动态路由<span id="routes-count" class="route-badge" style="margin-left:0.5rem;vertical-align:middle;" hidden></span></h2>
+    <div class="table-wrap" id="routes-table-wrap">
+      <table class="route-table">
+        <thead><tr>
+          <th>路由名称</th>
+          <th>Fallback</th>
+          <th>路由内容</th>
+        </tr></thead>
+        <tbody id="routes-list"></tbody>
+      </table>
     </div>
-    <div class="routes-list" id="routes-list"></div>
-    <div class="routes-empty" id="routes-empty" hidden>未发现动态路由。需先在 Cloudflare 后台创建路由，再点「刷新」从云端拉取。</div>
+    <div class="routes-empty" id="routes-empty" hidden>未发现动态路由。需先在 Cloudflare 后台创建路由，再点「拉取云端路由」从云端拉取。</div>
     <div class="routes-foot">
-      <span>fallback 链自左向右依次尝试（前一级失败才降级）；「刷新」从云端拉取最新路由，全量同步（拉取云端数据）也会顺带更新</span>
+      <span>fallback 链自左向右依次尝试（前一级失败才降级）；「拉取云端路由」从云端拉取最新路由，全量同步（拉取云端数据）也会顺带更新</span>
       <a id="routes-cf-link" href="${CF_GATEWAY_FALLBACK_URL}" target="_blank" rel="noopener noreferrer">在 Cloudflare 中编辑 ↗</a>
     </div>
   `
 
   const listEl = container.querySelector('#routes-list')
+  const tableWrapEl = container.querySelector('#routes-table-wrap')
   const emptyEl = container.querySelector('#routes-empty')
-  const countEl = container.querySelector('#routes-count')
-  const btnRefresh = container.querySelector('#routes-refresh')
+  const countEl = document.getElementById('routes-count')
+  // 刷新按钮在右侧提示栏下方（#routes-side-actions，index.html 静态定义，随视图显隐）；
+  // Node 测试环境无该元素，静默跳过相关交互
+  const btnRefresh = document.getElementById('rbtn-sync')
   const cfLink = container.querySelector('#routes-cf-link')
 
-  // 单条路由卡片 HTML（escapeHtml 已在模块内定义，转义所有动态值）
-  function routeCardHtml(route) {
+  // 单行路由 HTML（escapeHtml 已在模块内定义，转义所有动态值）：
+  // 三列 — 路由名称（附 modelId）/ fallback 级别 / 路由链内容
+  function routeRowHtml(route) {
     const removed = route.status === 'removed'
     const badge = removed
       ? '<span class="route-badge err">已移除</span>'
@@ -2158,25 +2177,28 @@ export function renderRoutesView(container) {
         ? '<span class="route-badge">直连</span>'
         : route.chain.length > 1
           ? `<span class="route-badge">${route.chain.length} 级 fallback</span>`
-          : ''
+          : '<span class="route-badge warn">未知</span>'
     const chainHtml = route.chain.length
       ? route.chain
           .map(
             (m, i) =>
-              `${i > 0 ? '<span class="route-arrow">失败 ↓</span>' : ''}` +
+              `${i > 0 ? '<span class="route-arrow"><span class="arrow-label">失败</span>' +
+                '<svg width="36" height="8" viewBox="0 0 36 8" aria-hidden="true">' +
+                '<line x1="0" y1="4" x2="29" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>' +
+                '<path d="M29 0.8 L35.2 4 L29 7.2 Z" fill="currentColor"/></svg></span>' : ''}` +
               `<span class="route-step"><span class="step-idx">${i + 1}</span>${escapeHtml(m)}</span>`,
           )
           .join('')
-      : '<div class="route-chain-empty">暂无路由链信息（重新同步后展示）</div>'
+      : '<span class="route-chain-empty">暂无路由链信息（重新同步后展示）</span>'
     return `
-      <div class="route-card${removed ? ' row-removed' : ''}">
-        <div class="route-head">
+      <tr class="route-row${removed ? ' row-removed' : ''}">
+        <td>
           <span class="route-name">${escapeHtml(route.name)}</span>
-          ${badge}
           <span class="route-inv">${escapeHtml(route.modelId)}</span>
-        </div>
-        <div class="route-chain">${chainHtml}</div>
-      </div>
+        </td>
+        <td>${badge}</td>
+        <td><div class="route-chain">${chainHtml}</div></td>
+      </tr>
     `
   }
 
@@ -2184,7 +2206,8 @@ export function renderRoutesView(container) {
     try {
       const s = await api('/api/state')
       const routes = collectDynamicRoutes((s && s.state) || {})
-      listEl.innerHTML = routes.map(routeCardHtml).join('')
+      listEl.innerHTML = routes.map(routeRowHtml).join('')
+      tableWrapEl.hidden = routes.length === 0
       emptyEl.hidden = routes.length > 0
       countEl.hidden = routes.length === 0
       countEl.textContent = `${routes.length} 条路由`
@@ -2192,22 +2215,27 @@ export function renderRoutesView(container) {
       emptyEl.hidden = false
       emptyEl.textContent = `路由数据加载失败：${err.message}`
       listEl.innerHTML = ''
+      tableWrapEl.hidden = true
       countEl.hidden = true
     }
   }
 
-  // Cloudflare 外链按账户状态精化（未配置保持回退；静默失败）
+  // Cloudflare 外链按账户状态精化（未配置保持回退；静默失败）。
+  // 同时精化右侧侧栏「在 Cloudflare 中编辑路由」（index.html 静态定义）与视图内脚注链接
   ;(async () => {
     try {
       const res = await api('/api/account/status')
       const g = (res && res.gateway) || {}
-      cfLink.href = buildCfDynamicRoutesUrl(g.accountId, g.gatewayId)
+      const url = buildCfDynamicRoutesUrl(g.accountId, g.gatewayId)
+      cfLink.href = url
+      const sideLink = document.getElementById('routes-cf-edit-link')
+      if (sideLink) sideLink.href = url
     } catch {
       // 保持回退链接
     }
   })()
 
-  // 「刷新」= 从云端拉取最新路由（POST /api/sync + provider:'dynamic'，仅拉路由不动其他
+  // 「拉取云端路由」= 从云端拉取最新路由（POST /api/sync + provider:'dynamic'，仅拉路由不动其他
   // provider）→ 完成后重读 /api/state 重渲染。管理 Token 缺失时后端会静默空转
   // （discover fetchRoutes=false → 空结果无报错），故前端先探账户状态提前拦截提示。
   let syncingRoutes = false
@@ -2259,7 +2287,7 @@ export function renderRoutesView(container) {
     }
   }
 
-  btnRefresh.addEventListener('click', syncRoutes)
+  if (btnRefresh) btnRefresh.addEventListener('click', syncRoutes)
   load()
 }
 

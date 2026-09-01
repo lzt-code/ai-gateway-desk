@@ -137,6 +137,9 @@ export async function runSyncFlow({
   //   - 新模型：补全缺失字段
   //   - 已更新模型：重新匹配，修正历史错误富化（如 matchModel bug 导致的误匹配）
   const enrichIds = [...merged.newModels, ...merged.updatedModels]
+    // 动态路由（dynamic/ 前缀）跳过 enrich：路由名即展示名，不能被
+    // OpenRouter 同名模型的显示名覆盖（如 glm-5.3-flash → "Z.ai: GLM 5.3 Flash"）
+    .filter((modelId) => !modelId.startsWith('dynamic/'))
   const total = enrichIds.length
   let enriched = 0
   for (const modelId of enrichIds) {
