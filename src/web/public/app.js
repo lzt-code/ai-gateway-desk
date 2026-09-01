@@ -34,6 +34,19 @@ export const VIEW_HINTS = {
   account: '管理 API Token 与 Gateway Token（cfut_xxx）双槽位管理',
 }
 
+// ── Cloudflare 动态路由（Dynamic Routes）外部入口 ──────────
+// 模型页侧栏「动态路由 ↗」链接构建（纯函数，Node 测试可直接 import）：
+// accountId/gatewayId 齐全且非「未配置」（summarizeGatewayInfo 的占位文案）时，
+// 直达当前网关的动态路由页；否则回退 AI Gateway 列表页（官方 ?to= 跳转）。
+export const CF_GATEWAY_FALLBACK_URL = 'https://dash.cloudflare.com/?to=/:account/ai/ai-gateway'
+
+export function buildCfDynamicRoutesUrl(accountId, gatewayId) {
+  const valid = (v) => typeof v === 'string' && v.trim() !== '' && v !== '未配置'
+  if (!valid(accountId) || !valid(gatewayId)) return CF_GATEWAY_FALLBACK_URL
+  const enc = (v) => encodeURIComponent(v.trim())
+  return `https://dash.cloudflare.com/${enc(accountId)}/ai/ai-gateway/gateways/${enc(gatewayId)}/routing`
+}
+
 // 方案 1：首次切到模型页自动同步 — 会话级一次性标记（模块级，页面刷新重置）
 let _modelsAutoSyncDone = false
 
@@ -668,11 +681,39 @@ for (const name of VIEW_ORDER) {
   })
 }
 
+// ── 动态路由入口：按账户状态精化模型页侧栏链接 ────────────
+// 模型页渲染时调用：网关已配置 → 直达该网关的动态路由（Dynamic Routes）页；
+// 未配置 / 拉取失败 → 保持 index.html 里的回退链接（AI Gateway 列表页）。静默失败。
+export function applyCfRoutesLink(gateway) {
+  if (typeof document === 'undefined') return
+  const link = document.getElementById('cf-routes-link')
+  if (!link) return
+  const g = gateway || {}
+  const url = buildCfDynamicRoutesUrl(g.accountId, g.gatewayId)
+  link.href = url
+  const direct = url !== CF_GATEWAY_FALLBACK_URL
+  const title = direct
+    ? `打开 Cloudflare 动态路由（Dynamic Routes @ ${g.gatewayId}）`
+    : '打开 Cloudflare AI Gateway（未配置网关，登录后选择）'
+  link.title = title
+  link.setAttribute('aria-label', title)
+}
+
+async function initCfRoutesLink() {
+  try {
+    const res = await api('/api/account/status')
+    applyCfRoutesLink(res && res.gateway)
+  } catch {
+    // 状态拉取失败：保持回退链接，不打扰用户
+  }
+}
+
 // 启动：绑定选项卡事件委托 + 渲染默认视图（DOMContentLoaded 触发）
 export function start() {
   if (typeof document === 'undefined') return
   const go = () => {
     initActivityLog() // 底部处理过程日志栏（清空 / 收起展开按钮）
+    initCfRoutesLink() // 模型页侧栏「动态路由 ↗」精化到当前网关（静默失败）
     const bar = document.getElementById('tab-bar')
     if (bar) {
       bar.addEventListener('click', (e) => {

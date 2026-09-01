@@ -73,6 +73,16 @@
         <button id="mbtn-delete" class="btn btn-danger" type="button">删除</button>
         <button id="mbtn-add" class="btn btn-default" type="button">添加</button>
       </div>
+      <div class="side-group">
+        <div class="side-group-title">Cloudflare</div>
+        <!-- 动态路由（Dynamic Routes）外部入口：新窗口打开。默认指向 AI Gateway
+             列表页；app.js 启动拉取账户状态后，按 accountId/gatewayId 精化到
+             当前网关的动态路由页（未配置保持回退）。后续以自研路由配置页替换 -->
+        <a id="cf-routes-link" class="btn btn-default side-ext-link"
+           href="https://dash.cloudflare.com/?to=/:account/ai/ai-gateway"
+           target="_blank" rel="noopener noreferrer"
+           title="打开 Cloudflare AI Gateway（登录后选择网关）">动态路由 ↗</a>
+      </div>
     </div>
   </aside>
 </div>

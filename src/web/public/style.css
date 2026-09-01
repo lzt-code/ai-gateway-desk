@@ -693,6 +693,10 @@ button { font: inherit; }
 }
 .btn-hint { display: block; font-size: 0.7rem; font-weight: 400; opacity: 0.7; margin-top: 0.15rem; }
 
+/* 侧栏外部链接（模型页「动态路由 ↗」）：复用 .btn btn-default 外观，
+   <a> 需去下划线；↗ 表示新窗口打开 Cloudflare Dashboard */
+.side-ext-link { text-decoration: none; }
+
 /* ── 弹窗 <dialog>：渐变浮层 + 深阴影 + 磨砂遮罩 ──────── */
 dialog {
   background: var(--card-sheen), var(--elevated);
