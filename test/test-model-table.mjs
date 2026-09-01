@@ -9,13 +9,13 @@
  *   A: buildListItems 生成表格式行（模型ID/Provider/上下文/状态 四列对齐）
  *   B: 长模型 id 截断（显示宽度安全）
  *   C: buildTableHeader 与行共用列宽（对齐）
- *   D: buildProviderSidebarItems（第一项「全部」+ 计数排除 removed + 排序 + 截断）
- *   E: toggleAllStatus 仅切换指定模型（筛选结果），removed 不参与
+ *   D: buildProviderSidebarItems（第一项「全部」+ 计数 + 排序 + 截断）
+ *   E: toggleAllStatus 仅切换指定模型（筛选结果）
  *   F: 集成——侧栏筛选结果喂给 F2（applyModelFilters → toggleAllStatus）
  */
 
 import { buildListItems, buildTableHeader, buildProviderSidebarItems, strWidth } from '../src/tui/render.js'
-import { toggleAllStatus, applyModelFilters } from '../src/tui/actions.js'
+import { toggleAllStatus, applyModelFilters, deleteModel } from '../src/tui/actions.js'
 
 let failures = 0
 let checks = 0
@@ -77,9 +77,6 @@ section('测试 2: 场景 A — 表格行格式')
   const hidden = items.find((i) => i.modelId === 'openrouter/gpt-4o')
   check(hidden && hidden.text.includes('隐藏'), 'hidden 行含「隐藏」状态文字')
   check(hidden && hidden.text.includes('{yellow-fg}○{/yellow-fg}'), 'hidden 行含黄色 ○ 图标')
-
-  const removed = buildListItems({ 'x/m': { status: 'removed', metadata: { provider: 'x' } } }, 60)[0]
-  check(removed.text.includes('移除') && removed.text.includes('{red-fg}✕{/red-fg}'), 'removed 行含「移除」+ 红色 ✕')
 }
 
 // ── 测试 3：场景 B — 长 id 截断（显示宽度安全）──
@@ -116,22 +113,11 @@ section('测试 5: 场景 D — Provider 侧栏条目')
   check(items.length === 3, `侧栏 3 项（全部 + 2 个 provider），实际 ${items.length}`)
   check(items[0].provider === null, '第一项是「全部」（provider=null）')
   check(items[0].text.includes('全部'), '第一项显示「全部」')
-  check(items[0].count === 3, `「全部」计数 = 全部未移除模型 3（实际 ${items[0].count}）`)
+  check(items[0].count === 3, `「全部」计数 = 全部模型 3（实际 ${items[0].count}）`)
   check(items[1].provider === 'custom-agnes' && items[2].provider === 'openrouter',
     'provider 按 id 排序：custom-agnes, openrouter')
   check(items[1].count === 1 && items[2].count === 2, '各 provider 计数正确（1 / 2）')
   check(items.every((i) => widthOf(i.text) === 16), '每条宽度 = 16（侧栏宽度）')
-
-  // removed 不计入计数
-  const withRemoved = {
-    'a/m1': { status: 'selected', metadata: { provider: 'a' } },
-    'a/m2': { status: 'removed', metadata: { provider: 'a' } },
-    'b/m1': { status: 'hidden', metadata: { provider: 'b' } },
-  }
-  const items2 = buildProviderSidebarItems(withRemoved, 16)
-  check(items2[0].count === 2, '「全部」计数排除 removed（2）')
-  const a = items2.find((i) => i.provider === 'a')
-  check(a && a.count === 1, 'provider a 计数排除 removed（1）')
 
   // 超长 provider 截断
   const longP = 'very-long-provider-name'
@@ -140,34 +126,31 @@ section('测试 5: 场景 D — Provider 侧栏条目')
   check(widthOf(items3[1].text) === 16, '截断后宽度仍 = 16')
 }
 
-// ── 测试 6：场景 E — toggleAllStatus 按筛选范围 ──
-section('测试 6: 场景 E — toggleAllStatus 按范围切换')
+// ── 测试 6：场景 E — toggleAllStatus 按筛选范围 + deleteModel ──
+section('测试 6: 场景 E — toggleAllStatus 按范围切换 / deleteModel')
 {
   const st = {
     a: { status: 'selected' },
     b: { status: 'hidden' },
-    c: { status: 'removed' },
     d: { status: 'selected' },
   }
   const changed = toggleAllStatus(st, ['a', 'b'])
   check(changed === true, '范围内有可切换模型 → 返回 true')
   check(st.a.status === 'hidden' && st.b.status === 'hidden', '范围内有选中 → 全部隐藏（a/b 均 hidden）')
-  check(st.c.status === 'removed', 'removed 模型不受影响（c 保持）')
   check(st.d.status === 'selected', '范围外模型不受影响（d 保持 selected）')
 
   // 范围内全隐藏 → 切为全部选中
-  const st2 = { a: { status: 'hidden' }, b: { status: 'hidden' }, c: { status: 'removed' } }
+  const st2 = { a: { status: 'hidden' }, b: { status: 'hidden' } }
   toggleAllStatus(st2, ['a', 'b'])
   check(st2.a.status === 'selected' && st2.b.status === 'selected', '范围内无选中 → 全部选中')
-  check(st2.c.status === 'removed', 'removed 依旧不参与')
 
   // 缺省参数 = 全部模型（向后兼容）
-  const st3 = { a: { status: 'hidden' }, b: { status: 'selected' }, c: { status: 'removed' } }
+  const st3 = { a: { status: 'hidden' }, b: { status: 'selected' } }
   toggleAllStatus(st3)
-  check(st3.a.status === 'hidden' && st3.b.status === 'hidden' && st3.c.status === 'removed',
-    '缺省 modelIds 时作用于全部非 removed（有选中 → 全隐藏）')
+  check(st3.a.status === 'hidden' && st3.b.status === 'hidden',
+    '缺省 modelIds 时作用于全部模型（有选中 → 全隐藏）')
 
-  // 空范围 / 范围全 removed → 无变更
+  // 空范围 → 无变更
   const st4 = { a: { status: 'selected' } }
   check(toggleAllStatus(st4, []) === false, '空范围 → 返回 false')
   check(toggleAllStatus(st4, ['a', 'ghost']) === true && st4.a.status === 'hidden',
@@ -176,6 +159,11 @@ section('测试 6: 场景 E — toggleAllStatus 按范围切换')
   check(toggleAllStatus(st5, ['a']) === true, '单模型范围正常切换')
   const st6 = { a: { status: 'selected' } }
   check(toggleAllStatus(st6, ['ghost']) === false, '范围全是缺失 id → 返回 false')
+
+  // deleteModel：物理删除 + 幂等
+  const st7 = { a: { status: 'selected' }, b: { status: 'hidden' } }
+  check(deleteModel(st7, 'a') === true && !('a' in st7), 'deleteModel 直接删除条目')
+  check(deleteModel(st7, 'ghost') === false, '删除不存在的 id → false')
 }
 
 // ── 测试 7：场景 F — 集成（侧栏筛选结果喂给 F2）──

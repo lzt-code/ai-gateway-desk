@@ -117,7 +117,7 @@ Vanilla JS 单页（`app.js` / `index.html` / `style.css`），四个视图 tab�
 ### 4.6 模型管道 — `src/pipeline/` + `src/output/`
 
 - `enrich.js`：OpenRouter 富化（模块级缓存，仅新模型、仅补缺失字段，失败静默）
-- `merge.js`：**策略 A：provider 永远覆盖**；仅对成功查询的 provider 执行「未发现 → removed」
+- `merge.js`：**策略 A：provider 永远覆盖**；仅对成功查询的 provider 执行「未发现 → 直接删除」（manual 条目豁免）
 - `generate.js`：过滤 selected + 隐藏 provider（`enabled===false`）的模型 → 写 `data/models.json`
 - `deploy.js`：`wrangler kv:key put` 部署 models + `provider-routes` 路由映射（slug → pathPrefix）
 
@@ -162,25 +162,26 @@ UI 已迁移至 Web（2026-08-10），目录保留**纯逻辑模块**供 API 层
 ### 5.2 `data/model-states.json`（真相源，gitignore）
 
 ```json
-{ "modelId": { "status": "selected|hidden|removed", "provider": "...", "metadata": { ... } } }
+{ "modelId": { "status": "selected|hidden", "provider": "...", "metadata": { ... } } }
 ```
 
 状态机：
 
 ```
           发现新模型
-             │
-             ▼
-  selected ──隐藏──► hidden ──取消隐藏──► selected
-     │                ▲                      │
-     │  provider 不再返回                    │ provider 再次返回（复活）
-     ▼                │                      │
-  removed  ──删除──► 从 state 移除  ◄────────┘
+              │
+              ▼
+   selected ──隐藏──► hidden ──取消隐藏──► selected
+      │                ▲                      │
+      │  provider 不再返回                     │
+      ▼                │                      │
+   从 state 删除 ◄──────┘（同步时直接物理删除，
+                          manual 条目豁免；也可手工删除）
 ```
 
 - `selected`：写入 models.json，出现在 `/v1/models`
-- `hidden`：跨更新保持隐藏，不入列表
-- `removed`：provider 已下线，手动决定删除或保留
+- `hidden`：跨更新保持隐藏，不入列表；同步不会删除
+- 删除：无中间态，provider 不再返回时同步直接物理删除（手工模型需手工删除）
 
 ### 5.3 `data/models.json`（生成产物，gitignore）
 

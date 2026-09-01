@@ -34,12 +34,12 @@ export function toggleStatus(state, modelId) {
 }
 
 /**
- * d：一次性永久删除（无论是否已标记 removed，直接删除条目）
+ * 一次性永久删除条目（state 中直接移除，无中间态）
  * @param {object} state
  * @param {string} modelId
  * @returns {boolean} 是否发生变更
  */
-export function markRemovedOrDelete(state, modelId) {
+export function deleteModel(state, modelId) {
   if (!state[modelId]) return false
   removeModel(state, modelId)
   return true
@@ -49,12 +49,11 @@ export function markRemovedOrDelete(state, modelId) {
  * F2：批量切换（有选中 → 全部隐藏；无选中 → 全部选中）
  * @param {object} state
  * @param {string[]} [modelIds] - 仅切换这些模型（筛选结果）；缺省 = 全部模型。
- *   removed 状态的模型始终不参与切换。
  * @returns {boolean} 是否发生变更
  */
 export function toggleAllStatus(state, modelIds) {
   const ids = Array.isArray(modelIds) ? modelIds : Object.keys(state)
-  const targets = ids.filter((id) => state[id] && state[id].status !== 'removed')
+  const targets = ids.filter((id) => state[id])
   const currentSelected = targets.filter((id) => state[id].status === 'selected').length
   const targetStatus = currentSelected > 0 ? 'hidden' : 'selected'
   for (const id of targets) {

@@ -30,7 +30,7 @@ import { writeModelsJson } from '../output/generate.js'
 import { deployProviderRoutesToKV } from '../output/deploy.js'
 import {
   toggleStatus,
-  markRemovedOrDelete,
+  deleteModel,
   toggleAllStatus,
   collectProviders,
   applyModelFilters,
@@ -293,21 +293,21 @@ export function createApp({
       return c.json({ error: 'modelId is required' }, 400)
     }
     if (!state[body.modelId]) return c.json({ error: 'model not found' }, 404)
-    const changed = markRemovedOrDelete(state, body.modelId)
+    const changed = deleteModel(state, body.modelId)
     if (changed) stateStore.save(state)
     return c.json({ ok: true, changed, entry: state[body.modelId] ?? null })
   })
 
-  // POST /api/models/batch-toggle — 批量切换（modelIds 缺省 = 全部非 removed）
+  // POST /api/models/batch-toggle — 批量切换（modelIds 缺省 = 全部）
   app.post('/api/models/batch-toggle', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
     if (body.modelIds !== undefined && !Array.isArray(body.modelIds)) {
       return c.json({ error: 'modelIds must be an array' }, 400)
     }
-    // 预计算目标状态与参与数量（与 toggleAllStatus 内部逻辑一致：removed 永不参与）
+    // 预计算目标状态与参与数量（与 toggleAllStatus 内部逻辑一致）
     const ids = Array.isArray(body.modelIds) ? body.modelIds : Object.keys(state)
-    const targets = ids.filter((id) => state[id] && state[id].status !== 'removed')
+    const targets = ids.filter((id) => state[id])
     const currentSelected = targets.filter((id) => state[id].status === 'selected').length
     const targetStatus = currentSelected > 0 ? 'hidden' : 'selected'
     const changed = toggleAllStatus(state, body.modelIds)
@@ -315,7 +315,7 @@ export function createApp({
     return c.json({ ok: true, changed, status: targetStatus, count: targets.length })
   })
 
-  // POST /api/models/batch-remove — 批量永久删除（modelIds 缺省 = 全部非 removed）
+  // POST /api/models/batch-remove — 批量永久删除（modelIds 缺省 = 全部）
   app.post('/api/models/batch-remove', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
@@ -328,7 +328,7 @@ export function createApp({
       return c.json({ ok: true, changed: false, count: 0 })
     }
     for (const id of targets) {
-      markRemovedOrDelete(state, id)
+      deleteModel(state, id)
     }
     stateStore.save(state)
     return c.json({ ok: true, changed: true, count: targets.length })

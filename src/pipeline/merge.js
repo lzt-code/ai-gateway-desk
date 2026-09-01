@@ -42,10 +42,16 @@ function hasMetadataChanged(a, b) {
 /**
  * 将发现结果与现有 state 合并（策略 A：provider 覆盖）
  *
+ * 消失的模型（provider 不再返回）直接从 state 物理删除，不保留 removed 中间态；
+ * 手工添加的模型（entry.manual）豁免。hidden 状态跨同步保持不变。
+ *
  * @param {object} state - model-states.json 的内容
  *   { modelId: { status: string, provider: string, metadata: object } }
  * @param {object} discoveryResults - discoverModels 的返回值
  *   { results: [{ provider: string, models: Array<object> }], errors: Array }
+ * @returns {{
+ *   state: object,
+ *   newModels: string[],
  * @returns {{
  *   state: object,
  *   newModels: string[],
@@ -64,7 +70,7 @@ export function mergeDiscovery(state, discoveryResults) {
   // 收集本次发现中所有出现的模型 id（用于后面找消失的模型）
   const discoveredIds = new Set()
 
-  // 收集成功被查询的 provider slug，只有这些 provider 下的模型才受「未发现→移除」规则
+  // 收集成功被查询的 provider slug，只有这些 provider 下的模型才受「未发现→删除」规则
   const discoveredProviders = new Set(discoveryResults.results.map((r) => r.provider))
 
   // 遍历每个 provider 的模型列表
@@ -77,8 +83,8 @@ export function mergeDiscovery(state, discoveryResults) {
         // ---- 模型已存在 ----
         const entry = newState[modelId]
 
-        // 如果之前是 removed，复活为 selected
-        // 复活是真实变更（否则无计数 → 不落盘，重启后丢失），计入 updatedModels
+        // 旧版 removed 中间态已废弃：存量条目直接归位 selected（真实变更，计入 updatedModels，
+        // 否则无计数 → 不落盘，重启后丢失）
         if (entry.status === 'removed') {
           entry.status = 'selected'
           if (!updatedModels.includes(modelId)) {
@@ -124,17 +130,16 @@ export function mergeDiscovery(state, discoveryResults) {
     }
   }
 
-  // 处理 state 中存在但本次发现没返回的模型
-  // 注意：只对成功被查询的 provider 执行「未发现→移除」规则。
-  // 如果 provider 不支持模型列表接口（如火山方舟），它的模型不应被标记为 removed。
-  // 手工添加的模型（entry.manual === true）跳过自动移除，避免因上游 /models 不完整而被误删
-  for (const [modelId, entry] of Object.entries(newState)) {
+  // 处理 state 中存在但本次发现没返回的模型：直接物理删除（不做 removed 中间态）
+  // 注意：只对成功被查询的 provider 执行「未发现→删除」规则。
+  // 如果 provider 不支持模型列表接口（如火山方舟），它的模型不应被删除。
+  // 手工添加的模型（entry.manual === true）跳过自动删除，避免因上游 /models 不完整而被误删
+  for (const modelId of Object.keys(newState)) {
+    const entry = newState[modelId]
     if (entry.manual) continue
     if (!discoveredIds.has(modelId) && discoveredProviders.has(entry.provider)) {
-      if (entry.status !== 'removed') {
-        entry.status = 'removed'
-        removedModels.push(modelId)
-      }
+      delete newState[modelId]
+      removedModels.push(modelId)
     }
   }
 

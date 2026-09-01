@@ -46,7 +46,7 @@ export function saveState(state) {
  * @param {string} provider
  * @param {object} metadata
  * @param {object} [options]
- * @param {boolean} [options.manual] - 是否为手工添加（手工模型在同步时不因拉取不到而被标记 removed）
+ * @param {boolean} [options.manual] - 是否为手工添加（手工模型在同步时不因上游不再返回而被自动删除）
  */
 export function upsertModel(state, modelId, provider, metadata, options = {}) {
   const entry = {

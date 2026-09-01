@@ -60,15 +60,14 @@ const removedP = { id: 'sensenova', name: 'SenseNova', type: 'byok', enabled: tr
 // ── 1-5：buildProviderTableRows ───────────────────────────
 section('buildProviderTableRows')
 
-// 1：三态 mark（new/removed/null 各 1）
+// 1：mark 标记不再作为表格列（云端新增/云端已删由日志栏展示）
 const rows = buildProviderTableRows([newP, removedP, custom])
 check(rows.length === 3, 'new/removed/null 各 1 → 行数 3')
 const rowNew = rows.find((r) => r.id === 'deepseek')
 const rowRemoved = rows.find((r) => r.id === 'sensenova')
 const rowNull = rows.find((r) => r.id === 'agnes')
-check(!!rowNew && rowNew.html.includes('status-ok') && rowNew.html.includes('新增'), 'mark=new → 「新增」带 status-ok')
-check(!!rowRemoved && rowRemoved.html.includes('status-err') && rowRemoved.html.includes('云端已删'), 'mark=removed → 「云端已删」带 status-err')
-check(!!rowNull && !rowNull.html.includes('新增') && !rowNull.html.includes('云端已删'), 'mark=null → 无标记文本')
+check(!!rowNew && !rowNew.html.includes('>新增<'), 'mark=new → 表格行不渲染「新增」列标记')
+check(!!rowRemoved && !rowRemoved.html.includes('云端已删'), 'mark=removed → 表格行不渲染「云端已删」标记')
 
 // 2：type 映射（custom-provider/byok）
 check(!!rowNull && rowNull.html.includes('<td>Custom</td>'), 'custom-provider → 显示 Custom')
@@ -85,7 +84,7 @@ check(!!rowNull && rowNull.html.includes('title="点击切换启用/隐藏"'), '
 
 // 4：只读禁用（状态切换/编辑/删除）
 const roRows = buildProviderTableRows([custom], true)
-check(roRows.length === 1 && (roRows[0].html.match(/disabled/g) || []).length >= 3, 'readonly=true → 状态/编辑/删除按钮均含 disabled')
+check(roRows.length === 1 && (roRows[0].html.match(/disabled/g) || []).length >= 2, 'readonly=true → 状态/编辑/删除按钮均含 disabled')
 
 check(Array.isArray(buildProviderTableRows([])) && buildProviderTableRows([]).length === 0, '空数组 → 返回 []')
 

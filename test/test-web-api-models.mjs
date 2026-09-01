@@ -175,19 +175,8 @@ section('测试 10: batch-toggle — 全量')
   const { req } = makeApp()
   const res = await req('POST', '/api/models/batch-toggle', {})
   const body = await res.json()
-  check(body.count === 3, 'count === 3（全部非 removed）')
+  check(body.count === 3, 'count === 3（全部）')
   check(body.status === 'hidden', '有 selected → status === hidden')
-}
-
-section('测试 11: batch-toggle — removed 不参与')
-{
-  const withRemoved = structuredClone(sampleState)
-  withRemoved['openrouter/gpt-4o'].status = 'removed'
-  const { store, req } = makeApp(withRemoved)
-  const res = await req('POST', '/api/models/batch-toggle', {})
-  const body = await res.json()
-  check(body.count === 2, 'count === 2（removed 排除）')
-  check(store.state['openrouter/gpt-4o'].status === 'removed', 'removed 条目状态不变')
 }
 
 section('测试 12: batch-toggle — modelIds 非数组')

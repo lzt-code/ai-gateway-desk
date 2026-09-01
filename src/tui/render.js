@@ -99,7 +99,7 @@ function padLeft(text, width) {
 /**
  * 将 state 转为表格行数组，每项包含显示文本和模型 id
  *
- * 表格列：模型ID（弹性，截断）| Provider | 上下文（右对齐）| 输出（右对齐）| 状态（◉ 选中 / ○ 隐藏 / ✕ 移除）
+ * 表格列：模型ID（弹性，截断）| Provider | 上下文（右对齐）| 输出（右对齐）| 状态（◉ 选中 / ○ 隐藏）
  *
  * @param {object} state
  * @param {number} [width=60] - 表格可用显示宽度
@@ -108,9 +108,9 @@ function padLeft(text, width) {
 export function buildListItems(state, width = 60) {
   const { idW, providerW, ctxW, outW, statusW } = tableColumns(width)
   const items = []
-  // 按状态分组：selected > hidden > removed，组内按 id 排序
+  // 按状态分组：selected > hidden，组内按 id 排序
   const sorted = Object.entries(state).sort((a, b) => {
-    const order = { selected: 0, hidden: 1, removed: 2 }
+    const order = { selected: 0, hidden: 1 }
     const oa = order[a[1].status] ?? 99
     const ob = order[b[1].status] ?? 99
     if (oa !== ob) return oa - ob
@@ -121,9 +121,7 @@ export function buildListItems(state, width = 60) {
     const meta = entry.metadata || {}
     const statusText = entry.status === 'selected'
       ? '{green-fg}◉{/green-fg} 选中'
-      : entry.status === 'hidden'
-        ? '{yellow-fg}○{/yellow-fg} 隐藏'
-        : '{red-fg}✕{/red-fg} 移除'
+      : '{yellow-fg}○{/yellow-fg} 隐藏'
 
     const ctx = meta.context_length ? formatNumber(meta.context_length) : ''
     const out = meta.max_output_length ? formatNumber(meta.max_output_length) : ''
@@ -162,7 +160,7 @@ export function buildTableHeader(width = 60) {
 /**
  * 构建左侧 Provider 侧栏条目（第一项「全部」，其余按 id 排序）
  *
- * 每条格式：` provider …计数`（计数为未移除模型数，右对齐 2 位）
+ * 每条格式：` provider …计数`（计数为模型总数，右对齐 2 位）
  *
  * @param {object} state
  * @param {number} [width=16] - 侧栏显示宽度
@@ -171,12 +169,12 @@ export function buildTableHeader(width = 60) {
  */
 export function buildProviderSidebarItems(state, width = 16) {
   const inner = width - 4 // 前缀1空格 + 分隔1空格 + 计数2
-  const countNonRemoved = (entries) => entries.filter((e) => e.status !== 'removed').length
+  const countAll = (entries) => entries.length
   const list = [
-    { provider: null, count: countNonRemoved(Object.values(state)) },
+    { provider: null, count: countAll(Object.values(state)) },
     ...collectProviders(state).map((p) => ({
       provider: p,
-      count: countNonRemoved(Object.values(state).filter((e) => entryProvider(e) === p)),
+      count: countAll(Object.values(state).filter((e) => entryProvider(e) === p)),
     })),
   ]
   for (const item of list) {

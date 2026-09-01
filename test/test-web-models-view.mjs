@@ -53,18 +53,17 @@ section('buildModelTableRows')
   const items = [
     { modelId: 'openrouter/deepseek-r1', entry: { status: 'selected', metadata: { provider: 'openrouter' } } },
     { modelId: 'openrouter/gpt-4o', entry: { status: 'hidden', metadata: { provider: 'openrouter' } } },
-    { modelId: 'custom-agnes/agnes', entry: { status: 'removed', provider: 'custom-agnes', metadata: {} } },
   ]
   const rows = buildModelTableRows(items)
-  check(rows.length === 3, '三种状态 → 行数 3')
+  check(rows.length === 2, '两种状态 → 行数 2')
   check(rows.every((r) => r.html.includes('data-model-id=')), '每行含 data-model-id')
   check(
-    rows[0].html.includes('◉') && rows[1].html.includes('○') && rows[2].html.includes('✕'),
-    '图标分别 ◉ / ○ / ✕',
+    rows[0].html.includes('◉') && rows[1].html.includes('○'),
+    '图标分别 ◉ / ○',
   )
   check(
-    rows[0].html.includes('status-ok') && rows[1].html.includes('status-warn') && rows[2].html.includes('status-err'),
-    'class 分别 status-ok / status-warn / status-err',
+    rows[0].html.includes('status-ok') && rows[1].html.includes('status-warn'),
+    'class 分别 status-ok / status-warn',
   )
   check(
     rows[0].html.includes('class="model-copy"') && rows[0].html.includes('data-copy-model="openrouter/deepseek-r1"'),
@@ -84,6 +83,21 @@ section('buildModelTableRows')
     rows[1].html.includes('>grok-4.20</span>'),
     '无 name → 名称回退为 modelId 最后一段（grok-4.20）',
   )
+}
+{
+  // 操作列：手工模型有 编辑+删除，非手工只有 编辑
+  const rows = buildModelTableRows([
+    { modelId: 'p/manual-m', entry: { status: 'selected', manual: true, metadata: {} } },
+    { modelId: 'p/sync-m', entry: { status: 'selected', metadata: {} } },
+  ])
+  check(rows[0].html.includes('model-edit') && rows[0].html.includes('data-edit-model="p/manual-m"'),
+    '手工模型 → 行内编辑按钮（data-edit-model）')
+  check(rows[0].html.includes('model-delete') && rows[0].html.includes('data-delete-model="p/manual-m"'),
+    '手工模型 → 行内删除按钮（data-delete-model）')
+  check(rows[1].html.includes('model-edit') && rows[1].html.includes('data-edit-model="p/sync-m"'),
+    '非手工模型 → 行内编辑按钮')
+  check(!rows[1].html.includes('model-delete') && !rows[1].html.includes('data-delete-model'),
+    '非手工模型 → 无删除按钮（同步自动删除，无需手动）')
 }
 {
   // Provider 不再单独成列：id 前缀已含归属（custom-agnes/...），侧栏负责筛选
@@ -265,12 +279,20 @@ check(filterQuery({ provider: 'custom-agnes' }) === 'provider=custom-agnes', '�
   check(q === 'status=hidden', '仅 status → 单条件')
 }
 
-// ── 16-17：computeDirty ──────────────────────────────────
+// ── 16-17：computeDirty（KV 投影比较）─────────────────────
 section('computeDirty')
 {
   const snapshot = { 'a/1': { status: 'selected', metadata: { name: 'A' } } }
   check(computeDirty(snapshot, { 'a/1': { status: 'selected', metadata: { name: 'A' } } }) === false, '无变化 → false')
-  check(computeDirty(snapshot, { 'a/1': { status: 'hidden', metadata: { name: 'A' } } }) === true, '改 status → true')
+  check(computeDirty(snapshot, { 'a/1': { status: 'hidden', metadata: { name: 'A' } } }) === true, 'selected → hidden（KV 产物变化）→ true')
+  // 非 selected 条目的增删不影响 KV 产物 → false
+  check(computeDirty(snapshot, {
+    'a/1': { status: 'selected', metadata: { name: 'A' } },
+    'b/2': { status: 'hidden', metadata: { name: 'B' } },
+  }) === false, '新增 hidden 条目 → false（不入 models.json）')
+  check(computeDirty(snapshot, {}) === true, 'selected 条目被删除 → true')
+  // selected 条目 metadata 变化 → true
+  check(computeDirty(snapshot, { 'a/1': { status: 'selected', metadata: { name: 'A2' } } }) === true, 'selected metadata 变化 → true')
   const reordered = { 'a/1': { metadata: { name: 'A' }, status: 'selected' } }
   check(computeDirty(snapshot, reordered) === false, '键序不同内容相同 → false（键序无关深比较）')
 }

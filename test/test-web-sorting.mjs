@@ -5,7 +5,7 @@
  *  - sortViewItems：升/降序、不修改原数组、稳定性、字符串数字感知比较
  *  - nextSortState：三态循环（未排序 → asc → desc → 未排序）+ 换列重置 asc
  *  - MODEL_SORT_GETTERS：name（缺失回退 id 尾段）/ modelId / context（先上下文后输出，缺失排前）/ status
- *  - PROVIDER_SORT_GETTERS：slug / name / type / visibility（启用在前）/ mark（无→新增→云端已删）
+ *  - PROVIDER_SORT_GETTERS：slug / name / type / visibility（启用在前，列名「状态」）
  */
 
 const mod = await import('../src/web/public/app.js')
@@ -37,7 +37,7 @@ function section(name) {
 const modelItems = [
   { modelId: 'openrouter/gpt-4o', entry: { status: 'hidden', metadata: { name: 'GPT-4o', context_length: 128000, max_output_length: 16384 } } },
   { modelId: 'custom-agnes/agnes', entry: { status: 'selected', metadata: { name: 'Agnes', context_length: '32000' } } },
-  { modelId: 'openrouter/deepseek-r1', entry: { status: 'removed', metadata: {} } },
+  { modelId: 'openrouter/deepseek-r1', entry: { status: 'hidden', metadata: {} } },
 ]
 
 const providers = [
@@ -126,10 +126,10 @@ section('测试 4: MODEL_SORT_GETTERS')
   check(sortViewItems(ctxTie, MODEL_SORT_GETTERS.context)[0].modelId === 'p/b',
     '上下文相同时按输出长度升序')
 
-  // status：selected(0) < hidden(1) < removed(2)
+  // status：selected(0) < hidden(1)
   const byStatus = sortViewItems(modelItems, MODEL_SORT_GETTERS.status)
-  check(byStatus.map((i) => i.entry.status).join(',') === 'selected,hidden,removed',
-    '状态排序：selected → hidden → removed')
+  check(byStatus.map((i) => i.entry.status).join(',') === 'selected,hidden,hidden',
+    '状态排序：selected → hidden')
 }
 
 // ── 测试 5：PROVIDER_SORT_GETTERS ──
@@ -145,15 +145,8 @@ section('测试 5: PROVIDER_SORT_GETTERS')
   check(byType[0].type === 'byok' && byType[3].type === 'custom-provider', 'type 升序：byok 在 custom-provider 前')
 
   const byVis = sortViewItems(providers, PROVIDER_SORT_GETTERS.visibility)
-  check(byVis.slice(0, 3).every((p) => p.enabled !== false), '可见性升序：启用在前')
+  check(byVis.slice(0, 3).every((p) => p.enabled !== false), '状态（visibility）升序：启用在前')
   check(byVis[3].enabled === false, '隐藏(zeta)排最后')
-
-  const byMark = sortViewItems(providers, PROVIDER_SORT_GETTERS.mark)
-  check(byMark.filter((p) => !p.mark)[0].id === 'zeta' || byMark.find((p) => !p.mark),
-    'mark 排序：无标记(0)在前')
-  const marks = byMark.map((p) => p.mark ?? 'none').join(',')
-  check(marks.indexOf('new') > marks.indexOf('none') && marks.indexOf('removed') > marks.indexOf('new'),
-    `mark 顺序：无标记 → 新增 → 云端已删（实际 ${marks}）`)
 
   // 集成：模型表按状态升序喂给行构建器顺序保持一致
   const rows = mod.buildModelTableRows(sortViewItems(modelItems, MODEL_SORT_GETTERS.status))

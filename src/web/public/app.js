@@ -55,7 +55,7 @@ export function buildCfDynamicRoutesUrl(accountId, gatewayId) {
 // 归一化 fallback 链供 renderRoutesView 展示。保持 state 插入顺序（即同步顺序）。
 //  - metadata.route_models：discover.js 归一化后的字符串数组（顺序即尝试顺序）
 //  - 旧数据（route_models 字段出现前同步）chain 为空数组，前端按「无链信息」降级
-//  - status 原样透出（selected/hidden/removed），视图自行决定展示过滤
+//  - status 原样透出（selected/hidden），视图自行决定展示过滤
 export function collectDynamicRoutes(state) {
   const out = []
   if (!state || typeof state !== 'object') return out
@@ -805,17 +805,16 @@ const sortLengthValue = (v) => {
 }
 
 // Provider 列取值器（th[data-sort] 键 → 排序值）
-// visibility：启用(0) 在 隐藏(1) 前；mark：无标记(0) → 新增(1) → 云端已删(2)
+// visibility：启用(0) 在 隐藏(1) 前（列名「状态」）
 export const PROVIDER_SORT_GETTERS = {
   slug: (p) => String(p && p.id) || '',
   name: (p) => String(p && p.name != null ? p.name : ''),
   type: (p) => String(p && p.type) || '',
   visibility: (p) => (p && p.enabled === false ? 1 : 0),
-  mark: (p) => (p && p.mark === 'new' ? 1 : p && p.mark === 'removed' ? 2 : 0),
 }
 
-// 模型状态排序位次（与 TUI 分组一致：selected > hidden > removed）
-const MODEL_STATUS_RANK = { selected: 0, hidden: 1, removed: 2 }
+// 模型状态排序位次（与 TUI 分组一致：selected > hidden）
+const MODEL_STATUS_RANK = { selected: 0, hidden: 1 }
 
 // 模型列取值器（th[data-sort] 键 → 排序值）；context 先按上下文再按输出长度
 export const MODEL_SORT_GETTERS = {
@@ -833,11 +832,10 @@ export const MODEL_SORT_GETTERS = {
 // 数据流（交付包 §2 决策）：进入视图拉一次 /api/state + /api/providers/list 到内存；
 // 变更操作走 POST 端点并用响应更新内存态，再重新 applyFilter（不整页刷新）。
 
-// 状态图标：selected→◉(ok) / hidden→○(warn) / removed→✕(err)
+// 状态图标：selected→◉(ok) / hidden→○(warn)
 const STATUS_MAP = {
   selected: { icon: '◉', text: '选中', cls: 'ok' },
   hidden: { icon: '○', text: '隐藏', cls: 'warn' },
-  removed: { icon: '✕', text: '移除', cls: 'err' },
 }
 
 function escapeHtml(s) {
@@ -872,7 +870,8 @@ function formatContextOutput(ctx, out) {
 }
 
 // 模型数据（/api/models/filtered 的 items）→ 表格行 HTML 数组
-// 列：模型名称 / 模型ID / 上下文/输出 / 状态（Provider 不单独成列：id 前缀已含归属，侧栏负责筛选）
+// 列：模型名称 / 模型ID / 上下文/输出 / 状态 / 操作（Provider 不单独成列：id 前缀已含归属，侧栏负责筛选）
+// 操作列：手工添加的模型（entry.manual）有 编辑+删除 按钮，非手工模型只有 编辑 按钮
 // 返回 [{ modelId, html }]，html 为 <tr data-model-id="...">...</tr>
 export function buildModelTableRows(items) {
   const rows = []
@@ -891,6 +890,15 @@ export function buildModelTableRows(items) {
     const badge = isDynamic
       ? `<span class="dynamic-tag" title="Cloudflare 网关动态路由">动态路由</span>`
       : ''
+    // 操作列：删除按钮仅手工添加的模型有（非手工模型由同步自动删除，无需手动删除）
+    // 按钮样式与 Provider 表统一（带边框小图标：✎ 编辑 / ✕ 删除）
+    const actionsHtml =
+      `<td class="model-actions">` +
+      `<button class="model-edit" data-edit-model="${escapeHtml(modelId)}" title="编辑模型信息" type="button">✎</button>` +
+      (entry.manual
+        ? `<button class="model-delete" data-delete-model="${escapeHtml(modelId)}" title="删除模型" type="button">✕</button>`
+        : '') +
+      `</td>`
     const html =
       `<tr data-model-id="${escapeHtml(modelId)}" class="${rowCls}">` +
       `<td>${badge}<span class="model-name-text" title="${escapeHtml(modelName)}">${escapeHtml(modelName)}</span></td>` +
@@ -898,6 +906,7 @@ export function buildModelTableRows(items) {
       `<button class="model-copy" data-copy-model="${escapeHtml(modelId)}" title="复制完整模型名称（含 Provider）" type="button">⧉</button></td>` +
       `<td>${contextText}</td>` +
       `<td><button class="status-toggle" data-model-id="${escapeHtml(modelId)}" title="切换状态" type="button"><span class="status-${st.cls}">${st.icon} ${st.text}</span></button></td>` +
+      actionsHtml +
       `</tr>`
     rows.push({ modelId, html })
   }
@@ -997,22 +1006,22 @@ function deepEqual(a, b) {
   return true
 }
 
-// dirty 判定：深度比较初始快照与当前状态（键序无关）
-// metadata.id 是冗余字段（与 state key 重复），缺失时自动补全不应视为脏
+// dirty 判定：只比较「KV 部署投影」是否变化，与 models.json 生成逻辑对应：
+//   - 仅 status === 'selected' 的条目会写入 models.json（generate.js），
+//     因此删除/隐藏非选中条目不影响 KV 产物 → 不标未保存；
+//   - selected 条目的 metadata 变化（含 selected↔hidden 切换、增删条目）→ true。
+// metadata.id 是冗余字段（与 state key 重复），缺失时自动补全不应视为脏。
 function stripMetadataId(state) {
   if (!state || typeof state !== 'object') return state
   const out = {}
   for (const [k, v] of Object.entries(state)) {
-    if (!v || typeof v !== 'object') {
-      out[k] = v
-      continue
-    }
-    const { metadata, ...rest } = v
+    if (!v || typeof v !== 'object' || v.status !== 'selected') continue
+    const { metadata } = v
     if (metadata && typeof metadata === 'object' && Object.prototype.hasOwnProperty.call(metadata, 'id')) {
       const { id: _id, ...mRest } = metadata
-      out[k] = { ...rest, metadata: mRest }
+      out[k] = mRest
     } else {
-      out[k] = v
+      out[k] = metadata
     }
   }
   return out
@@ -1120,12 +1129,26 @@ function injectModelsStyles() {
     }
     .model-copy:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--border-strong); }
     .model-copy.copied { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+    // 操作列：行内编辑/删除小按钮（编辑=所有模型；删除=仅手工添加）
+    // 表头「操作」左对齐，与单元格内容对齐；列宽固定，保证两按钮并排不换行
+    .model-table th:last-child {
+      text-align: left; width: 4.6rem; min-width: 4.6rem; max-width: 4.6rem;
+    }
+    .model-table td.model-actions { white-space: nowrap; text-align: left; }
+    .model-edit, .model-delete {
+      background: transparent; border: 1px solid var(--border); border-radius: 6px;
+      width: 1.6rem; height: 1.6rem; cursor: pointer;
+      color: var(--muted); font-size: 0.75rem; line-height: 1;
+      transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out), border-color 0.15s var(--ease-out);
+    }
+    .model-delete { margin-left: 0.25rem; }
+    .model-edit:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-border); }
+    .model-delete:hover { background: var(--err-soft); color: var(--err); border-color: var(--err); }
     .model-table tbody tr { cursor: pointer; transition: background 0.15s var(--ease-out); }
     .model-table tbody tr.row-active {
       background: var(--accent-soft);
       box-shadow: inset 0 0 0 1px var(--accent-border);
     }
-    .model-table tbody tr.row-removed { opacity: 0.6; }
     /* 动态路由行：浅 accent 底色区分 */
     .model-table tbody tr.row-dynamic { background: var(--accent-soft); }
     .model-table tbody tr.row-dynamic.row-active { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-border); }
@@ -1209,7 +1232,7 @@ export function renderModelsView(container) {
   let snapshot = {}           // 进入视图时的初始快照（dirty 基准）
   let provider = null         // 侧栏筛选（null = 全部）
   let keyword = ''            // 关键字筛选（仅筛选条件，不标 dirty，已知坑 6）
-  let status = null           // 状态筛选（null = 全部，selected/hidden/removed）
+  let status = null           // 状态筛选（null = 全部，selected/hidden）
   let sortKey = null          // 列排序（th[data-sort]，null = 后端默认顺序）
   let sortDir = 'asc'         // 排序方向（asc/desc，sortKey=null 时无意义）
   let items = []              // 当前筛选结果
@@ -1233,7 +1256,6 @@ export function renderModelsView(container) {
             <button class="filter-status-btn active" data-status="">全部</button>
             <button class="filter-status-btn" data-status="selected">✓ 选中</button>
             <button class="filter-status-btn" data-status="hidden">○ 隐藏</button>
-            <button class="filter-status-btn" data-status="removed">✕ 已删除</button>
           </div>
           <input id="model-keyword" type="search" placeholder="关键字筛选（模型ID / 名称）…">
         </div>
@@ -1244,6 +1266,7 @@ export function renderModelsView(container) {
               <th class="sortable" data-sort="modelId" title="点击排序">模型ID<span class="sort-ind" hidden></span></th>
               <th class="sortable" data-sort="context" title="点击排序">上下文/输出<span class="sort-ind" hidden></span></th>
               <th class="sortable" data-sort="status" title="点击排序">状态<span class="sort-ind" hidden></span></th>
+              <th>操作</th>
             </tr></thead>
             <tbody></tbody>
           </table>
@@ -1266,8 +1289,6 @@ export function renderModelsView(container) {
   const btnSave = document.getElementById('mbtn-save')
   const btnBatchToggle = document.getElementById('mbtn-batch-toggle')
   const btnBatchRemove = document.getElementById('mbtn-batch-remove')
-  const btnEdit = document.getElementById('mbtn-edit')
-  const btnDelete = document.getElementById('mbtn-delete')
   const btnAdd = document.getElementById('mbtn-add')
   const progressPanel = document.getElementById('progress-panel')
 
@@ -1330,6 +1351,17 @@ export function renderModelsView(container) {
     const noProviders = providers.length === 0
     hintNoProvider.hidden = !noProviders
     hintNoMatch.hidden = noProviders || items.length > 0
+    updateBatchRemoveButton()
+  }
+
+  // 批量删除按钮态：仅当当前列表全部为手工添加的模型时点亮
+  // （非手工模型由同步自动删除，批量删除会破坏同步约定，故不允许）
+  function updateBatchRemoveButton() {
+    const allManual = items.length > 0 && items.every((it) => it.entry && it.entry.manual)
+    btnBatchRemove.disabled = !allManual
+    btnBatchRemove.title = allManual
+      ? `删除当前列表的 ${items.length} 个手工模型`
+      : '仅当当前列表全部为手工添加的模型时可用'
   }
 
   function selectRow(modelId) {
@@ -1400,7 +1432,7 @@ export function renderModelsView(container) {
   async function batchToggle() {
     if (syncing) return
     const targets = items
-      .filter((it) => it.entry && it.entry.status !== 'removed')
+      .filter((it) => it.entry)
       .map((it) => it.modelId)
     if (!targets.length) {
       flash('当前筛选结果没有可切换的模型', 'warn')
@@ -1429,6 +1461,11 @@ export function renderModelsView(container) {
       flash('当前筛选结果没有可删除的模型', 'warn')
       return
     }
+    // 守卫：仅手工添加的模型可批量删除（与按钮点亮条件一致）
+    if (!items.every((it) => it.entry && it.entry.manual)) {
+      flash('仅手工添加的模型可批量删除', 'warn')
+      return
+    }
     const yes = await confirmDialog(
       '批量删除模型',
       `将永久删除当前筛选出的 ${targets.length} 个模型，是否继续？`,
@@ -1451,14 +1488,14 @@ export function renderModelsView(container) {
     }
   }
 
-  async function editModel() {
+  async function editModel(modelId) {
     if (syncing) return
-    if (!selectedModelId) {
+    if (!modelId) {
       flash('请先选中一行', 'warn')
       return
     }
-    const meta = (state[selectedModelId] || {}).metadata || {}
-    const values = await promptDialog(`编辑模型：${selectedModelId}`, [
+    const meta = (state[modelId] || {}).metadata || {}
+    const values = await promptDialog(`编辑模型：${modelId}`, [
       { name: 'name', label: '名称（留空不修改）', type: 'text', value: meta.name || '' },
       { name: 'context_length', label: '上下文长度（留空不修改）', type: 'text', value: meta.context_length != null ? String(meta.context_length) : '' },
       { name: 'max_output_length', label: '输出长度（留空不修改）', type: 'text', value: meta.max_output_length != null ? String(meta.max_output_length) : '' },
@@ -1487,17 +1524,17 @@ export function renderModelsView(container) {
     if (String(values.description).trim() !== '') fields.description = String(values.description).trim()
     if (!Object.keys(fields).length) return
     try {
-      const res = await withBusy('正在更新模型信息…', api('/api/models/edit', { method: 'POST', body: { modelId: selectedModelId, fields } }))
-      if (state[selectedModelId]) {
-        state[selectedModelId] = { ...state[selectedModelId], metadata: res.metadata || {} }
+      const res = await withBusy('正在更新模型信息…', api('/api/models/edit', { method: 'POST', body: { modelId, fields } }))
+      if (state[modelId]) {
+        state[modelId] = { ...state[modelId], metadata: res.metadata || {} }
       }
       updateDirty()
       await applyFilter()
       flash('已保存修改', 'ok')
-      logActivity(`更新模型信息：${selectedModelId}（${Object.keys(fields).join('、')}）`, 'ok')
+      logActivity(`更新模型信息：${modelId}（${Object.keys(fields).join('、')}）`, 'ok')
     } catch (err) {
       flash(err.message, 'err')
-      logActivity(`更新模型信息失败：${selectedModelId}（${err.message}）`, 'err')
+      logActivity(`更新模型信息失败：${modelId}（${err.message}）`, 'err')
     }
   }
 
@@ -1785,8 +1822,10 @@ export function renderModelsView(container) {
     syncing = false
     appState().set('modelsSyncing', false)
     setSyncButtonsDisabled(false)
-    // setSyncButtonsDisabled(false) 会无脑启用 btnSyncOne，需按当前 provider 选择修正
+    // setSyncButtonsDisabled(false) 会无脑启用 btnSyncOne / btnBatchRemove，
+    // 需按当前 provider 选择 / 批量删除点亮条件修正
     updateSyncOneButton()
+    updateBatchRemoveButton()
     hideBlocking()
   }
 
@@ -1797,7 +1836,7 @@ export function renderModelsView(container) {
         state = s.state || {}
         providers = p.providers || []
         renderSidebar()
-        updateDirty() // 新模型进入内存态 → 相对初始快照 dirty（§6.e）
+        updateDirty() // 同步变更进入内存态 → 相对初始快照按 KV 投影比较（仅 selected 变化才算未保存）
         await applyFilter()
       })
       flash('同步完成', 'ok')
@@ -1982,15 +2021,21 @@ export function renderModelsView(container) {
     }
     const statusBtn = e.target.closest('.status-toggle')
     if (statusBtn) {
-      // 状态按钮：非 removed → toggle，removed → 永久删除（同右侧删除按钮）
+      // 状态按钮：selected ↔ hidden 切换
       const modelId = statusBtn.dataset.modelId
-      if (modelId) {
-        if (state[modelId] && state[modelId].status === 'removed') {
-          removeModel(modelId)
-        } else {
-          toggleModel(modelId)
-        }
-      }
+      if (modelId) toggleModel(modelId)
+      return
+    }
+    const editBtn = e.target.closest('.model-edit')
+    if (editBtn) {
+      const modelId = editBtn.dataset.editModel
+      if (modelId) editModel(modelId)
+      return
+    }
+    const deleteBtn = e.target.closest('.model-delete')
+    if (deleteBtn) {
+      const modelId = deleteBtn.dataset.deleteModel
+      if (modelId) removeModel(modelId)
       return
     }
     const tr = e.target.closest('tr[data-model-id]')
@@ -2019,14 +2064,6 @@ export function renderModelsView(container) {
   btnSave.addEventListener('click', () => saveModels(false))
   btnBatchToggle.addEventListener('click', batchToggle)
   btnBatchRemove.addEventListener('click', batchRemove)
-  btnEdit.addEventListener('click', editModel)
-  btnDelete.addEventListener('click', () => {
-    if (!selectedModelId) {
-      flash('请先选中一行', 'warn')
-      return
-    }
-    removeModel(selectedModelId)
-  })
   btnAdd.addEventListener('click', addModel)
 
   // 切走视图强制关闭 EventSource（已知坑 1 简单方案：切回不自动续，避免重复连接）
@@ -2310,8 +2347,8 @@ export function maskApiKey(value) {
 }
 
 // Provider 展示数组 → 表格行 HTML
-// 列：slug（id）/ name / type（Custom|BYOK）/ API Key（脱敏）/ 状态（启用|隐藏，status-toggle 按钮点击切换）/
-//     mark（new→「新增」(ok) / removed→「云端已删」(err) / null→无）
+// 列：slug（id）/ name / type（Custom|BYOK）/ API Key（脱敏）/ 状态（启用|隐藏，status-toggle 按钮点击切换）/ 操作（编辑|删除）
+// 云端合并标记（新增/云端已删）不再作为表格列，由底部日志栏 buildProviderDetailLogs 逐条展示
 // readonly=true → 状态切换/编辑/删除按钮加 disabled；返回 [{ id, html }]
 export function buildProviderTableRows(providers, readonly = false) {
   const rows = []
@@ -2329,9 +2366,6 @@ export function buildProviderTableRows(providers, readonly = false) {
     const statusText =
       `<button class="status-toggle" type="button" title="点击切换启用/隐藏"${readonly ? ' disabled' : ''}>` +
       `<span class="${enabled ? 'status-ok' : 'status-hidden'}">${enabled ? '启用' : '隐藏'}</span></button>`
-    let markHtml = ''
-    if (p.mark === 'new') markHtml = '<span class="status-ok">新增</span>'
-    else if (p.mark === 'removed') markHtml = '<span class="status-err">云端已删</span>'
     const disabledAttr = readonly ? ' disabled' : ''
     const html =
       `<tr data-provider-id="${escapeHtml(p.id)}">` +
@@ -2340,9 +2374,8 @@ export function buildProviderTableRows(providers, readonly = false) {
       `<td>${typeText}</td>` +
       `<td>${apiKeyHtml}</td>` +
       `<td>${statusText}</td>` +
-      `<td>${markHtml}</td>` +
-      `<td><button class="btn-edit" type="button"${disabledAttr}>编辑</button> ` +
-      `<button class="btn-delete" type="button"${disabledAttr}>删除</button></td>` +
+      `<td><button class="btn-edit" type="button"${disabledAttr} title="编辑 Provider">✎</button>` +
+      `<button class="btn-delete" type="button"${disabledAttr} title="删除 Provider">✕</button></td>` +
       `</tr>`
     rows.push({ id: p.id, html })
   }
@@ -2620,17 +2653,23 @@ function injectProvidersStyles() {
     .provider-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; transition: color 0.15s ease; }
     .provider-table th.sortable:hover, .provider-table th.sorted { color: var(--accent); }
     .provider-table .sort-ind { margin-left: 0.25em; font-size: 0.7rem; }
-    /* 编辑/删除：幽灵按钮（透明底 + hover 显边/显色） */
+    /* 操作列右对齐（与模型表一致） */
+    .provider-table th:last-child, .provider-table td:last-child { text-align: right; }
+    /* 编辑/删除：带边框小图标（与模型表 model-edit/model-delete 同款视觉：✎ 编辑 / ✕ 删除） */
     .provider-table .btn-edit, .provider-table .btn-delete {
-      background: transparent; color: var(--muted); border: 1px solid transparent;
-      border-radius: var(--radius-sm); padding: 0.15rem 0.55rem; cursor: pointer; font-size: 0.85rem;
+      background: transparent; border: 1px solid var(--border); border-radius: 6px;
+      width: 1.6rem; height: 1.6rem; margin-left: 0.25rem; cursor: pointer;
+      color: var(--muted); font-size: 0.75rem; line-height: 1;
       transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out), border-color 0.15s var(--ease-out);
     }
     .provider-table .btn-edit:hover {
       background: var(--accent-soft); color: var(--accent); border-color: var(--accent-border);
     }
     .provider-table .btn-delete:hover {
-      background: var(--err-soft); color: var(--err); border-color: var(--err-border);
+      background: var(--err-soft); color: var(--err); border-color: var(--err);
+    }
+    .provider-table .btn-edit:disabled, .provider-table .btn-delete:disabled {
+      cursor: not-allowed; opacity: 0.5;
     }
     .status-ok { color: var(--ok); }
     .status-err { color: var(--err); }
@@ -2693,9 +2732,8 @@ export function renderProvidersView(container) {
             <th class="sortable" data-sort="name" title="点击排序">name<span class="sort-ind" hidden></span></th>
             <th class="sortable" data-sort="type" title="点击排序">type<span class="sort-ind" hidden></span></th>
             <th>API Key</th>
-            <th class="sortable" data-sort="visibility" title="点击排序">可见性<span class="sort-ind" hidden></span></th>
-            <th class="sortable" data-sort="mark" title="点击排序">状态<span class="sort-ind" hidden></span></th>
-            <th></th>
+            <th class="sortable" data-sort="visibility" title="点击排序">状态<span class="sort-ind" hidden></span></th>
+            <th>操作</th>
           </tr></thead>
           <tbody></tbody>
         </table>

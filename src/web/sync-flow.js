@@ -29,7 +29,7 @@ import { enrichModel as enrichModelImpl } from '../pipeline/enrich.js'
  * @param {object} options.state - 当前 model-states 对象（会被合并出新对象，原对象不修改）
  * @param {string} [options.providerFilter] - 可选：只拉取指定 provider（网关 slug）。
  *   传入时跳过 provider 同步步（不重拉云端 provider 列表），仅 discover 该 provider → merge → enrich。
- *   merge 的「未发现→移除」规则只作用于该 provider，其他 provider 的模型原样保留（见 merge.js discoveredProviders 限定）。
+ *   merge 的「未发现→删除」规则只作用于该 provider，其他 provider 的模型原样保留（见 merge.js discoveredProviders 限定）。
  * @param {object} [options.deps] - 依赖覆盖，字段：syncProvidersToConfig / discoverModels /
  *                                  mergeDiscovery / enrichModel（缺省绑定真实模块）
  * @param {(event: object) => void} [options.onEvent] - 进度事件回调（SSE 转发）
@@ -130,7 +130,7 @@ export async function runSyncFlow({
     }
   }
 
-  // 3. 合并（策略 A：provider 覆盖，消失模型标记 removed）+ 富化新模型
+  // 3. 合并（策略 A：provider 覆盖，消失模型直接删除）+ 富化新模型
   emit({ type: 'phase', phase: 'enrich' })
   const merged = mergeDiscovery(state, discovery)
   // 新模型 + 已更新模型都执行 enrich：
