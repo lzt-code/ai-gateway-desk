@@ -32,7 +32,7 @@ export const VIEW_LABELS = {
 export const VIEW_HINTS = {
   providers: '云端合并展示 Provider；「隐藏」开关会同步 KV，跨 PC 生效',
   models: 'Provider 侧栏 + 模型表格；space 切换选中/隐藏；同步后保存并部署',
-  routes: '动态路由 fallback 链只读展示；数据随「拉取云端数据」同步更新，编辑请到 Cloudflare 后台',
+  routes: '动态路由 fallback 链只读展示；数据随「更新模型列表」同步更新，编辑请到 Cloudflare 后台',
   workers: 'Worker 代码无需修改，此视图仅管理部署',
   account: '管理 API Token 与 Gateway Token（cfut_xxx）双槽位管理',
 }
@@ -1941,7 +1941,7 @@ export function renderModelsView(container) {
     appState().set('modelsSyncing', true)
     setSyncButtonsDisabled(true)
     showProgress(isOne ? `拉取 ${providerName}…` : '同步中…')
-    showBlocking(isOne ? `正在拉取 ${providerName} 模型…` : '正在拉取云端数据…')
+    showBlocking(isOne ? `正在拉取 ${providerName} 模型…` : '正在更新模型列表…')
     logActivity(
       isOne ? `开始拉取 ${providerName} 模型…` : '开始同步（Provider 同步 → 发现模型 → 合并 → 富化 → 部署 KV）…',
       'info',
@@ -2147,7 +2147,7 @@ export function renderModelsView(container) {
 registerViewRenderer('models', renderModelsView)
 
 // ── 动态路由视图（view-routes）：只读展示 Cloudflare Dynamic Routes ────
-// 数据来源：/api/state（随「拉取云端数据」同步更新）；fallback 链来自
+// 数据来源：/api/state（随「更新模型列表」同步更新）；fallback 链来自
 // metadata.route_models（discover.js 归一化，数组顺序即尝试顺序）。
 // 只读定位：编辑仍在 Cloudflare 后台，视图内提供精化后的外链跳转。
 
@@ -2224,7 +2224,7 @@ export function renderRoutesView(container) {
     </div>
     <div class="routes-empty" id="routes-empty" hidden>未发现动态路由。需先在 Cloudflare 后台创建路由，再点「拉取云端路由」从云端拉取。</div>
     <div class="routes-foot">
-      <span>fallback 链自左向右依次尝试（前一级失败才降级）；「拉取云端路由」从云端拉取最新路由，全量同步（拉取云端数据）也会顺带更新</span>
+      <span>fallback 链自左向右依次尝试（前一级失败才降级）；「拉取云端路由」从云端拉取最新路由，全量同步（更新模型列表）也会顺带更新</span>
       <a id="routes-cf-link" href="${CF_GATEWAY_FALLBACK_URL}" target="_blank" rel="noopener noreferrer">在 Cloudflare 中编辑 ↗</a>
     </div>
   `
@@ -2331,7 +2331,7 @@ export function renderRoutesView(container) {
     const prevText = btnRefresh.textContent
     btnRefresh.textContent = '同步中…'
     try {
-      // 阻塞遮罩（withBlocking）：与模型页「拉取云端数据」一致，同步期间禁止其他操作
+      // 阻塞遮罩（withBlocking）：与模型页「更新模型列表」一致，同步期间禁止其他操作
       const res = await withBlocking('正在从云端拉取动态路由…', async () =>
         api('/api/sync', { method: 'POST', body: { provider: 'dynamic' } }),
       )
