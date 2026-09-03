@@ -83,6 +83,13 @@
            href="https://dash.cloudflare.com/?to=/:account/ai/ai-gateway"
            target="_blank" rel="noopener noreferrer"
            title="打开 Cloudflare AI Gateway（登录后选择网关）">动态路由 ↗</a>
+        <!-- AI Gateway 日志（Logs）外部入口：新窗口打开。默认指向 AI Gateway
+             列表页；app.js 启动拉取账户状态后，按 accountId/gatewayId 精化到
+             当前网关的日志页（未配置保持回退）。查看模型请求历史/调试返回异常 -->
+        <a id="cf-logs-link" class="btn btn-default side-ext-link"
+           href="https://dash.cloudflare.com/?to=/:account/ai/ai-gateway"
+           target="_blank" rel="noopener noreferrer"
+           title="打开 Cloudflare AI Gateway（登录后选择网关）">查看日志 ↗</a>
       </div>
     </div>
     <div id="routes-side-actions" class="side-actions" hidden>

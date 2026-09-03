@@ -50,6 +50,17 @@ export function buildCfDynamicRoutesUrl(accountId, gatewayId) {
   return `https://dash.cloudflare.com/${enc(accountId)}/ai/ai-gateway/gateways/${enc(gatewayId)}/routing`
 }
 
+// ── Cloudflare AI Gateway 日志（Logs）外部入口 ──────────
+// 模型页侧栏「查看日志 ↗」链接构建（纯函数，Node 测试可直接 import）：
+// accountId/gatewayId 齐全且非「未配置」（summarizeGatewayInfo 的占位文案）时，
+// 直达当前网关的日志页；否则回退 AI Gateway 列表页（官方 ?to= 跳转）。
+export function buildCfGatewayLogsUrl(accountId, gatewayId) {
+  const valid = (v) => typeof v === 'string' && v.trim() !== '' && v !== '未配置'
+  if (!valid(accountId) || !valid(gatewayId)) return CF_GATEWAY_FALLBACK_URL
+  const enc = (v) => encodeURIComponent(v.trim())
+  return `https://dash.cloudflare.com/${enc(accountId)}/ai/ai-gateway/gateways/${enc(gatewayId)}/logs`
+}
+
 // ── 动态路由视图：路由收集（纯函数，Node 测试可直接 import）──────
 // 从 /api/state 全集中收集动态路由条目（modelId 以 dynamic/ 开头），
 // 归一化 fallback 链供 renderRoutesView 展示。保持 state 插入顺序（即同步顺序）。
@@ -742,12 +753,40 @@ async function initCfRoutesLink() {
   }
 }
 
+// ── AI Gateway 日志入口：按账户状态精化模型页侧栏链接 ────────
+// 模型页渲染时调用：网关已配置 → 直达该网关的日志（Logs）页；
+// 未配置 / 拉取失败 → 保持 index.html 里的回退链接（AI Gateway 列表页）。静默失败。
+export function applyCfLogsLink(gateway) {
+  if (typeof document === 'undefined') return
+  const link = document.getElementById('cf-logs-link')
+  if (!link) return
+  const g = gateway || {}
+  const url = buildCfGatewayLogsUrl(g.accountId, g.gatewayId)
+  link.href = url
+  const direct = url !== CF_GATEWAY_FALLBACK_URL
+  const title = direct
+    ? `打开 Cloudflare AI Gateway 日志（Logs @ ${g.gatewayId}）`
+    : '打开 Cloudflare AI Gateway（未配置网关，登录后选择）'
+  link.title = title
+  link.setAttribute('aria-label', title)
+}
+
+async function initCfLogsLink() {
+  try {
+    const res = await api('/api/account/status')
+    applyCfLogsLink(res && res.gateway)
+  } catch {
+    // 状态拉取失败：保持回退链接，不打扰用户
+  }
+}
+
 // 启动：绑定选项卡事件委托 + 渲染默认视图（DOMContentLoaded 触发）
 export function start() {
   if (typeof document === 'undefined') return
   const go = () => {
     initActivityLog() // 底部处理过程日志栏（清空 / 收起展开按钮）
     initCfRoutesLink() // 模型页侧栏「动态路由 ↗」精化到当前网关（静默失败）
+    initCfLogsLink() // 模型页侧栏「查看日志 ↗」精化到当前网关（静默失败）
     const bar = document.getElementById('tab-bar')
     if (bar) {
       bar.addEventListener('click', (e) => {
