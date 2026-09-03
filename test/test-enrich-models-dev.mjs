@@ -199,8 +199,8 @@ try {
   orCallCount = mdCallCount = 0
   {
     const r = await enrichModel('custom-glm/glm-5.2', { id: 'custom-glm/glm-5.2' })
-    // name 由 OR 覆盖（"Z.ai: GLM 5.2"），MD 不覆盖
-    check('场景1 name=OR覆盖', r.name, 'Z.ai: GLM 5.2')
+    // name 由 OR 补全（input 无 name，fill-only 语义）
+    check('场景1 name=OR补全', r.name, 'Z.ai: GLM 5.2')
     // context_length OR 提供 128000
     check('场景1 context_length=OR', r.context_length, 128000)
     // max_output_length OR 缺失 → MD 补 131072
@@ -290,7 +290,7 @@ try {
     check('场景4 max_output_length', r.max_output_length, 16384)
   }
 
-  // ── 场景 5：已有字段不被覆盖（context_length 用户已填）──
+  // ── 场景 5：已有字段不被覆盖（context_length 用户已填，name 也不覆盖）──
   _resetCache()
   mockOR = OR_DATA
   mockMD = MD_CATALOG
@@ -298,10 +298,10 @@ try {
     const r = await enrichModel('custom-glm/glm-5.2', {
       id: 'custom-glm/glm-5.2',
       context_length: 999, // 用户已填，不应被覆盖
-      name: '我的自定义名', // OR 无条件覆盖 name（修正历史误匹配语义），所以 name 会被 OR 改
+      name: '我的自定义名', // name 也遵循 fill-only，已有的不被覆盖
     })
     check('场景5 context_length不覆盖', r.context_length, 999)
-    check('场景5 name=OR覆盖（修正误匹配）', r.name, 'Z.ai: GLM 5.2')
+    check('场景5 name不覆盖（fill-only）', r.name, '我的自定义名')
   }
 
   // ── 场景 6：双源都失败，返回原 metadata（不抛错）──

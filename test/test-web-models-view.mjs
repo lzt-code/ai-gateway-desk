@@ -315,16 +315,41 @@ section('computeDirty')
   const snapshot = { 'a/1': { status: 'selected', metadata: { name: 'A' } } }
   check(computeDirty(snapshot, { 'a/1': { status: 'selected', metadata: { name: 'A' } } }) === false, '无变化 → false')
   check(computeDirty(snapshot, { 'a/1': { status: 'hidden', metadata: { name: 'A' } } }) === true, 'selected → hidden（KV 产物变化）→ true')
-  // 非 selected 条目的增删不影响 KV 产物 → false
+  // hidden 条目增删影响 hidden-models KV → true
   check(computeDirty(snapshot, {
     'a/1': { status: 'selected', metadata: { name: 'A' } },
     'b/2': { status: 'hidden', metadata: { name: 'B' } },
-  }) === false, '新增 hidden 条目 → false（不入 models.json）')
+  }) === true, '新增 hidden 条目 → true（入 hidden-models KV）')
   check(computeDirty(snapshot, {}) === true, 'selected 条目被删除 → true')
   // selected 条目 metadata 变化 → true
   check(computeDirty(snapshot, { 'a/1': { status: 'selected', metadata: { name: 'A2' } } }) === true, 'selected metadata 变化 → true')
   const reordered = { 'a/1': { metadata: { name: 'A' }, status: 'selected' } }
   check(computeDirty(snapshot, reordered) === false, '键序不同内容相同 → false（键序无关深比较）')
+
+  // id/created 为易变字段，变化不算 dirty（与 merge.js VOLATILE_METADATA_FIELDS 对齐）
+  check(computeDirty(
+    { 'a/1': { status: 'selected', metadata: { name: 'A', id: 'a/1', created: 100 } } },
+    { 'a/1': { status: 'selected', metadata: { name: 'A', id: 'a/1', created: 200 } } },
+  ) === false, 'created 变化不算 dirty（易变字段）')
+
+  // manual 条目增删影响 manual-models KV → true
+  const snapManual = { 'a/1': { status: 'selected', metadata: { name: 'A' } } }
+  check(computeDirty(snapManual, {
+    'a/1': { status: 'selected', metadata: { name: 'A' } },
+    'b/2': { status: 'selected', manual: true, provider: 'b', metadata: { name: 'B' } },
+  }) === true, '新增 manual 条目 → true（入 manual-models KV）')
+
+  // manual 条目 metadata 变化 → true
+  check(computeDirty(
+    { 'b/2': { status: 'selected', manual: true, provider: 'b', metadata: { name: 'B' } } },
+    { 'b/2': { status: 'selected', manual: true, provider: 'b', metadata: { name: 'B2' } } },
+  ) === true, 'manual metadata 变化 → true')
+
+  // 非 selected/hidden/manual 条目不算 dirty
+  check(computeDirty(
+    { 'a/1': { status: 'selected', metadata: { name: 'A' } } },
+    { 'a/1': { status: 'selected', metadata: { name: 'A' } }, 'c/3': { status: 'removed', metadata: {} } },
+  ) === false, 'removed 条目不影响 dirty')
 }
 
 // ── 18-19：导出存在性 + 任务 30 回归 ─────────────────────

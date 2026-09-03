@@ -1061,29 +1061,33 @@ function deepEqual(a, b) {
   return true
 }
 
-// dirty 判定：只比较「KV 部署投影」是否变化，与 models.json 生成逻辑对应：
-//   - 仅 status === 'selected' 的条目会写入 models.json（generate.js），
-//     因此删除/隐藏非选中条目不影响 KV 产物 → 不标未保存；
-//   - selected 条目的 metadata 变化（含 selected↔hidden 切换、增删条目）→ true。
-// metadata.id 是冗余字段（与 state key 重复），缺失时自动补全不应视为脏。
-function stripMetadataId(state) {
+// dirty 判定：比较「KV 部署投影」是否变化，覆盖三个 KV 键：
+//   - models.json：selected 条目的 metadata（generate.js 剥离 status/provider）
+//   - hidden-models：hidden 条目的完整 entry（buildHiddenModelsMap）
+//   - manual-models：manual 条目的完整 entry（buildManualModelsMap）
+// metadata 中 id/created 为易变/冗余字段（与 merge.js VOLATILE_METADATA_FIELDS 对齐），
+// status/provider 在 generate.js 中会被剥离，均不参与对比。
+function stripForDirty(state) {
   if (!state || typeof state !== 'object') return state
   const out = {}
   for (const [k, v] of Object.entries(state)) {
-    if (!v || typeof v !== 'object' || v.status !== 'selected') continue
-    const { metadata } = v
-    if (metadata && typeof metadata === 'object' && Object.prototype.hasOwnProperty.call(metadata, 'id')) {
-      const { id: _id, ...mRest } = metadata
-      out[k] = mRest
+    if (!v || typeof v !== 'object') continue
+    if (v.status !== 'selected' && v.status !== 'hidden' && v.manual !== true) continue
+    const projection = { status: v.status, provider: v.provider }
+    if (v.manual === true) projection.manual = true
+    if (v.metadata && typeof v.metadata === 'object') {
+      const { id: _id, created: _created, status: _s, provider: _p, ...mRest } = v.metadata
+      projection.metadata = mRest
     } else {
-      out[k] = metadata
+      projection.metadata = v.metadata
     }
+    out[k] = projection
   }
   return out
 }
 
 export function computeDirty(snapshot, current) {
-  return !deepEqual(stripMetadataId(snapshot), stripMetadataId(current))
+  return !deepEqual(stripForDirty(snapshot), stripForDirty(current))
 }
 
 // 视图局部样式（style.css 不在本任务改动范围内，随视图注入一次）

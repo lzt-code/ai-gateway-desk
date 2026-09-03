@@ -243,8 +243,8 @@ function enrichFromOpenRouter(modelId, existingMetadata, orModels) {
     result.id = matched.id
   }
 
-  // name — 重新匹配覆盖：修正历史错误匹配（matchModel 修复后结果可能不同）
-  if (matched.name) {
+  // name — 只补全缺失字段，不覆盖已有值（与其他字段一致）
+  if (result.name === undefined && matched.name) {
     result.name = matched.name
   }
 

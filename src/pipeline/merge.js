@@ -109,8 +109,9 @@ export function mergeDiscovery(state, discoveryResults) {
           }
         }
 
-        // provider 不返回 name 但 metadata 有 name（可能是历史 enrich 填的错误值），
-        // 标记为 updatedModel 使 enrich 能重新匹配修正
+        // provider 不返回 name 但 metadata 有 name：触发 re-enrich 以补全
+        // OpenRouter/models.dev 可能新增的富化字段。enrich 对已有字段不覆盖
+        // （fill-only），因此不会产生无变化更新，仅填充缺失字段。
         if (
           !Object.prototype.hasOwnProperty.call(model, 'name') &&
           entry.metadata.name !== undefined &&
