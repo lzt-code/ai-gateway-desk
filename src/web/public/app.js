@@ -92,6 +92,45 @@ export function collectDynamicRoutes(state) {
 
 // 方案 1：首次切到模型页自动同步 — 会话级一次性标记（模块级，页面刷新重置）
 let _modelsAutoSyncDone = false
+// 启动链：应用打开后先更新 Provider 列表，完成后自动更新模型列表（不等待进入模型页）
+let _startupModelSyncTriggered = false
+let _globalModelSyncFn = null
+let _pendingStartupSync = false
+export function registerGlobalModelSync(fn) {
+  _globalModelSyncFn = fn
+  // 若 Provider 刷新已完成但模型视图当时未就绪，延迟到注册时补触发
+  if (_pendingStartupSync && !_startupModelSyncTriggered && !_modelsAutoSyncDone) {
+    _pendingStartupSync = false
+    triggerGlobalModelSync()
+  }
+}
+export function isModelsAutoSyncDone() { return _modelsAutoSyncDone }
+export function markModelsAutoSyncDone() { _modelsAutoSyncDone = true }
+export function triggerGlobalModelSync(opts) {
+  if (_startupModelSyncTriggered) return false
+  if (_modelsAutoSyncDone) return false
+  // 优先走视图内同步（能刷新表格高亮、dirty 等完整状态）
+  if (typeof _globalModelSyncFn === 'function') {
+    _startupModelSyncTriggered = true
+    _modelsAutoSyncDone = true
+    _globalModelSyncFn(opts)
+    return true
+  }
+  // 视图未就绪：走全局直连同步（不依赖表格内存态，进入视图后会重新加载）
+  if (typeof runGlobalModelSync === 'function') {
+    _startupModelSyncTriggered = true
+    _modelsAutoSyncDone = true
+    const ok = runGlobalModelSync(opts)
+    if (!ok) {
+      _startupModelSyncTriggered = false
+      _modelsAutoSyncDone = false
+    }
+    return ok
+  }
+  // 仍无执行器：标记 pending，待视图注册时重试
+  _pendingStartupSync = true
+  return false
+}
 
 // ── 全局状态 ───────────────────────────────────────────────
 // 返回 { currentView, setView, get, set, data }；纯内存对象，无 DOM 依赖。
@@ -482,6 +521,341 @@ export async function withBlocking(message, work) {
   } finally {
     hideBlocking()
   }
+}
+
+// ── 模型同步期间全局按钮禁用（替代阻塞弹窗）───────────────────
+// 保留全量版本供通用场景；模型同步专用为 setModelPageButtonsDisabled
+// 遍历页面所有 <button> 与链接按钮，禁用时记录原 disabled 态，恢复时
+// 还原，避免误启用原本禁用的按钮（如「拉取当前 Provider」未选中时）。
+export function setGlobalButtonsDisabled(disabled) {
+  if (typeof document === 'undefined') return
+  if (disabled) {
+    for (const btn of document.querySelectorAll('button')) {
+      if (btn.dataset.globalLock === '1') continue
+      btn.dataset.globalLock = '1'
+      btn.dataset.prevDisabled = btn.disabled ? '1' : '0'
+      btn.disabled = true
+    }
+    for (const a of document.querySelectorAll('a.btn, a.side-ext-link')) {
+      if (a.dataset.globalLock === '1') continue
+      a.dataset.globalLock = '1'
+      a.dataset.prevPointer = a.style.pointerEvents || ''
+      a.dataset.prevOpacity = a.style.opacity || ''
+      a.style.pointerEvents = 'none'
+      a.style.opacity = '0.6'
+      a.setAttribute('aria-disabled', 'true')
+    }
+  } else {
+    for (const btn of document.querySelectorAll('button')) {
+      if (btn.dataset.globalLock !== '1') continue
+      btn.disabled = btn.dataset.prevDisabled === '1'
+      delete btn.dataset.globalLock
+      delete btn.dataset.prevDisabled
+    }
+    for (const a of document.querySelectorAll('a.btn, a.side-ext-link')) {
+      if (a.dataset.globalLock !== '1') continue
+      a.style.pointerEvents = a.dataset.prevPointer || ''
+      a.style.opacity = a.dataset.prevOpacity || ''
+      a.removeAttribute('aria-disabled')
+      delete a.dataset.globalLock
+      delete a.dataset.prevPointer
+      delete a.dataset.prevOpacity
+    }
+  }
+}
+
+// ── 模型列表页按钮禁用（修正：仅禁用模型页，不影响切页/其它视图）──
+// 选中器：#view-models 内 + #model-side-actions（侧栏模型操作区）内
+// 的所有 button / a.btn，保持与 setGlobalButtonsDisabled 同样的
+// prevDisabled 保护语义，标签切换按钮 #tab-bar 不在范围内保持可点。
+export function setModelPageButtonsDisabled(disabled) {
+  if (typeof document === 'undefined') return
+  const collect = () => {
+    const els = []
+    for (const sel of ['#view-models', '#model-side-actions']) {
+      const root = document.querySelector(sel)
+      if (!root) continue
+      els.push(...root.querySelectorAll('button'))
+      els.push(...root.querySelectorAll('a.btn, a.side-ext-link'))
+    }
+    return els
+  }
+  if (disabled) {
+    for (const el of collect()) {
+      const isBtn = el.tagName === 'BUTTON'
+      if (el.dataset.modelLock === '1') continue
+      el.dataset.modelLock = '1'
+      if (isBtn) {
+        el.dataset.modelPrevDisabled = el.disabled ? '1' : '0'
+        el.disabled = true
+      } else {
+        el.dataset.modelPrevPointer = el.style.pointerEvents || ''
+        el.dataset.modelPrevOpacity = el.style.opacity || ''
+        el.style.pointerEvents = 'none'
+        el.style.opacity = '0.6'
+        el.setAttribute('aria-disabled', 'true')
+      }
+    }
+  } else {
+    for (const el of collect()) {
+      if (el.dataset.modelLock !== '1') continue
+      const isBtn = el.tagName === 'BUTTON'
+      if (isBtn) {
+        el.disabled = el.dataset.modelPrevDisabled === '1'
+        delete el.dataset.modelPrevDisabled
+      } else {
+        el.style.pointerEvents = el.dataset.modelPrevPointer || ''
+        el.style.opacity = el.dataset.modelPrevOpacity || ''
+        el.removeAttribute('aria-disabled')
+        delete el.dataset.modelPrevPointer
+        delete el.dataset.modelPrevOpacity
+      }
+      delete el.dataset.modelLock
+    }
+  }
+}
+
+// ── 全局模型同步（无视图依赖，供启动链直接调用）───────────────
+// 应用打开后 Provider 刷新完成后自动触发，不依赖模型视图是否已渲染。
+// 复用底部的 #progress-panel 与 #activity-log，拉取阶段全局禁用按钮，
+// 部署阶段放开，与视图内同步逻辑一致。
+let _globalSyncing = false
+let _globalEs = null
+let _globalFinished = false
+let _globalDeployReleased = false
+let _globalAutoHideTimer = null
+let _globalProgressDismissed = false
+
+function _globalShowProgress(title) {
+  if (typeof document === 'undefined') return
+  const panel = document.getElementById('progress-panel')
+  if (!panel) return
+  clearTimeout(_globalAutoHideTimer); _globalAutoHideTimer = null
+  _globalProgressDismissed = false
+  panel.hidden = false
+  panel.innerHTML = ''
+  const header = document.createElement('div')
+  header.className = 'progress-header'
+  const t = document.createElement('div')
+  t.className = 'progress-title'
+  t.textContent = title || '同步中…'
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'progress-close'
+  close.setAttribute('aria-label', '关闭同步进度')
+  close.textContent = '×'
+  close.addEventListener('click', () => {
+    _globalProgressDismissed = true
+    panel.hidden = true
+    if (_globalAutoHideTimer) { clearTimeout(_globalAutoHideTimer); _globalAutoHideTimer = null }
+  })
+  header.append(t, close)
+  panel.appendChild(header)
+}
+
+function _globalRenderProgress(st) {
+  if (typeof document === 'undefined') return
+  const panel = document.getElementById('progress-panel')
+  if (!panel || _globalProgressDismissed) return
+  panel.hidden = false
+  const slugs = Object.keys(st.providers)
+  const doneCount = slugs.filter((k) => st.providers[k].status === 'done').length
+  const errCount = slugs.filter((k) => st.providers[k].status === 'error').length
+  const isDone = st.phase === 'done'
+  const isError = !!st.error
+  const isDeploying = st.phase === 'deploy'
+  let titleText
+  if (isDone) {
+    const s = st.summary || {}
+    const parts = []
+    if ((s.newModels || []).length) parts.push(`新增 ${s.newModels.length}`)
+    if ((s.updatedModels || []).length) parts.push(`更新 ${s.updatedModels.length}`)
+    if ((s.removedModels || []).length) parts.push(`移除 ${s.removedModels.length}`)
+    titleText = `同步完成 ✓${doneCount}/${slugs.length}`
+    if (parts.length) titleText += ` · ${parts.join(' / ')}`
+    if (errCount > 0) titleText += ` · ✗${errCount} 失败`
+    if (st.deploy && !st.deploy.ok) titleText += ' · KV 部署失败（可手动重试）'
+    else if (st.deploy && st.deploy.ok) titleText += ' · 已部署到 KV'
+  } else if (isDeploying) {
+    titleText = `部署到 KV 中… ✓${doneCount}/${slugs.length}`
+  } else if (isError && slugs.length === 0) {
+    titleText = `同步失败：${st.error}`
+  } else if (isError) {
+    titleText = '同步失败'
+  } else {
+    titleText = `同步中… ✓${doneCount}/${slugs.length}`
+  }
+  panel.innerHTML = ''
+  const header = document.createElement('div')
+  header.className = 'progress-header'
+  const t = document.createElement('div')
+  t.className = 'progress-title'
+  t.textContent = titleText
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'progress-close'
+  close.setAttribute('aria-label', '关闭同步进度')
+  close.textContent = '×'
+  close.addEventListener('click', () => { _globalProgressDismissed = true; panel.hidden = true })
+  header.append(t, close)
+  panel.appendChild(header)
+  const showDetail = !isDone || errCount > 0 || (isError && slugs.length > 0)
+  if (showDetail) {
+    const body = document.createElement('div')
+    body.className = 'progress-body'
+    const addLine = (cls, mark, text) => {
+      const line = document.createElement('div')
+      line.className = 'progress-line'
+      const markEl = document.createElement('span')
+      markEl.className = cls
+      markEl.textContent = mark
+      line.append(markEl, document.createTextNode(text))
+      body.appendChild(line)
+    }
+    for (const slug of slugs) {
+      const p = st.providers[slug]
+      if (isDone && p.status === 'done') continue
+      if (p.status === 'done') addLine('p-ok', '✓', ` ${slug}${p.models != null ? ` (${p.models})` : ''}`)
+      else if (p.status === 'error') addLine('p-err', '✗', ` ${slug}${p.error ? ` ${p.error}` : ''}`)
+      else addLine('p-warn', '⋯', ` ${slug}`)
+    }
+    if (isError && slugs.length === 0) addLine('p-err', '✗', ` ${st.error}`)
+    panel.appendChild(body)
+  }
+  if (isDone) {
+    const hasError = errCount > 0 || !!((st.summary && (st.summary.errors || []).length))
+    clearTimeout(_globalAutoHideTimer)
+    _globalAutoHideTimer = setTimeout(() => { if (!_globalProgressDismissed) panel.hidden = true }, hasError ? 8000 : 5000)
+  } else if (isError) {
+    clearTimeout(_globalAutoHideTimer)
+    _globalAutoHideTimer = setTimeout(() => { if (!_globalProgressDismissed) panel.hidden = true }, 8000)
+  } else {
+    clearTimeout(_globalAutoHideTimer); _globalAutoHideTimer = null
+  }
+}
+
+function _globalLogSyncEvent(evtName, data) {
+  if (!data || typeof data !== 'object') return
+  if (evtName === 'phase') {
+    const names = { 'provider-sync': 'Provider 同步', discover: '发现模型', enrich: '合并与富化', deploy: '部署到 KV' }
+    logActivity(`同步阶段：${names[data.phase] || data.phase}`, 'info')
+  } else if (evtName === 'provider-sync') {
+    if (data.skipped) logActivity('Provider 同步跳过（未配置管理 Token）', 'warn')
+    else if (data.ok) {
+      logActivity(`Provider 同步完成：${data.message || ''}`, 'ok')
+      for (const id of data.newProviders || []) logActivity(`  新增 Provider：${id}`, 'ok')
+      for (const id of data.removedProviders || []) logActivity(`  移除 Provider：${id}`, 'warn')
+      for (const e of data.errors || []) {
+        const srcName = e.source === 'custom-providers' ? 'Custom Providers' : e.source === 'provider_configs' ? 'BYOK provider_configs' : e.source || 'cloud'
+        logActivity(`[${srcName}] 同步失败：${e.message || '未知错误'}（合并结果可能不完整）`, 'warn')
+      }
+    } else logActivity(`Provider 同步失败：${data.message || '未知错误'}`, 'warn')
+  } else if (evtName === 'discover') {
+    if (data.status === 'debug' && data.debug) {
+      for (const l of buildDebugLogLines(data.provider, data.debug)) logActivity(l.text, l.type)
+    } else if (data.status === 'done') logActivity(`发现模型：${data.provider} 完成（${data.models} 个）`, 'ok')
+    else if (data.status === 'error') logActivity(`发现模型：${data.provider} 失败：${data.error || '未知错误'}`, 'err')
+    else logActivity(`发现模型：${data.provider} 进行中…`, 'info')
+  } else if (evtName === 'enrich') {
+    if (data.enriched === data.total || data.enriched % 10 === 0) logActivity(`富化模型：${data.enriched}/${data.total}`, 'info')
+  } else if (evtName === 'deploy') {
+    if (data.ok) logActivity('自动部署到 KV 完成（models + hidden-models + manual-models）', 'ok')
+    else logActivity(`自动部署到 KV 失败：${data.error || '未知错误'}（可在模型页点【部署更改】重试）`, 'warn')
+  } else if (evtName === 'done') {
+    const s = data.summary || {}
+    const parts = []
+    if ((s.newModels || []).length) parts.push(`新增 ${s.newModels.length}`)
+    if ((s.updatedModels || []).length) parts.push(`更新 ${s.updatedModels.length}`)
+    if ((s.removedModels || []).length) parts.push(`移除 ${s.removedModels.length}`)
+    logActivity(`同步完成：${parts.join(' / ') || '无变化'}`, 'ok')
+  } else if (evtName === 'error') {
+    logActivity(`同步失败：${data.message || '未知错误'}`, 'err')
+  }
+}
+
+function _globalFinishSync() {
+  if (_globalFinished) return
+  _globalFinished = true
+  if (_globalEs) { _globalEs.close(); _globalEs = null }
+  _globalSyncing = false
+  setModelPageButtonsDisabled(false)
+}
+
+export function runGlobalModelSync({ providerFilter } = {}) {
+  if (_globalSyncing) return false
+  if (typeof document !== 'undefined' && typeof EventSource === 'undefined') {
+    flash('当前环境不支持 EventSource', 'err')
+    return false
+  }
+  // 若视图内同步已在进行，不重复触发
+  if (typeof document !== 'undefined') {
+    try { if (appState().get('modelsSyncing')) return false } catch {}
+  }
+  const isOne = !!providerFilter
+  const titleFilter = providerFilter || ''
+  _globalSyncing = true
+  _globalFinished = false
+  _globalDeployReleased = false
+  _globalProgressDismissed = false
+  setModelPageButtonsDisabled(true)
+  _globalShowProgress(isOne ? `拉取 ${titleFilter}…` : '同步中…')
+  logActivity(isOne ? `开始拉取 ${titleFilter} 模型…` : '开始同步（Provider 同步 → 发现模型 → 合并 → 富化 → 部署 KV）…', 'info')
+  _globalEs = new EventSource('/api/sync/progress')
+  const streamEvents = []
+  const collect = (evtName) => (e) => {
+    let data = null
+    try { data = JSON.parse(e.data) } catch {}
+    streamEvents.push({ event: evtName, data })
+    _globalLogSyncEvent(evtName, data)
+    _globalRenderProgress(buildSyncProgressState(streamEvents))
+    const isDeployPhase = (evtName === 'phase' && data && data.phase === 'deploy') || evtName === 'deploy'
+    if (isDeployPhase && !_globalDeployReleased) {
+      _globalDeployReleased = true
+      setModelPageButtonsDisabled(false)
+    }
+  }
+  _globalEs.addEventListener('phase', collect('phase'))
+  _globalEs.addEventListener('provider-sync', collect('provider-sync'))
+  _globalEs.addEventListener('discover', collect('discover'))
+  _globalEs.addEventListener('enrich', collect('enrich'))
+  _globalEs.addEventListener('deploy', collect('deploy'))
+  _globalEs.addEventListener('done', (e) => {
+    let doneData = null
+    try { doneData = JSON.parse(e.data) } catch {}
+    collect('done')(e)
+    _globalFinishSync()
+    // 尝试刷新模型视图内存态（若已渲染，触发其刷新；否则仅提示）
+    // 延迟刷新：给服务端一点时间完成文件落盘
+    setTimeout(async () => {
+      try {
+        // 若模型视图已注册，其内部会通过事件或轮询感知；此处仅保证全局提示
+        // 尝试触发模型视图的刷新回调（由视图注册）
+        if (typeof _globalModelSyncFn === 'function' && _globalModelSyncFn !== runGlobalModelSync) {
+          // 模型视图已存在，下次进入会加载最新数据，此处不额外操作
+        }
+        flash('同步完成', 'ok')
+      } catch {}
+    }, 300)
+  })
+  _globalEs.addEventListener('error', (e) => {
+    collect('error')(e)
+    _globalFinishSync()
+  })
+  _globalEs.onopen = () => {
+    if (!_globalEs) return
+    api('/api/sync', { method: 'POST', body: isOne ? { provider: providerFilter } : undefined })
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 409) flash('同步已在进行', 'warn')
+        else flash(err.message, 'err')
+        _globalFinishSync()
+      })
+  }
+  _globalEs.onerror = () => {
+    if (_globalFinished) return
+    flash('同步连接中断', 'err')
+    _globalFinishSync()
+  }
+  return true
 }
 
 // ── 复制文本到剪贴板（模型名称复制按钮用）──────────────────
@@ -1870,12 +2244,9 @@ export function renderModelsView(container) {
   }
 
   function setSyncButtonsDisabled(v) {
-    btnSync.disabled = v
-    btnSyncOne.disabled = v
-    btnSaveDeploy.disabled = v
-    btnSave.disabled = v
-    btnBatchToggle.disabled = v
-    btnBatchRemove.disabled = v
+    // 兼容旧调用：改为仅禁用模型页（可切页/操作其它视图）
+    if (v) setModelPageButtonsDisabled(true)
+    else setModelPageButtonsDisabled(false)
   }
 
   // 「拉取当前 Provider」按钮态：选中某 provider 时启用并显示其名称，选中「全部」时禁用
@@ -1909,33 +2280,31 @@ export function renderModelsView(container) {
     }
     syncing = false
     appState().set('modelsSyncing', false)
-    setSyncButtonsDisabled(false)
-    // setSyncButtonsDisabled(false) 会无脑启用 btnSyncOne / btnBatchRemove，
-    // 需按当前 provider 选择 / 批量删除点亮条件修正
+    // 拉取阶段已在 deploy 提前放开，此处兜底放开（若未提前放开则此处恢复）
+    setModelPageButtonsDisabled(false)
+    // 放开会按原禁用态还原，需按当前 provider 选择 / 批量删除点亮条件修正
     updateSyncOneButton()
     updateBatchRemoveButton()
-    hideBlocking()
   }
 
   async function refreshAfterSync(syncData) {
     try {
-      await withBlocking('正在刷新模型列表…', async () => {
-        const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
-        state = s.state || {}
-        providers = p.providers || []
-        renderSidebar()
-        // 自动部署成功 → 重置 snapshot（无未保存标记）；
-        // 自动部署失败或未触发 → 保留旧 snapshot（标未保存，提示用户手动部署）
-        if (syncData && syncData.autoDeployed === true) {
-          snapshot = structuredClone(state)
-        }
-        updateDirty()
-        // 本次同步新增模型高亮（仅本地内存态）：done 事件 summary.newModels 命中即标 row-new
-        newModelIds = new Set((syncData && syncData.summary && Array.isArray(syncData.summary.newModels))
-          ? syncData.summary.newModels
-          : [])
-        await applyFilter()
-      })
+      // 拉取完成已进入 KV 部署阶段，按钮已放开；此处仅刷新内存数据，无需再阻塞
+      const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
+      state = s.state || {}
+      providers = p.providers || []
+      renderSidebar()
+      // 自动部署成功 → 重置 snapshot（无未保存标记）；
+      // 自动部署失败或未触发 → 保留旧 snapshot（标未保存，提示用户手动部署）
+      if (syncData && syncData.autoDeployed === true) {
+        snapshot = structuredClone(state)
+      }
+      updateDirty()
+      // 本次同步新增模型高亮（仅本地内存态）：done 事件 summary.newModels 命中即标 row-new
+      newModelIds = new Set((syncData && syncData.summary && Array.isArray(syncData.summary.newModels))
+        ? syncData.summary.newModels
+        : [])
+      await applyFilter()
       flash('同步完成', 'ok')
     } catch (err) {
       flash(err.message, 'err')
@@ -1999,9 +2368,13 @@ export function renderModelsView(container) {
   // 触发同步。providerFilter 传入时为单 Provider 刷新模式：
   //   - 跳过 Provider 同步步（后端 runSyncFlow providerFilter 分支）
   //   - POST /api/sync 带 body { provider } 指定只拉取该 provider
-  //   - 遮罩/进度/日志文案区分单 Provider 与全量
+  //   - 日志/进度文案区分单 Provider 与全量；拉取阶段全局禁用按钮，进入
+  //     KV 部署时即放开（部署为服务端异步写 KV，不影响前端操作）
   function startSync({ providerFilter } = {}) {
-    if (syncing) return
+    if (syncing || _globalSyncing) {
+      flash('同步已在进行', 'warn')
+      return
+    }
     if (typeof EventSource === 'undefined') {
       flash('当前环境不支持 EventSource', 'err')
       return
@@ -2010,12 +2383,12 @@ export function renderModelsView(container) {
     const providerName = isOne ? providerDisplayName(providerFilter) : ''
     syncing = true
     finished = false
+    let deployReleased = false
     // 清空上一次同步的新增高亮：done 事件到达后由 refreshAfterSync 重新填充
     newModelIds = new Set()
     appState().set('modelsSyncing', true)
-    setSyncButtonsDisabled(true)
+    setModelPageButtonsDisabled(true)
     showProgress(isOne ? `拉取 ${providerName}…` : '同步中…')
-    showBlocking(isOne ? `正在拉取 ${providerName} 模型…` : '正在更新模型列表…')
     logActivity(
       isOne ? `开始拉取 ${providerName} 模型…` : '开始同步（Provider 同步 → 发现模型 → 合并 → 富化 → 部署 KV）…',
       'info',
@@ -2032,6 +2405,15 @@ export function renderModelsView(container) {
       streamEvents.push({ event: evtName, data })
       logSyncEvent(evtName, data)
       renderProgress(buildSyncProgressState(streamEvents))
+      // 拉取完成进入部署阶段即可放开按钮（KV 部署不影响前端操作）
+      const isDeployPhase = (evtName === 'phase' && data && data.phase === 'deploy') || evtName === 'deploy'
+      if (isDeployPhase && !deployReleased) {
+        deployReleased = true
+        setModelPageButtonsDisabled(false)
+        // 恢复后按当前筛选修正「拉取当前 Provider」与「批量删除」按钮态
+        updateSyncOneButton()
+        updateBatchRemoveButton()
+      }
     }
     es.addEventListener('phase', collect('phase'))
     es.addEventListener('provider-sync', collect('provider-sync'))
@@ -2071,6 +2453,9 @@ export function renderModelsView(container) {
       finishSync()
     }
   }
+
+  // 注册到全局启动链：Provider 刷新完成后若未同步过，可直接触发本视图的同步
+  registerGlobalModelSync(startSync)
 
   // ── 事件绑定 ────────────────────────────────────────────
   sidebar.addEventListener('click', (e) => {
@@ -2926,6 +3311,18 @@ export function renderProvidersView(container) {
         degradedReason: res.degradedReason,
       })
       for (const l of logs) logActivity(l.text, l.type)
+      // 启动链：首次自动加载 Provider 完成后自动更新模型列表（不等待进入模型页）
+      if (!force && !_startupModelSyncTriggered && !_modelsAutoSyncDone) {
+        try {
+          const r = await api('/api/sync/ready')
+          if (r && r.ready) {
+            logActivity('Provider 列表更新完成，自动开始更新模型列表…', 'info')
+            triggerGlobalModelSync()
+          }
+        } catch {
+          // 探测失败静默（不阻断 Provider 已渲染的列表）
+        }
+      }
     } catch (err) {
       flash(err.message, 'err')
       for (const l of buildProviderDetailLogs({ force, ok: false, error: err.message })) logActivity(l.text, l.type)
