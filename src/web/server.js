@@ -727,8 +727,8 @@ export function createApp({
         }
         emitEvent({ type: 'deploy', ok: autoDeployed, error: autoDeployError })
       }
-      emitEvent({ type: 'done', summary: result.summary, autoDeployed, autoDeployError })
-      return c.json({ ok: true, summary: result.summary, autoDeployed, autoDeployError })
+      emitEvent({ type: 'done', summary: result.summary, details: result.details || { added: [], removed: [], updated: [] }, autoDeployed, autoDeployError })
+      return c.json({ ok: true, summary: result.summary, details: result.details || { added: [], removed: [], updated: [] }, autoDeployed, autoDeployError })
     } catch (err) {
       // SSE 推送 error 事件后关闭流（无订阅者时是 no-op），HTTP 层走 onError → 500
       emitEvent({ type: 'error', message: err.message || String(err) })

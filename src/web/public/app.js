@@ -768,6 +768,9 @@ function _globalLogSyncEvent(evtName, data) {
     if ((s.updatedModels || []).length) parts.push(`更新 ${s.updatedModels.length}`)
     if ((s.removedModels || []).length) parts.push(`移除 ${s.removedModels.length}`)
     logActivity(`同步完成：${parts.join(' / ') || '无变化'}`, 'ok')
+    if (data.details && hasSyncDiff(data.details)) {
+      logActivity(`变更明细：新增 ${data.details.added.length} · 更新 ${data.details.updated.length} · 删除 ${data.details.removed.length}（调试模式表格见模型页）`, 'info')
+    }
   } else if (evtName === 'error') {
     logActivity(`同步失败：${data.message || '未知错误'}`, 'err')
   }
@@ -823,6 +826,14 @@ export function runGlobalModelSync({ providerFilter } = {}) {
     let doneData = null
     try { doneData = JSON.parse(e.data) } catch {}
     collect('done')(e)
+    // 调试模式：记录并尝试渲染同步变更明细（若模型视图已就绪则直接展示，否则缓存待进入视图时展示）
+    if (doneData && doneData.details && hasSyncDiff(doneData.details)) {
+      try { appState().set('lastSyncDetails', doneData.details) } catch {}
+      if (isDebugEnabled()) renderSyncDiffToPanel(doneData.details)
+    } else if (doneData && doneData.details) {
+      try { appState().set('lastSyncDetails', doneData.details) } catch {}
+      clearSyncDiffPanel()
+    }
     _globalFinishSync()
     // 尝试刷新模型视图内存态（若已渲染，触发其刷新；否则仅提示）
     // 延迟刷新：给服务端一点时间完成文件落盘
@@ -982,10 +993,16 @@ function initActivityLog() {
           paintDebug(res.enabled === true)
           logActivity(
             res.enabled
-              ? '已开启调试日志：下次同步将在本栏输出每个 Provider /models 的请求/响应（脱敏+预览），全文见服务器终端'
+              ? '已开启调试日志：下次同步将在本栏输出每个 Provider /models 的请求/响应（脱敏+预览），并在模型页以表格展示同步变更明细（新增/删除/字段变化）'
               : '已关闭调试日志',
             res.enabled ? 'warn' : 'info'
           )
+          // 切换后按新状态重渲染同步明细（关闭时隐藏，开启时若存在历史明细则显示）
+          if (!res.enabled && typeof clearSyncDiffPanel === 'function') clearSyncDiffPanel()
+          else if (res.enabled && typeof document !== 'undefined') {
+            const cached = typeof appState === 'function' ? appState().get('lastSyncDetails') : null
+            if (cached && hasSyncDiff(cached)) renderSyncDiffToPanel(cached)
+          }
         } else {
           logActivity(`切换调试日志失败：${(res && res.error) || '未知错误'}`, 'err')
         }
@@ -1021,6 +1038,122 @@ export function buildDebugLogLines(provider, d) {
     }
   }
   return lines
+}
+
+// ── 同步变更明细（调试模式表格，纯函数可单测）────────────────
+// details: { added: [{modelId,provider,metadata,status}], removed: [...], updated: [{modelId,provider,changes:[{field,oldValue,newValue}]}] }
+// added/removed: 单行摘要；updated: 按字段列出新旧值（metadata 差异已过滤 id/created，status/provider/manual 也纳入）
+
+export function hasSyncDiff(details) {
+  if (!details || typeof details !== 'object') return false
+  const { added, removed, updated } = details
+  return (Array.isArray(added) && added.length > 0)
+    || (Array.isArray(removed) && removed.length > 0)
+    || (Array.isArray(updated) && updated.length > 0)
+}
+
+export function formatDiffValue(v) {
+  if (v === undefined) return '—'
+  if (v === null) return 'null'
+  if (typeof v === 'string') return v === '' ? '""' : v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  try { return JSON.stringify(v) } catch { return String(v) }
+}
+
+// 是否开启调试（读取底部日志栏按钮状态 .active / dataset.on === '1'）
+export function isDebugEnabled() {
+  if (typeof document === 'undefined') return false
+  const btn = document.getElementById('btn-log-debug')
+  if (!btn) return false
+  return btn.classList.contains('active') || btn.dataset.on === '1'
+}
+
+// details → 表格 HTML（调试模式专用；非空才调用）
+export function buildSyncDiffHtml(details) {
+  if (!hasSyncDiff(details)) return ''
+  const esc = escapeHtml
+  const val = (v) => esc(formatDiffValue(v))
+  const lines = []
+  lines.push('<div class="sync-diff">')
+  lines.push('<div class="sync-diff-header"><div class="sync-diff-title">同步变更明细（调试）</div><button type="button" class="sync-diff-close" aria-label="关闭同步变更明细">×</button></div>')
+  const added = Array.isArray(details.added) ? details.added : []
+  const removed = Array.isArray(details.removed) ? details.removed : []
+  const updated = Array.isArray(details.updated) ? details.updated : []
+  const total = added.length + removed.length + updated.length
+  lines.push(`<div class="sync-diff-summary">新增 ${added.length} · 更新 ${updated.length} · 删除 ${removed.length} · 合计 ${total} 个模型</div>`)
+  if (added.length) {
+    lines.push('<div class="sync-diff-section"><div class="sync-diff-section-title">新增</div>')
+    lines.push('<table class="sync-diff-table"><thead><tr><th>模型ID</th><th>Provider</th><th>名称</th></tr></thead><tbody>')
+    for (const it of added) {
+      const name = it.metadata && typeof it.metadata.name === 'string' ? it.metadata.name : ''
+      lines.push(`<tr><td>${esc(it.modelId || '')}</td><td>${esc(it.provider || '')}</td><td>${esc(name)}</td></tr>`)
+    }
+    lines.push('</tbody></table></div>')
+  }
+  if (removed.length) {
+    lines.push('<div class="sync-diff-section"><div class="sync-diff-section-title">删除</div>')
+    lines.push('<table class="sync-diff-table"><thead><tr><th>模型ID</th><th>Provider</th><th>名称</th></tr></thead><tbody>')
+    for (const it of removed) {
+      const name = it.metadata && typeof it.metadata.name === 'string' ? it.metadata.name : ''
+      lines.push(`<tr><td>${esc(it.modelId || '')}</td><td>${esc(it.provider || '')}</td><td>${esc(name)}</td></tr>`)
+    }
+    lines.push('</tbody></table></div>')
+  }
+  if (updated.length) {
+    lines.push('<div class="sync-diff-section"><div class="sync-diff-section-title">字段变化</div>')
+    lines.push('<table class="sync-diff-table"><thead><tr><th>模型ID</th><th>字段</th><th>旧值</th><th>新值</th></tr></thead><tbody>')
+    for (const u of updated) {
+      const mid = esc(u.modelId || '')
+      const prov = esc(u.provider || '')
+      const changes = Array.isArray(u.changes) ? u.changes : []
+      if (!changes.length) continue
+      for (let i = 0; i < changes.length; i++) {
+        const c = changes[i]
+        const field = esc(c.field || '')
+        const ov = val(c.oldValue)
+        const nv = val(c.newValue)
+        if (i === 0) {
+          lines.push(`<tr><td rowspan="${changes.length}">${mid}<div class="diff-provider">${prov}</div></td><td>${field}</td><td class="diff-old">${ov}</td><td class="diff-new">${nv}</td></tr>`)
+        } else {
+          lines.push(`<tr><td>${field}</td><td class="diff-old">${ov}</td><td class="diff-new">${nv}</td></tr>`)
+        }
+      }
+    }
+    lines.push('</tbody></table></div>')
+  }
+  lines.push('</div>')
+  return lines.join('')
+}
+
+// 供调试开关与同步完成共用：按当前 debug 状态决定是否展示同步明细
+export function renderSyncDiffToPanel(details) {
+  if (typeof document === 'undefined') return false
+  const panel = document.getElementById('sync-diff-panel')
+  if (!panel) return false
+  if (!isDebugEnabled() || !hasSyncDiff(details)) {
+    panel.hidden = true
+    panel.innerHTML = ''
+    return false
+  }
+  panel.innerHTML = buildSyncDiffHtml(details)
+  panel.hidden = false
+  const btn = panel.querySelector('.sync-diff-close')
+  if (btn) {
+    btn.addEventListener('click', () => {
+      clearSyncDiffPanel()
+      try { appState().set('lastSyncDetails', null) } catch {}
+    })
+  }
+  return true
+}
+
+export function clearSyncDiffPanel() {
+  if (typeof document === 'undefined') return
+  const panel = document.getElementById('sync-diff-panel')
+  if (!panel) return
+  panel.hidden = true
+  panel.innerHTML = ''
+  try { appState().set('lastSyncDetails', null) } catch {}
 }
 
 // ── 渲染分派 + 切换 ────────────────────────────────────────
@@ -1661,6 +1794,25 @@ function injectModelsStyles() {
     .p-warn { color: var(--warn); }
     .p-err { color: var(--err); }
     @media (max-width: 900px) { .models-layout { grid-template-columns: 1fr; } }
+    /* 同步变更明细（调试模式表格） */
+    #sync-diff-panel { margin-top: 1rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); padding: 0.75rem; }
+    .sync-diff-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.35rem; }
+    .sync-diff-title { font-size: 0.85rem; font-weight: 600; color: var(--fg); }
+    .sync-diff-close {
+      background: transparent; color: var(--muted); border: 1px solid var(--border);
+      border-radius: 4px; padding: 0 0.4rem; cursor: pointer; font-size: 0.9rem; line-height: 1.3;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+    .sync-diff-close:hover { background: var(--accent-soft); color: var(--fg); border-color: var(--border-strong); }
+    .sync-diff-summary { font-size: 0.75rem; color: var(--muted); margin-bottom: 0.5rem; }
+    .sync-diff-section { margin-top: 0.75rem; }
+    .sync-diff-section-title { font-size: 0.78rem; font-weight: 600; color: var(--fg); margin-bottom: 0.3rem; }
+    .sync-diff-table { width: 100%; font-size: 0.78rem; border-collapse: collapse; }
+    .sync-diff-table th, .sync-diff-table td { padding: 0.3rem 0.4rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; word-break: break-word; }
+    .sync-diff-table th { color: var(--muted); font-weight: 600; background: var(--field-bg); }
+    .sync-diff-table .diff-provider { font-size: 0.68rem; color: var(--muted); }
+    .sync-diff-table .diff-old { color: var(--warn); background: var(--warn-soft); }
+    .sync-diff-table .diff-new { color: var(--ok); background: var(--ok-soft); }
   `
   document.head.appendChild(style)
 }
@@ -1725,6 +1877,7 @@ export function renderModelsView(container) {
         </div>
       </div>
     </div>
+    <div id="sync-diff-panel" hidden></div>
   `
   const sidebar = container.querySelector('.provider-sidebar')
   const keywordInput = container.querySelector('#model-keyword')
@@ -2103,6 +2256,11 @@ export function renderModelsView(container) {
       updateDirty()
       logActivity(deploy ? '已保存并提交部署' : '已保存', 'ok')
       flash(deploy ? '已保存并提交部署' : '已保存', 'ok')
+      // 保存后若调试面板有变更明细且已落盘，则清空（非空即未保存的直观体现）
+      if (hasSyncDiff(appState().get('lastSyncDetails'))) {
+        clearSyncDiffPanel()
+        appState().set('lastSyncDetails', null)
+      }
       // save-deploy 额外写 hidden-models / manual-models 到 KV，失败时提示重试
       if (deploy && res && res.kvError) {
         logActivity(`hidden/manual 模型 KV 同步失败：${res.kvError}（可重试部署）`, 'warn')
@@ -2294,18 +2452,31 @@ export function renderModelsView(container) {
       state = s.state || {}
       providers = p.providers || []
       renderSidebar()
+      // 调试模式同步变更明细：若 debug 开启且 details 非空，用表格展示（added/removed/字段变化）
+      const details = syncData && syncData.details ? syncData.details : null
+      if (details) appState().set('lastSyncDetails', details)
+      const shouldShowDiff = isDebugEnabled() && hasSyncDiff(details)
+      if (shouldShowDiff) renderSyncDiffToPanel(details)
+      else clearSyncDiffPanel()
       // 自动部署成功 → 重置 snapshot（无未保存标记）；
       // 自动部署失败或未触发 → 保留旧 snapshot（标未保存，提示用户手动部署）
+      // 按用户要求“表格非空则未保存”：若调试模式下表格非空且自动部署未成功，保持未保存态
       if (syncData && syncData.autoDeployed === true) {
         snapshot = structuredClone(state)
       }
       updateDirty()
+      // 调试模式覆盖：表格非空且自动部署未成功时强制标未保存（触发自动/手工保存 kv）
+      if (shouldShowDiff && !syncData?.autoDeployed) {
+        dirtyMark.hidden = false
+        appState().set('modelsDirty', true)
+      }
       // 本次同步新增模型高亮（仅本地内存态）：done 事件 summary.newModels 命中即标 row-new
       newModelIds = new Set((syncData && syncData.summary && Array.isArray(syncData.summary.newModels))
         ? syncData.summary.newModels
         : [])
       await applyFilter()
       flash('同步完成', 'ok')
+      if (shouldShowDiff) logActivity('同步变更明细已在模型页表格中展示（调试模式）', 'info')
     } catch (err) {
       flash(err.message, 'err')
     }
@@ -2360,6 +2531,9 @@ export function renderModelsView(container) {
       if ((s.updatedModels || []).length) parts.push(`更新 ${s.updatedModels.length}`)
       if ((s.removedModels || []).length) parts.push(`移除 ${s.removedModels.length}`)
       logActivity(`同步完成：${parts.join(' / ') || '无变化'}`, 'ok')
+      if (data.details && hasSyncDiff(data.details)) {
+        logActivity(`变更明细：新增 ${data.details.added.length} · 更新 ${data.details.updated.length} · 删除 ${data.details.removed.length}（调试表格见模型页）`, 'info')
+      }
     } else if (evtName === 'error') {
       logActivity(`同步失败：${data.message || '未知错误'}`, 'err')
     }
@@ -2581,6 +2755,9 @@ export function renderModelsView(container) {
         renderSidebar()
         updateDirty()
         await applyFilter()
+        // 进入视图时若已有历史同步明细且调试开启，则恢复表格展示
+        const cached = appState().get('lastSyncDetails')
+        if (isDebugEnabled() && hasSyncDiff(cached)) renderSyncDiffToPanel(cached)
       })
     } catch (err) {
       flash(err.message, 'err')

@@ -40,10 +40,69 @@ function hasMetadataChanged(a, b) {
 }
 
 /**
+ * 计算两个 metadata 对象的字段级差异（忽略易变字段 id/created）
+ * @param {object} oldMeta
+ * @param {object} newMeta
+ * @returns {Array<{ field: string, oldValue: any, newValue: any }>}
+ */
+export function diffMetadata(oldMeta, newMeta) {
+  const a = oldMeta && typeof oldMeta === 'object' ? oldMeta : {}
+  const b = newMeta && typeof newMeta === 'object' ? newMeta : {}
+  const keys = new Set(
+    [...Object.keys(a), ...Object.keys(b)].filter((k) => !VOLATILE_METADATA_FIELDS.includes(k))
+  )
+  const changes = []
+  for (const k of keys) {
+    const ov = a[k]
+    const nv = b[k]
+    if (JSON.stringify(ov) !== JSON.stringify(nv)) {
+      changes.push({ field: k, oldValue: ov, newValue: nv })
+    }
+  }
+  return changes
+}
+
+/**
+ * 基于同步前后的 state 与 summary 构建「调试模式同步变更明细」
+ * 供 sync-flow 与 server 下发给前端表格展示：
+ *   added: 本次新增模型（modelId/provider/metadata/status）
+ *   removed: 本次删除模型（来源为旧 state）
+ *   updated: 本次更新模型，每项含字段级 changes（含 status/provider/manual + metadata 差异）
+ * @param {object} oldState - 同步前的 state 浅拷贝（原对象，不会被修改）
+ * @param {object} newState - 同步后（含 enrich）的 state
+ * @param {{ newModels: string[], removedModels: string[], updatedModels: string[] }} summary
+ * @returns {{ added: Array, removed: Array, updated: Array }}
+ */
+export function buildSyncDetails(oldState, newState, summary) {
+  const s = summary || { newModels: [], removedModels: [], updatedModels: [] }
+  const added = (s.newModels || []).map((modelId) => {
+    const e = newState[modelId] || {}
+    return { modelId, provider: e.provider || null, metadata: e.metadata || {}, status: e.status || null }
+  })
+  const removed = (s.removedModels || []).map((modelId) => {
+    const e = oldState[modelId] || {}
+    return { modelId, provider: e.provider || null, metadata: e.metadata || {}, status: e.status || null }
+  })
+  const updated = (s.updatedModels || []).map((modelId) => {
+    const oldE = oldState[modelId] || {}
+    const newE = newState[modelId] || {}
+    const changes = []
+    if (oldE.status !== newE.status) changes.push({ field: 'status', oldValue: oldE.status, newValue: newE.status })
+    if (oldE.provider !== newE.provider) changes.push({ field: 'provider', oldValue: oldE.provider, newValue: newE.provider })
+    const oldManual = !!oldE.manual
+    const newManual = !!newE.manual
+    if (oldManual !== newManual) changes.push({ field: 'manual', oldValue: oldManual, newValue: newManual })
+    changes.push(...diffMetadata(oldE.metadata, newE.metadata))
+    return { modelId, provider: newE.provider || oldE.provider || null, changes }
+  }).filter((u) => u.changes.length > 0)
+  return { added, removed, updated }
+}
+
+/**
  * 将发现结果与现有 state 合并（策略 A：provider 覆盖）
  *
  * 消失的模型（provider 不再返回）直接从 state 物理删除，不保留 removed 中间态；
- * 手工添加的模型（entry.manual）豁免。hidden 状态跨同步保持不变。
+ * 手工添加的模型（entry.manual）豁免。hidden 状态跨同步保持不变.
  *
  * @param {object} state - model-states.json 的内容
  *   { modelId: { status: string, provider: string, metadata: object } }

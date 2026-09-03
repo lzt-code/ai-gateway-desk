@@ -16,7 +16,7 @@
 
 import { syncProvidersToConfig as syncProvidersToConfigImpl } from '../tui/actions.js'
 import { discoverModels as discoverModelsImpl } from '../cloudflare/discover.js'
-import { mergeDiscovery as mergeDiscoveryImpl } from '../pipeline/merge.js'
+import { mergeDiscovery as mergeDiscoveryImpl, buildSyncDetails as buildSyncDetailsImpl } from '../pipeline/merge.js'
 import { enrichModel as enrichModelImpl } from '../pipeline/enrich.js'
 
 /**
@@ -48,6 +48,8 @@ import { enrichModel as enrichModelImpl } from '../pipeline/enrich.js'
  *   // updatedModels 仅含「真实更新」：merge 改了 entry（status/metadata）或 enrich 改了
  *   // metadata 的模型。name 补救检查（provider 不返回 name 但 metadata 已有 name）
  *   // 触发的 re-enrich 候选若无实际变化不计入，避免每次同步都误报→不必要的 KV 部署。
+ *   details: { added: Array, removed: Array, updated: Array<{ modelId, provider, changes: Array<{ field, oldValue, newValue }> }> }
+ *   // 调试模式同步变更明细（表格展示）：哪些模型新增/删除/字段变化；details 为空表即无变更
  *   providerSync: { ok: boolean, skipped?: boolean, message?: string }
  * }>}
  */
@@ -68,6 +70,7 @@ export async function runSyncFlow({
     discoverModels = discoverModelsImpl,
     mergeDiscovery = mergeDiscoveryImpl,
     enrichModel = enrichModelImpl,
+    buildSyncDetails = buildSyncDetailsImpl,
   } = deps
 
   const providerSync = { ok: true }
@@ -129,6 +132,7 @@ export async function runSyncFlow({
         removedModels: [],
         errors: discovery.errors,
       },
+      details: { added: [], removed: [], updated: [] },
       providerSync,
     }
   }
@@ -185,14 +189,22 @@ export async function runSyncFlow({
     emit({ type: 'enrich', enriched, total })
   }
 
+  const summary = {
+    newModels: merged.newModels,
+    updatedModels: [...realUpdatedSet],
+    removedModels: merged.removedModels,
+    errors: discovery.errors,
+  }
+  let details
+  try {
+    details = buildSyncDetails(state, merged.state, summary)
+  } catch {
+    details = { added: [], removed: [], updated: [] }
+  }
   return {
     state: merged.state,
-    summary: {
-      newModels: merged.newModels,
-      updatedModels: [...realUpdatedSet],
-      removedModels: merged.removedModels,
-      errors: discovery.errors,
-    },
+    summary,
+    details,
     providerSync,
   }
 }
