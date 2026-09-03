@@ -27,7 +27,7 @@ import { loadState, saveState, upsertModel } from '../core/state.js'
 import { loadConfig, setDebugFlag } from '../core/config.js'
 import { readToken, readManagementToken } from '../core/token-store.js'
 import { writeModelsJson } from '../output/generate.js'
-import { deployProviderRoutesToKV } from '../output/deploy.js'
+import { deployProviderRoutesToKV, deployToKV as deployToKVImpl } from '../output/deploy.js'
 import {
   toggleStatus,
   deleteModel,
@@ -99,6 +99,12 @@ const GOODBYE_GRACE = 5000              // goodbye 后宽限（ms），期间新
 // 跨 PC 同步 provider 可见性（id → enabled）的 KV 键名
 const PROVIDER_VISIBILITY_KV_KEY = 'provider-visibility'
 
+// 跨 PC 同步隐藏模型（modelId → entry）的 KV 键名
+const HIDDEN_MODELS_KV_KEY = 'hidden-models'
+
+// 跨 PC 同步手工添加模型（modelId → entry）的 KV 键名
+const MANUAL_MODELS_KV_KEY = 'manual-models'
+
 // 缺省 stateStore：绑定真实 data/model-states.json（测试注入内存 mock 隔离）
 const DEFAULT_STATE_STORE = { load: loadState, save: saveState }
 
@@ -111,6 +117,7 @@ const DEFAULT_DEPS = {
   enrichModel,
   saveAndDeploy,
   writeModelsJson,
+  deployToKV: deployToKVImpl,
   readToken,
   readManagementToken,
   // 任务 28：Provider 管理 API
@@ -126,6 +133,18 @@ const DEFAULT_DEPS = {
     readKvJson(apiToken, accountId, namespaceId, PROVIDER_VISIBILITY_KV_KEY, {}),
   writeKvVisibility: async (apiToken, accountId, namespaceId, map) =>
     writeKvJson(apiToken, accountId, namespaceId, PROVIDER_VISIBILITY_KV_KEY, map),
+  readKvHiddenModels: async (apiToken, accountId, namespaceId) =>
+    readKvJson(apiToken, accountId, namespaceId, HIDDEN_MODELS_KV_KEY, {}),
+  writeKvHiddenModels: async (apiToken, accountId, namespaceId, map) =>
+    writeKvJson(apiToken, accountId, namespaceId, HIDDEN_MODELS_KV_KEY, map),
+  readKvManualModels: async (apiToken, accountId, namespaceId) =>
+    readKvJson(apiToken, accountId, namespaceId, MANUAL_MODELS_KV_KEY, {}),
+  writeKvManualModels: async (apiToken, accountId, namespaceId, map) =>
+    writeKvJson(apiToken, accountId, namespaceId, MANUAL_MODELS_KV_KEY, map),
+  buildHiddenModelsMap,
+  buildManualModelsMap,
+  applyHiddenModels,
+  applyManualModels,
   // 任务 29：Worker + 账户管理 API
   summarizeTokenStatus,
   summarizeGatewayInfo,
@@ -186,6 +205,84 @@ function loadModelsJsonState() {
 }
 
 /**
+ * 从 state 提取隐藏模型映射（modelId → entry），供写入 KV（跨 PC 一致）。
+ * 包含手工添加的隐藏模型（applyManualModels 会从 manual-models 重建，
+ * 但存入 hidden-models 也无害——applyHiddenModels 仅标记隐藏态）。
+ * @param {object} state - model-states
+ * @returns {Record<string, object>}
+ */
+function buildHiddenModelsMap(state) {
+  const map = {}
+  for (const [id, entry] of Object.entries(state || {})) {
+    if (entry && entry.status === 'hidden') {
+      map[id] = entry
+    }
+  }
+  return map
+}
+
+/**
+ * 从 state 提取手工添加模型映射（modelId → entry），供写入 KV（跨 PC 一致）。
+ * 包含 selected 和 hidden 的手工模型。
+ * @param {object} state - model-states
+ * @returns {Record<string, object>}
+ */
+function buildManualModelsMap(state) {
+  const map = {}
+  for (const [id, entry] of Object.entries(state || {})) {
+    if (entry && entry.manual === true) {
+      map[id] = entry
+    }
+  }
+  return map
+}
+
+/**
+ * 将 KV 隐藏模型映射应用到 state：KV 中列出的模型标记为 hidden（KV 优先）。
+ * 不在 state 中的条目跳过（provider 已下架或手工模型将由 applyManualModels 重建）。
+ * 返回 { state, changed } 供调用方判定是否需要落盘。
+ * @param {object} state - merge 后的 state
+ * @param {object} hiddenMap - KV 读取的 { modelId: entry }
+ * @returns {{ state: object, changed: boolean }}
+ */
+function applyHiddenModels(state, hiddenMap) {
+  if (!hiddenMap || typeof hiddenMap !== 'object') return { state, changed: false }
+  const next = { ...state }
+  let changed = false
+  for (const id of Object.keys(hiddenMap)) {
+    if (next[id] && next[id].status !== 'hidden') {
+      next[id] = { ...next[id], status: 'hidden' }
+      changed = true
+    }
+  }
+  return { state: next, changed }
+}
+
+/**
+ * 将 KV 手工模型映射应用到 state：本地不存在的条目从 KV 重建（含 manual 标记）。
+ * 已存在的条目仅补 manual 标记（discovery metadata 不覆盖）。
+ * 返回 { state, changed } 供调用方判定是否需要落盘。
+ * @param {object} state - merge 后的 state
+ * @param {object} manualMap - KV 读取的 { modelId: entry }
+ * @returns {{ state: object, changed: boolean }}
+ */
+function applyManualModels(state, manualMap) {
+  if (!manualMap || typeof manualMap !== 'object') return { state, changed: false }
+  const next = { ...state }
+  let changed = false
+  for (const [id, entry] of Object.entries(manualMap)) {
+    if (!next[id]) {
+      next[id] = { ...entry, manual: true }
+      changed = true
+    } else if (!next[id].manual) {
+      next[id] = { ...next[id], manual: true }
+      changed = true
+    }
+  }
+  return { state: next, changed }
+}
+
+/**
  * 解析 JSON 请求体；body 缺失 / 非法 JSON → 返回 null（调用方统一回 400）。
  * @param {import('hono').Context} c
  * @returns {Promise<object|null>}
@@ -210,10 +307,12 @@ async function readJsonBody(c) {
  * @param {object} [options.deps]
  *        业务依赖覆盖（任务 27/28/29 新增），字段见 DEFAULT_DEPS（缺省绑定真实模块）：
  *        syncProvidersToConfig / discoverModels / mergeDiscovery / enrichModel /
- *        saveAndDeploy / writeModelsJson / readToken / readManagementToken /
+ *        saveAndDeploy / writeModelsJson / deployToKV / readToken / readManagementToken /
  *        fetchCloudProviders / mergeProviderViews / updateProviderCloud /
  *        createProviderCloud / deleteProviderCloud / writeProvidersConfigFile /
- *        summarizeTokenStatus /
+ *        readKvVisibility / writeKvVisibility / readKvHiddenModels / writeKvHiddenModels /
+ *        readKvManualModels / writeKvManualModels / buildHiddenModelsMap / buildManualModelsMap /
+ *        applyHiddenModels / applyManualModels / summarizeTokenStatus /
  *        summarizeGatewayInfo / updateToken / clearSlotToken / buildWorkersStatus /
  *        checkKVKey / loadModelsJsonState / spawnFn（部署/向导子进程；
  *        部署超时可用 deps.deployTimeoutMs 覆盖，默认 120s）
@@ -241,6 +340,29 @@ export function createApp({
   let sseResolve = null
   const emitEvent = (ev) => {
     if (sseSubscriber) sseSubscriber(ev)
+  }
+
+  /**
+   * 模型删除后立即重写 hidden-models / manual-models KV（REST API）。
+   * 防止已删除的手工模型在下一次同步时从 KV 被重建（复活）。
+   * KV 不可用或写入失败 → 静默降级（本地已删，下次部署时会全量重写）。
+   */
+  const cleanupModelKvAfterDeletion = async () => {
+    const config = configStore.load()
+    const gateway = config.gateway || {}
+    const namespaceId = config.kv?.namespaceId || ''
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    if (!mgmtToken || !gateway.accountId || !namespaceId) return
+    try {
+      await depsAll.writeKvHiddenModels(
+        mgmtToken, gateway.accountId, namespaceId, depsAll.buildHiddenModelsMap(state),
+      )
+      await depsAll.writeKvManualModels(
+        mgmtToken, gateway.accountId, namespaceId, depsAll.buildManualModelsMap(state),
+      )
+    } catch {
+      // 静默降级
+    }
   }
 
   // 未捕获异常统一 500 + { error }
@@ -286,6 +408,7 @@ export function createApp({
   })
 
   // POST /api/models/remove — 一次性永久删除（entry → null）
+  // 删除后立即清理 hidden-models / manual-models KV，防止下次同步时从 KV 复活
   app.post('/api/models/remove', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
@@ -294,7 +417,10 @@ export function createApp({
     }
     if (!state[body.modelId]) return c.json({ error: 'model not found' }, 404)
     const changed = deleteModel(state, body.modelId)
-    if (changed) stateStore.save(state)
+    if (changed) {
+      stateStore.save(state)
+      await cleanupModelKvAfterDeletion()
+    }
     return c.json({ ok: true, changed, entry: state[body.modelId] ?? null })
   })
 
@@ -316,6 +442,7 @@ export function createApp({
   })
 
   // POST /api/models/batch-remove — 批量永久删除（modelIds 缺省 = 全部）
+  // 删除后立即清理 KV（同 /api/models/remove，防复活）
   app.post('/api/models/batch-remove', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
@@ -331,6 +458,7 @@ export function createApp({
       deleteModel(state, id)
     }
     stateStore.save(state)
+    await cleanupModelKvAfterDeletion()
     return c.json({ ok: true, changed: true, count: targets.length })
   })
 
@@ -497,6 +625,8 @@ export function createApp({
   // 等同步完成后返回汇总；过程进度由 SSE 推送（并发 POST → 409）
   // 可选 body { provider: <网关 slug> }：只拉取指定 provider（跳过 provider 同步步），
   // merge 的「未发现→移除」规则仅作用于该 provider，其他 provider 模型原样保留。
+  // 同步后有变更时自动部署到 KV（models + hidden-models + manual-models），
+  // 避免不同 PC 间数据不同步；自动部署失败不中断同步结果，由前端提示手动重试。
   app.post('/api/sync', async (c) => {
     if (syncing) return c.json({ error: 'sync already in progress' }, 409)
     // Token 优先级：Gateway = env GATEWAY_TOKEN > 本地槽位；管理 = env CLOUDFLARE_API_TOKEN > 本地槽位
@@ -512,15 +642,28 @@ export function createApp({
     syncing = true
     try {
       const config = configStore.load()
-      // 读取 KV 可见性（跨 PC 真相）：失败静默降级（用本地 enabled）
+      // 读取 KV 可见性 + 隐藏模型 + 手工模型（跨 PC 真相）：失败静默降级（用本地）
       const gateway = config.gateway || {}
       const namespaceId = config.kv?.namespaceId || ''
+      const kvReady = Boolean(mgmtToken && gateway.accountId && namespaceId)
       let visibilityMap = null
-      if (mgmtToken && gateway.accountId && namespaceId) {
+      let hiddenModelsMap = null
+      let manualModelsMap = null
+      if (kvReady) {
         try {
           visibilityMap = await depsAll.readKvVisibility(mgmtToken, gateway.accountId, namespaceId)
         } catch {
           visibilityMap = null
+        }
+        try {
+          hiddenModelsMap = await depsAll.readKvHiddenModels(mgmtToken, gateway.accountId, namespaceId)
+        } catch {
+          hiddenModelsMap = null
+        }
+        try {
+          manualModelsMap = await depsAll.readKvManualModels(mgmtToken, gateway.accountId, namespaceId)
+        } catch {
+          manualModelsMap = null
         }
       }
       const result = await runSyncFlow({
@@ -540,16 +683,52 @@ export function createApp({
           depsAll.writeProvidersConfigFile(next)
         }
       }
+      // 应用 KV 手工模型（重建跨 PC 添加的手工模型）+ 隐藏模型（KV 隐藏态优先）
+      const manualResult = depsAll.applyManualModels(result.state, manualModelsMap)
+      const hiddenResult = depsAll.applyHiddenModels(manualResult.state, hiddenModelsMap)
+      result.state = hiddenResult.state
       // 同步完成后统一写盘一次（不逐模型写，与 TUI「合并后统一 dirty」一致）
-      // 仅当有实际变更（新增/更新/移除）时才落盘，避免无变更同步触发“未保存”误判
+      // 有变更（同步 discover + KV 手工/隐藏应用）才落盘 + 自动部署
       const hasChanges =
         (result.summary.newModels && result.summary.newModels.length > 0) ||
         (result.summary.updatedModels && result.summary.updatedModels.length > 0) ||
-        (result.summary.removedModels && result.summary.removedModels.length > 0)
+        (result.summary.removedModels && result.summary.removedModels.length > 0) ||
+        manualResult.changed ||
+        hiddenResult.changed
       state = result.state
       if (hasChanges) stateStore.save(state)
-      emitEvent({ type: 'done', summary: result.summary })
-      return c.json({ ok: true, summary: result.summary })
+
+      // 自动部署到 KV（models + hidden-models + manual-models）：
+      // 同步后的新数据自动推送到 KV，不同 PC 间无需手动部署即可同步。
+      // 部署失败不中断同步结果，前端提示用户手动重试。
+      let autoDeployed = false
+      let autoDeployError = null
+      if (hasChanges) {
+        emitEvent({ type: 'phase', phase: 'deploy' })
+        try {
+          depsAll.writeModelsJson(state)
+          const deployResult = await depsAll.deployToKV(config)
+          if (deployResult && deployResult.success === false) {
+            autoDeployError = deployResult.output || 'KV 部署失败'
+          } else {
+            // models + provider-routes 已由 deployToKV 写入，再写 hidden-models 和 manual-models
+            if (kvReady) {
+              await depsAll.writeKvHiddenModels(
+                mgmtToken, gateway.accountId, namespaceId, depsAll.buildHiddenModelsMap(state),
+              )
+              await depsAll.writeKvManualModels(
+                mgmtToken, gateway.accountId, namespaceId, depsAll.buildManualModelsMap(state),
+              )
+            }
+            autoDeployed = true
+          }
+        } catch (err) {
+          autoDeployError = err instanceof Error ? err.message : String(err)
+        }
+        emitEvent({ type: 'deploy', ok: autoDeployed, error: autoDeployError })
+      }
+      emitEvent({ type: 'done', summary: result.summary, autoDeployed, autoDeployError })
+      return c.json({ ok: true, summary: result.summary, autoDeployed, autoDeployError })
     } catch (err) {
       // SSE 推送 error 事件后关闭流（无订阅者时是 no-op），HTTP 层走 onError → 500
       emitEvent({ type: 'error', message: err.message || String(err) })
@@ -559,14 +738,35 @@ export function createApp({
     }
   })
 
-  // POST /api/save-deploy — 保存并提交三步（saveState → writeModelsJson → deployToKV）
+  // POST /api/save-deploy — 保存并提交（saveState → writeModelsJson → deployToKV → 写 hidden/manual KV）
   // 业务编排失败用 HTTP 200 + { ok:false, step, error }（非 HTTP 错误，前端按 body.ok 分支）
+  // 成功后额外写 hidden-models 和 manual-models 到 KV（REST API），实现跨 PC 同步。
+  // KV 写入失败不回滚已部署的 models（wrangler 已成功），由前端提示重试。
   app.post('/api/save-deploy', async (c) => {
     const config = configStore.load()
     const result = await depsAll.saveAndDeploy({ state, config })
-    if (result.ok) return c.json({ ok: true })
-    const error = result.error instanceof Error ? result.error.message : String(result.error)
-    return c.json({ ok: false, step: result.step, error })
+    if (!result.ok) {
+      const error = result.error instanceof Error ? result.error.message : String(result.error)
+      return c.json({ ok: false, step: result.step, error })
+    }
+    // saveAndDeploy 成功后写 hidden-models + manual-models 到 KV（跨 PC 同步）
+    const gateway = config.gateway || {}
+    const namespaceId = config.kv?.namespaceId || ''
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    let kvError = null
+    if (mgmtToken && gateway.accountId && namespaceId) {
+      try {
+        await depsAll.writeKvHiddenModels(
+          mgmtToken, gateway.accountId, namespaceId, depsAll.buildHiddenModelsMap(state),
+        )
+        await depsAll.writeKvManualModels(
+          mgmtToken, gateway.accountId, namespaceId, depsAll.buildManualModelsMap(state),
+        )
+      } catch (err) {
+        kvError = err instanceof Error ? err.message : String(err)
+      }
+    }
+    return c.json({ ok: true, kvError })
   })
 
   // POST /api/save — 仅保存（saveState + writeModelsJson 两步，不部署）

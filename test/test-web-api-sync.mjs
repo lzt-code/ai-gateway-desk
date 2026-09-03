@@ -53,6 +53,12 @@ const fakeConfig = {
   providers: [{ id: 'custom-agnes', type: 'custom-provider', enabled: true }],
 }
 
+// 带 KV namespaceId 的配置（用于测试 KV 读写）
+const fakeConfigWithKv = {
+  ...fakeConfig,
+  kv: { namespaceId: 'ns-fake', key: 'models' },
+}
+
 // mock deps 工厂（默认全部成功；选项可注入失败/无结果/gate 场景）
 function makeDeps({
   discoverFail = false,
@@ -65,10 +71,14 @@ function makeDeps({
   syncNew = [],
   syncRemoved = [],
   syncErrors = [],
+  kvHiddenModels = null,
+  kvManualModels = null,
+  deployToKVResult = { success: true },
 } = {}) {
   const calls = []
   const tokens = []
   const discoverFilters = []
+  const kvWrites = [] // 记录 writeKvHiddenModels / writeKvManualModels 调用
   const discoverModels = async (config, token, onProgress, providerFilter, _mgmtToken) => {
     calls.push('discover')
     tokens.push(token)
@@ -129,10 +139,28 @@ function makeDeps({
   const readToken = () => readTokenVal
   const readManagementToken = () => 'fake-mgmt-token'
   let saveAndDeployArgs = null
+  // KV mock：readKvHiddenModels / readKvManualModels 返回注入值（null = 不注入 → 用 DEFAULT_DEPS 真实实现）
+  const readKvHiddenModels = kvHiddenModels !== null
+    ? async () => kvHiddenModels
+    : async () => { throw new Error('KV not mocked') }
+  const readKvManualModels = kvManualModels !== null
+    ? async () => kvManualModels
+    : async () => { throw new Error('KV not mocked') }
+  const writeKvHiddenModels = async (_t, _a, _n, map) => {
+    kvWrites.push({ key: 'hidden-models', map })
+  }
+  const writeKvManualModels = async (_t, _a, _n, map) => {
+    kvWrites.push({ key: 'manual-models', map })
+  }
+  const deployToKV = async () => {
+    calls.push('deployToKV')
+    return deployToKVResult
+  }
   return {
     calls,
     tokens,
     discoverFilters,
+    kvWrites,
     get saveAndDeployArgs() {
       return saveAndDeployArgs
     },
@@ -144,16 +172,21 @@ function makeDeps({
     writeModelsJson,
     readToken,
     readManagementToken,
+    readKvHiddenModels,
+    readKvManualModels,
+    writeKvHiddenModels,
+    writeKvManualModels,
+    deployToKV,
   }
 }
 
 // 注入内存 store + mock deps 的 app
-function makeApp(initial = {}, depsOpts = {}) {
+function makeApp(initial = {}, depsOpts = {}, config = fakeConfig) {
   const store = makeStore(initial)
   const deps = makeDeps(depsOpts)
   const app = createApp({
     stateStore: store,
-    configStore: { load: () => fakeConfig },
+    configStore: { load: () => config },
     deps,
   })
   return { app, store, deps }
@@ -746,6 +779,231 @@ section('测试 21: runSyncFlow providerFilter 纯函数')
   const phaseEvents = events.filter((e) => e.type === 'phase').map((e) => e.phase)
   check(!phaseEvents.includes('provider-sync'), '无 provider-sync phase 事件')
   check(phaseEvents.includes('discover') && phaseEvents.includes('enrich'), '含 discover/enrich phase')
+}
+
+// ── 测试 22：sync 读取 KV hidden-models 并应用隐藏态 ──
+section('测试 22: sync 应用 KV hidden-models（跨 PC 隐藏态同步）')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    // KV 中 custom-agnes/agnes 被标记为 hidden
+    const kvHidden = { 'custom-agnes/agnes': { status: 'hidden', provider: 'custom-agnes', metadata: {} } }
+    const { app, deps } = makeApp(
+      {},
+      { kvHiddenModels: kvHidden },
+      fakeConfigWithKv,
+    )
+    const res = await app.request('/api/sync', { method: 'POST' })
+    check(res.status === 200, 'HTTP 200')
+    const body = await res.json()
+    check(body.ok === true, 'ok === true')
+    // 同步后 agnes 应被标记为 hidden（KV 隐藏态优先于 merge 的 selected）
+    const stateRes = await app.request('/api/state')
+    const stateBody = await stateRes.json()
+    check(stateBody.state['custom-agnes/agnes'].status === 'hidden', 'agnes 被 KV hidden 标记为 hidden')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 23：sync 读取 KV manual-models 并重建手工模型 ──
+section('测试 23: sync 重建 KV manual-models（跨 PC 手工模型同步）')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    // KV 中有手工模型 custom-mymodel/m1（本地不存在）
+    const kvManual = {
+      'custom-mymodel/m1': {
+        status: 'selected', provider: 'custom-mymodel', manual: true,
+        metadata: { id: 'custom-mymodel/m1', name: 'My Model' },
+      },
+    }
+    const { app, deps } = makeApp(
+      {},
+      { kvManualModels: kvManual },
+      fakeConfigWithKv,
+    )
+    const res = await app.request('/api/sync', { method: 'POST' })
+    check(res.status === 200, 'HTTP 200')
+    const body = await res.json()
+    // 手工模型应被重建到本地 state
+    const stateRes = await app.request('/api/state')
+    const stateBody = await stateRes.json()
+    check(!!stateBody.state['custom-mymodel/m1'], '手工模型从 KV 重建')
+    check(stateBody.state['custom-mymodel/m1'].manual === true, 'manual 标记保留')
+    check(stateBody.state['custom-mymodel/m1'].status === 'selected', 'status 从 KV entry 保留')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 24：sync 自动部署到 KV（models + hidden-models + manual-models）──
+section('测试 24: sync 自动部署到 KV')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const { app, deps } = makeApp(
+      {},
+      { kvHiddenModels: {}, kvManualModels: {}, deployToKVResult: { success: true } },
+      fakeConfigWithKv,
+    )
+    const res = await app.request('/api/sync', { method: 'POST' })
+    check(res.status === 200, 'HTTP 200')
+    const body = await res.json()
+    check(body.ok === true, 'ok === true')
+    check(body.autoDeployed === true, 'autoDeployed === true')
+    check(deps.calls.includes('write-models-json'), '调用了 writeModelsJson')
+    check(deps.calls.includes('deployToKV'), '调用了 deployToKV')
+    // 验证 hidden-models 和 manual-models 被写入 KV
+    const hiddenWrite = deps.kvWrites.find((w) => w.key === 'hidden-models')
+    const manualWrite = deps.kvWrites.find((w) => w.key === 'manual-models')
+    check(!!hiddenWrite, '写入了 hidden-models 到 KV')
+    check(!!manualWrite, '写入了 manual-models 到 KV')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 25：sync 自动部署失败不中断同步 ──
+section('测试 25: sync 自动部署失败不中断')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const { app, deps } = makeApp(
+      {},
+      {
+        kvHiddenModels: {},
+        kvManualModels: {},
+        deployToKVResult: { success: false, output: 'wrangler 错误' },
+      },
+      fakeConfigWithKv,
+    )
+    const res = await app.request('/api/sync', { method: 'POST' })
+    check(res.status === 200, 'HTTP 200（同步仍成功）')
+    const body = await res.json()
+    check(body.ok === true, 'ok === true（同步结果不受部署影响）')
+    check(body.autoDeployed === false, 'autoDeployed === false')
+    check(!!body.autoDeployError, 'autoDeployError 非空')
+    // 部署失败 → 不写 hidden/manual 到 KV
+    check(deps.kvWrites.length === 0, '部署失败不写 hidden/manual KV')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 26：模型删除后立即清理 KV（防复活）──
+section('测试 26: 模型删除后立即清理 KV')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const initial = {
+      'custom-mymodel/m1': {
+        status: 'selected', provider: 'custom-mymodel', manual: true,
+        metadata: { id: 'custom-mymodel/m1', name: 'My Model' },
+      },
+    }
+    const { app, deps } = makeApp(initial, {}, fakeConfigWithKv)
+    const res = await app.request('/api/models/remove', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ modelId: 'custom-mymodel/m1' }),
+    })
+    check(res.status === 200, 'HTTP 200')
+    // 验证 KV 被清理（hidden-models + manual-models 重写，不含已删模型）
+    const hiddenWrite = deps.kvWrites.find((w) => w.key === 'hidden-models')
+    const manualWrite = deps.kvWrites.find((w) => w.key === 'manual-models')
+    check(!!hiddenWrite, '删除后重写了 hidden-models KV')
+    check(!!manualWrite, '删除后重写了 manual-models KV')
+    check(Object.keys(manualWrite.map).length === 0, 'manual-models 不含已删模型')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 27：save-deploy 写 hidden-models 和 manual-models 到 KV ──
+section('测试 27: save-deploy 写 hidden/manual 到 KV')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const initial = {
+      'custom-agnes/agnes': { status: 'selected', provider: 'custom-agnes', metadata: { name: 'Agnes' } },
+      'custom-agnes/gpt4o': { status: 'hidden', provider: 'custom-agnes', metadata: { name: 'GPT-4o' } },
+    }
+    const { app, deps } = makeApp(initial, {}, fakeConfigWithKv)
+    const res = await app.request('/api/save-deploy', { method: 'POST' })
+    check(res.status === 200, 'HTTP 200')
+    const body = await res.json()
+    check(body.ok === true, 'ok === true')
+    check(!body.kvError, 'kvError 为空（写入成功）')
+    // 验证 hidden-models 包含 hidden 模型
+    const hiddenWrite = deps.kvWrites.find((w) => w.key === 'hidden-models')
+    const manualWrite = deps.kvWrites.find((w) => w.key === 'manual-models')
+    check(!!hiddenWrite, '写入了 hidden-models')
+    check('custom-agnes/gpt4o' in hiddenWrite.map, 'hidden-models 含 gpt4o')
+    check(!('custom-agnes/agnes' in hiddenWrite.map), 'hidden-models 不含 selected 模型')
+    check(!!manualWrite, '写入了 manual-models')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 28：纯函数 buildHiddenModelsMap / buildManualModelsMap ──
+section('测试 28: buildHiddenModelsMap / buildManualModelsMap 纯函数')
+{
+  // 直接从 server.js 导入
+  const { createApp } = await import('../src/web/server.js')
+  // 通过 createApp + deps 验证（间接调用 build 函数）
+  const state = {
+    'a/m1': { status: 'selected', manual: true, metadata: { name: 'M1' } },
+    'a/m2': { status: 'hidden', metadata: { name: 'M2' } },
+    'a/m3': { status: 'hidden', manual: true, metadata: { name: 'M3' } },
+    'a/m4': { status: 'selected', metadata: { name: 'M4' } },
+  }
+  const store = makeStore(state)
+  const deps = makeDeps({}, fakeConfigWithKv)
+  const app = createApp({
+    stateStore: store,
+    configStore: { load: () => fakeConfigWithKv },
+    deps,
+  })
+  // 触发 save-deploy → buildHiddenModelsMap / buildManualModelsMap 被调用
+  await app.request('/api/save-deploy', { method: 'POST' })
+  const hiddenWrite = deps.kvWrites.find((w) => w.key === 'hidden-models')
+  const manualWrite = deps.kvWrites.find((w) => w.key === 'manual-models')
+  check(Object.keys(hiddenWrite.map).length === 2, 'hidden-models 含 2 条（m2 + m3）')
+  check('a/m2' in hiddenWrite.map && 'a/m3' in hiddenWrite.map, 'hidden-models 含 m2/m3')
+  check(Object.keys(manualWrite.map).length === 2, 'manual-models 含 2 条（m1 + m3）')
+  check('a/m1' in manualWrite.map && 'a/m3' in manualWrite.map, 'manual-models 含 m1/m3')
+}
+
+// ── 测试 29：纯函数 applyHiddenModels / applyManualModels ──
+section('测试 29: applyHiddenModels / applyManualModels 纯函数')
+{
+  const { createApp } = await import('../src/web/server.js')
+  const state = {
+    'a/m1': { status: 'selected', provider: 'a', metadata: { name: 'M1' } },
+  }
+  const store = makeStore(state)
+  const deps = makeDeps({
+    kvHiddenModels: { 'a/m1': { status: 'hidden' } },
+    kvManualModels: {
+      'a/m2': { status: 'selected', provider: 'a', manual: true, metadata: { name: 'M2' } },
+    },
+  }, fakeConfigWithKv)
+  const app = createApp({
+    stateStore: store,
+    configStore: { load: () => fakeConfigWithKv },
+    deps,
+  })
+  const res = await app.request('/api/sync', { method: 'POST' })
+  check(res.status === 200, 'HTTP 200')
+  const stateRes = await app.request('/api/state')
+  const stateBody = await stateRes.json()
+  // m1 被 KV hidden 标记为 hidden
+  check(stateBody.state['a/m1'].status === 'hidden', 'applyHiddenModels: m1 → hidden')
+  // m2 从 KV manual 重建
+  check(!!stateBody.state['a/m2'], 'applyManualModels: m2 重建')
+  check(stateBody.state['a/m2'].manual === true, 'applyManualModels: m2.manual === true')
 }
 
 console.log(`\n${'='.repeat(56)}`)

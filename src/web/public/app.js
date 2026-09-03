@@ -951,6 +951,7 @@ export function buildSyncProgressState(events) {
   let phase = null
   let summary = null
   let error = null
+  let deploy = null // { ok, error } | null
   for (const ev of events || []) {
     if (!ev || typeof ev !== 'object') continue
     const data = ev.data
@@ -963,14 +964,21 @@ export function buildSyncProgressState(events) {
       if (status === 'done' && data.models != null) rec.models = data.models
       if (status === 'error' && data.error != null) rec.error = data.error
       providers[data.provider] = rec
+    } else if (ev.event === 'deploy' && data) {
+      deploy = { ok: data.ok === true, error: data.error || null }
     } else if (ev.event === 'done' && data && data.summary) {
       summary = data.summary
       phase = 'done'
+      if (data.autoDeployed === true) {
+        deploy = { ok: true, error: null }
+      } else if (data.autoDeployError) {
+        deploy = { ok: false, error: data.autoDeployError }
+      }
     } else if (ev.event === 'error' && data && typeof data.message === 'string') {
       error = data.message
     }
   }
-  return { providers, phase, summary, error }
+  return { providers, phase, summary, error, deploy }
 }
 
 // 筛选参数 → query 字符串（encodeURIComponent；空值省略）
@@ -1653,6 +1661,10 @@ export function renderModelsView(container) {
       updateDirty()
       logActivity(deploy ? '已保存并提交部署' : '已保存', 'ok')
       flash(deploy ? '已保存并提交部署' : '已保存', 'ok')
+      // save-deploy 额外写 hidden-models / manual-models 到 KV，失败时提示重试
+      if (deploy && res && res.kvError) {
+        logActivity(`hidden/manual 模型 KV 同步失败：${res.kvError}（可重试部署）`, 'warn')
+      }
     } catch (err) {
       flash(err.message, 'err')
       logActivity(`保存失败：${err.message}`, 'err')
@@ -1713,8 +1725,9 @@ export function renderModelsView(container) {
     const errCount = slugs.filter((k) => st.providers[k].status === 'error').length
     const isDone = st.phase === 'done'
     const isError = !!st.error
+    const isDeploying = st.phase === 'deploy'
 
-    // 标题：同步中显示进度；结束后承载单行摘要（明细交给底部日志栏，避免重复）
+    // 标题：同步中显示进度；部署中显示部署状态；结束后承载单行摘要（明细交给底部日志栏，避免重复）
     let titleText
     if (isDone) {
       const s = st.summary || {}
@@ -1725,6 +1738,13 @@ export function renderModelsView(container) {
       titleText = `同步完成 ✓${doneCount}/${slugs.length}`
       if (parts.length) titleText += ` · ${parts.join(' / ')}`
       if (errCount > 0) titleText += ` · ✗${errCount} 失败`
+      if (st.deploy && !st.deploy.ok) {
+        titleText += ' · KV 部署失败（可手动重试）'
+      } else if (st.deploy && st.deploy.ok) {
+        titleText += ' · 已部署到 KV'
+      }
+    } else if (isDeploying) {
+      titleText = `部署到 KV 中… ✓${doneCount}/${slugs.length}`
     } else if (isError && slugs.length === 0) {
       titleText = `同步失败：${st.error}`
     } else if (isError) {
@@ -1829,14 +1849,19 @@ export function renderModelsView(container) {
     hideBlocking()
   }
 
-  async function refreshAfterSync() {
+  async function refreshAfterSync(syncData) {
     try {
       await withBlocking('正在刷新模型列表…', async () => {
         const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
         state = s.state || {}
         providers = p.providers || []
         renderSidebar()
-        updateDirty() // 同步变更进入内存态 → 相对初始快照按 KV 投影比较（仅 selected 变化才算未保存）
+        // 自动部署成功 → 重置 snapshot（无未保存标记）；
+        // 自动部署失败或未触发 → 保留旧 snapshot（标未保存，提示用户手动部署）
+        if (syncData && syncData.autoDeployed === true) {
+          snapshot = structuredClone(state)
+        }
+        updateDirty()
         await applyFilter()
       })
       flash('同步完成', 'ok')
@@ -1845,11 +1870,11 @@ export function renderModelsView(container) {
     }
   }
 
-  // 同步 SSE 事件 → 底部处理过程日志栏（阶段 / provider 同步 / 发现 / 富化 / 汇总）
+  // 同步 SSE 事件 → 底部处理过程日志栏（阶段 / provider 同步 / 发现 / 富化 / 部署 / 汇总）
   function logSyncEvent(evtName, data) {
     if (!data || typeof data !== 'object') return
     if (evtName === 'phase') {
-      const names = { 'provider-sync': 'Provider 同步', discover: '发现模型', enrich: '合并与富化' }
+      const names = { 'provider-sync': 'Provider 同步', discover: '发现模型', enrich: '合并与富化', deploy: '部署到 KV' }
       logActivity(`同步阶段：${names[data.phase] || data.phase}`, 'info')
     } else if (evtName === 'provider-sync') {
       if (data.skipped) {
@@ -1880,6 +1905,12 @@ export function renderModelsView(container) {
       // 节流：每 10 条或最后一条记录，避免刷屏（同步中模型可能很多）
       if (data.enriched === data.total || data.enriched % 10 === 0) {
         logActivity(`富化模型：${data.enriched}/${data.total}`, 'info')
+      }
+    } else if (evtName === 'deploy') {
+      if (data.ok) {
+        logActivity('自动部署到 KV 完成（models + hidden-models + manual-models）', 'ok')
+      } else {
+        logActivity(`自动部署到 KV 失败：${data.error || '未知错误'}（可在模型页点【部署更改】重试）`, 'warn')
       }
     } else if (evtName === 'done') {
       const s = data.summary || {}
@@ -1912,7 +1943,7 @@ export function renderModelsView(container) {
     showProgress(isOne ? `拉取 ${providerName}…` : '同步中…')
     showBlocking(isOne ? `正在拉取 ${providerName} 模型…` : '正在拉取云端数据…')
     logActivity(
-      isOne ? `开始拉取 ${providerName} 模型…` : '开始同步（Provider 同步 → 发现模型 → 合并 → 富化）…',
+      isOne ? `开始拉取 ${providerName} 模型…` : '开始同步（Provider 同步 → 发现模型 → 合并 → 富化 → 部署 KV）…',
       'info',
     )
     es = new EventSource('/api/sync/progress')
@@ -1932,10 +1963,13 @@ export function renderModelsView(container) {
     es.addEventListener('provider-sync', collect('provider-sync'))
     es.addEventListener('discover', collect('discover'))
     es.addEventListener('enrich', collect('enrich'))
+    es.addEventListener('deploy', collect('deploy'))
     es.addEventListener('done', (e) => {
+      let doneData = null
+      try { doneData = JSON.parse(e.data) } catch { /* 坏 data */ }
       collect('done')(e)
       finishSync()
-      refreshAfterSync()
+      refreshAfterSync(doneData)
     })
     es.addEventListener('error', (e) => {
       collect('error')(e)
