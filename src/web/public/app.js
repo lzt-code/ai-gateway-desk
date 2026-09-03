@@ -872,8 +872,13 @@ function formatContextOutput(ctx, out) {
 // 模型数据（/api/models/filtered 的 items）→ 表格行 HTML 数组
 // 列：模型名称 / 模型ID / 上下文/输出 / 状态 / 操作（Provider 不单独成列：id 前缀已含归属，侧栏负责筛选）
 // 操作列：手工添加的模型（entry.manual）有 编辑+删除 按钮，非手工模型只有 编辑 按钮
+// newModelIds（可选，Set | Array）：本次同步新增的模型 ID，命中的行加 row-new 类 + 名称前置「新增」徽章
 // 返回 [{ modelId, html }]，html 为 <tr data-model-id="...">...</tr>
-export function buildModelTableRows(items) {
+export function buildModelTableRows(items, newModelIds) {
+  // 归一化为 Set（缺省 / 非 Set 非 Array → null，不触发高亮）
+  const newSet = newModelIds instanceof Set
+    ? newModelIds
+    : Array.isArray(newModelIds) ? new Set(newModelIds) : null
   const rows = []
   for (const it of items || []) {
     if (!it || !it.modelId || !it.entry) continue
@@ -885,11 +890,14 @@ export function buildModelTableRows(items) {
     // 名称缺失时回退到 modelId 最后一段（如 openrouter/x-ai/grok-4.20 → grok-4.20）
     const modelName = meta.name || modelId.split('/').pop() || ''
     const isDynamic = modelId.startsWith('dynamic/')
+    const isNew = newSet ? newSet.has(modelId) : false
     // 复制按钮复制完整 modelId（含 provider 前缀，如 custom-agnes/agnes-2.5-flash），可直接用于 agent 添加模型
-    const rowCls = `row-${statusKey}` + (isDynamic ? ' row-dynamic' : '')
-    const badge = isDynamic
+    const rowCls = `row-${statusKey}` + (isDynamic ? ' row-dynamic' : '') + (isNew ? ' row-new' : '')
+    const badge = (isDynamic
       ? `<span class="dynamic-tag" title="Cloudflare 网关动态路由">动态路由</span>`
-      : ''
+      : '') + (isNew
+      ? `<span class="new-tag" title="本次同步新增">新增</span>`
+      : '')
     // 操作列：删除按钮仅手工添加的模型有（非手工模型由同步自动删除，无需手动删除）
     // 按钮样式与 Provider 表统一（带边框小图标：✎ 编辑 / ✕ 删除）
     const actionsHtml =
@@ -1160,10 +1168,24 @@ function injectModelsStyles() {
     /* 动态路由行：浅 accent 底色区分 */
     .model-table tbody tr.row-dynamic { background: var(--accent-soft); }
     .model-table tbody tr.row-dynamic.row-active { background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-border); }
+    /* 本次同步新增行：浅绿底 + 左侧绿色条（box-shadow inset），仅本地内存态，
+       不计入数据；与 row-active 组合时合并阴影避免覆盖选中边框 */
+    .model-table tbody tr.row-new { background: var(--ok-soft); box-shadow: inset 3px 0 0 var(--ok); }
+    .model-table tbody tr.row-new.row-active {
+      background: var(--accent-soft);
+      box-shadow: inset 3px 0 0 var(--ok), inset 0 0 0 1px var(--accent-border);
+    }
     /* 动态路由标签：名称列前置小胶囊 */
     .dynamic-tag {
       font-size: 0.62rem; color: var(--accent); background: var(--accent-soft);
       border: 1px solid var(--accent-border); border-radius: 999px;
+      padding: 0 0.35rem; margin-right: 0.3rem; vertical-align: middle;
+      white-space: nowrap; display: inline-block;
+    }
+    /* 新增标签：绿色小胶囊，语义同 status-ok（新模型 = 正向新增） */
+    .new-tag {
+      font-size: 0.62rem; color: var(--ok); background: var(--ok-soft);
+      border: 1px solid var(--ok-border); border-radius: 999px;
       padding: 0 0.35rem; margin-right: 0.3rem; vertical-align: middle;
       white-space: nowrap; display: inline-block;
     }
@@ -1251,6 +1273,9 @@ export function renderModelsView(container) {
   let debounceTimer = null
   let progressDismissed = false // 用户手动收起后，本次同步后续事件不再弹出
   let autoHideTimer = null      // 全部成功后的自动隐藏定时器
+  // 本次同步新增模型 ID（仅本地内存态，不写入 data/）：done 事件的 summary.newModels
+  // 填充，下次同步开始时清空；用于表格 row-new 高亮。页面刷新自然丢失。
+  let newModelIds = new Set()
 
   // ── DOM 骨架（§4.1 结构）────────────────────────────────
   container.innerHTML = ''
@@ -1350,7 +1375,7 @@ export function renderModelsView(container) {
   function renderTable() {
     updateSortIndicators()
     const getter = sortKey ? MODEL_SORT_GETTERS[sortKey] : null
-    const rows = buildModelTableRows(getter ? sortViewItems(items, getter, sortDir) : items)
+    const rows = buildModelTableRows(getter ? sortViewItems(items, getter, sortDir) : items, newModelIds)
     tbody.innerHTML = rows.map((r) => r.html).join('')
     for (const tr of tbody.querySelectorAll('tr')) {
       tr.classList.toggle('row-active', tr.dataset.modelId === selectedModelId)
@@ -1862,6 +1887,10 @@ export function renderModelsView(container) {
           snapshot = structuredClone(state)
         }
         updateDirty()
+        // 本次同步新增模型高亮（仅本地内存态）：done 事件 summary.newModels 命中即标 row-new
+        newModelIds = new Set((syncData && syncData.summary && Array.isArray(syncData.summary.newModels))
+          ? syncData.summary.newModels
+          : [])
         await applyFilter()
       })
       flash('同步完成', 'ok')
@@ -1938,6 +1967,8 @@ export function renderModelsView(container) {
     const providerName = isOne ? providerDisplayName(providerFilter) : ''
     syncing = true
     finished = false
+    // 清空上一次同步的新增高亮：done 事件到达后由 refreshAfterSync 重新填充
+    newModelIds = new Set()
     appState().set('modelsSyncing', true)
     setSyncButtonsDisabled(true)
     showProgress(isOne ? `拉取 ${providerName}…` : '同步中…')

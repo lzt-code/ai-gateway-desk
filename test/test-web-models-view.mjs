@@ -149,6 +149,36 @@ check(
   Array.isArray(buildModelTableRows([])) && buildModelTableRows([]).length === 0,
   '空数组 → 返回空数组（视图显示空状态文案）',
 )
+{
+  // 本次同步新增模型高亮：newModelIds 命中的行加 row-new 类 + 名称前置「新增」徽章
+  const items = [
+    { modelId: 'p/new-m', entry: { status: 'selected', metadata: {} } },
+    { modelId: 'p/old-m', entry: { status: 'selected', metadata: {} } },
+    { modelId: 'dynamic/route', entry: { status: 'selected', metadata: {} } },
+  ]
+  // Set 形态
+  const rowsSet = buildModelTableRows(items, new Set(['p/new-m', 'dynamic/route']))
+  check(rowsSet[0].html.includes('class="row-selected row-new"'), '命中 newModelIds → row-new 类')
+  check(rowsSet[0].html.includes('class="new-tag"') && rowsSet[0].html.includes('>新增</span>'), '新增行 → 名称前置「新增」徽章')
+  check(!rowsSet[1].html.includes('row-new') && !rowsSet[1].html.includes('new-tag'), '未命中 → 无 row-new / 徽章')
+  // 动态路由 + 新增：两个徽章并存，类同时含 row-dynamic row-new
+  check(
+    rowsSet[2].html.includes('class="row-selected row-dynamic row-new"'),
+    '动态路由且新增 → row-dynamic + row-new 共存',
+  )
+  check(
+    rowsSet[2].html.includes('dynamic-tag') && rowsSet[2].html.includes('new-tag'),
+    '动态路由 + 新增 → 「动态路由」与「新增」徽章并存',
+  )
+  // Array 形态也归一化
+  const rowsArr = buildModelTableRows(items, ['p/new-m'])
+  check(rowsArr[0].html.includes('row-new'), 'Array 形态 newModelIds 同样生效（归一为 Set）')
+  // 缺省 / 空集合 → 不触发高亮
+  const rowsNone = buildModelTableRows(items)
+  check(!rowsNone.some((r) => r.html.includes('row-new')), '缺省 newModelIds → 无任何 row-new')
+  const rowsEmpty = buildModelTableRows(items, new Set())
+  check(!rowsEmpty.some((r) => r.html.includes('row-new')), '空 Set → 无任何 row-new')
+}
 
 // ── 6-8：parseSSEEvents ──────────────────────────────────
 section('parseSSEEvents')
