@@ -1006,6 +1006,115 @@ section('测试 29: applyHiddenModels / applyManualModels 纯函数')
   check(stateBody.state['a/m2'].manual === true, 'applyManualModels: m2.manual === true')
 }
 
+// ── 测试 30：name 补救误报 + enrich 无变化 → 不触发 KV 部署 ──
+section('测试 30: name 补救误报不触发 KV 部署')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    // 初始 state 已有模型（metadata.name 由上次 enrich 设置）
+    const initial = {
+      'custom-agnes/agnes': { status: 'selected', provider: 'custom-agnes', metadata: { name: 'Agnes' } },
+    }
+    const deps = makeDeps({ kvHiddenModels: {}, kvManualModels: {}, deployToKVResult: { success: true } })
+    // 模拟 name 补救误报：merge 返回 updatedModels 但 state 不变（provider 返回的数据与现有一致）
+    deps.mergeDiscovery = (state, _d) => ({
+      state: structuredClone(state),
+      newModels: [],
+      updatedModels: ['custom-agnes/agnes'],
+      removedModels: [],
+    })
+    // enrich 不改任何字段（name 已正确，无新字段可补）
+    deps.enrichModel = async (_id, meta) => ({ ...meta })
+
+    const store = makeStore(initial)
+    const app = createApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfigWithKv },
+      deps,
+    })
+    const res = await app.request('/api/sync', { method: 'POST' })
+    const body = await res.json()
+    check(res.status === 200, 'HTTP 200')
+    check(body.ok === true, 'ok === true')
+    check(body.summary.updatedModels.length === 0, 'summary.updatedModels 为空（name 误报已过滤）')
+    check(body.autoDeployed === false, 'autoDeployed === false（无真实变更）')
+    check(!deps.calls.includes('deployToKV'), '未调用 deployToKV')
+    check(!deps.calls.includes('write-models-json'), '未调用 writeModelsJson')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 31：name 补救候选 + enrich 实际改了 metadata → 触发 KV 部署 ──
+section('测试 31: enrich 实际改了 metadata → 触发 KV 部署')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const initial = {
+      'custom-agnes/agnes': { status: 'selected', provider: 'custom-agnes', metadata: { name: 'Agnes' } },
+    }
+    const deps = makeDeps({ kvHiddenModels: {}, kvManualModels: {}, deployToKVResult: { success: true } })
+    deps.mergeDiscovery = (state, _d) => ({
+      state: structuredClone(state),
+      newModels: [],
+      updatedModels: ['custom-agnes/agnes'],
+      removedModels: [],
+    })
+    // enrich 改了 context_length（模拟从 OpenRouter 补全新字段）
+    deps.enrichModel = async (_id, meta) => ({ ...meta, context_length: 8192 })
+
+    const store = makeStore(initial)
+    const app = createApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfigWithKv },
+      deps,
+    })
+    const res = await app.request('/api/sync', { method: 'POST' })
+    const body = await res.json()
+    check(res.status === 200, 'HTTP 200')
+    check(body.summary.updatedModels.length === 1, 'summary.updatedModels 含 1 条（enrich 实际改了 metadata）')
+    check(body.autoDeployed === true, 'autoDeployed === true（有真实变更）')
+    check(deps.calls.includes('deployToKV'), '调用了 deployToKV')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 32：merge 改了 entry（status 迁移）→ 触发 KV 部署（enrich 无变化也计） ──
+section('测试 32: merge 改了 status → 计入真实更新')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    // 存量 removed 条目，merge 会将其迁移为 selected
+    const initial = {
+      'custom-agnes/agnes': { status: 'removed', provider: 'custom-agnes', metadata: { name: 'Agnes' } },
+    }
+    const deps = makeDeps({ kvHiddenModels: {}, kvManualModels: {}, deployToKVResult: { success: true } })
+    // merge 改了 status: removed → selected
+    deps.mergeDiscovery = (state, _d) => {
+      const next = structuredClone(state)
+      next['custom-agnes/agnes'].status = 'selected'
+      return { state: next, newModels: [], updatedModels: ['custom-agnes/agnes'], removedModels: [] }
+    }
+    deps.enrichModel = async (_id, meta) => ({ ...meta })
+
+    const store = makeStore(initial)
+    const app = createApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfigWithKv },
+      deps,
+    })
+    const res = await app.request('/api/sync', { method: 'POST' })
+    const body = await res.json()
+    check(res.status === 200, 'HTTP 200')
+    check(body.summary.updatedModels.length === 1, 'status 迁移计入 updatedModels')
+    check(body.autoDeployed === true, 'autoDeployed === true（merge 改了 entry）')
+    check(deps.calls.includes('deployToKV'), '调用了 deployToKV')
+  } finally {
+    restoreEnv()
+  }
+}
+
 console.log(`\n${'='.repeat(56)}`)
 console.log(`测试汇总: ${checks} 项检查, ${failures} 项失败`)
 process.exit(failures ? 1 : 0)

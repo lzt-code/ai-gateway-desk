@@ -45,6 +45,9 @@ import { enrichModel as enrichModelImpl } from '../pipeline/enrich.js'
  *   state: object,          // 合并+富化后的新 state（无结果时返回原 state）
  *   summary: { newModels: string[], updatedModels: string[], removedModels: string[],
  *              errors: Array<{provider,error}> }
+ *   // updatedModels 仅含「真实更新」：merge 改了 entry（status/metadata）或 enrich 改了
+ *   // metadata 的模型。name 补救检查（provider 不返回 name 但 metadata 已有 name）
+ *   // 触发的 re-enrich 候选若无实际变化不计入，避免每次同步都误报→不必要的 KV 部署。
  *   providerSync: { ok: boolean, skipped?: boolean, message?: string }
  * }>}
  */
@@ -142,13 +145,40 @@ export async function runSyncFlow({
     .filter((modelId) => !modelId.startsWith('dynamic/'))
   const total = enrichIds.length
   let enriched = 0
+
+  // 区分「真实更新」与「name 补救检查触发的 re-enrich 候选」：
+  // merge 的 updatedModels 含 name 补救误报（provider 不返回 name 但 metadata 已有
+  // name → 标记 updated 以触发 re-enrich 修正历史误匹配）。这些模型若无实际 metadata
+  // 变化不应计入 hasChanges，否则每次同步都误报「有更新」→ 不必要的 KV 部署。
+  // 真实更新 = merge 改了 entry（status/metadata）OR enrich 改了 metadata。
+  const updatedSet = new Set(merged.updatedModels)
+  const realUpdatedSet = new Set()
+
+  // (a) pre-enrich：检测 merge 是否改了 entry（对比原始 state vs 合并后 state）
+  for (const modelId of merged.updatedModels) {
+    const original = state[modelId]
+    const postMerge = merged.state[modelId]
+    if (original && postMerge && JSON.stringify(original) !== JSON.stringify(postMerge)) {
+      realUpdatedSet.add(modelId)
+    }
+  }
+
   for (const modelId of enrichIds) {
     const entry = merged.state[modelId]
     if (entry) {
+      // (b) enrich 前后对比：enrich 实际改了 metadata 才计入真实更新
+      const beforeEnrich = updatedSet.has(modelId) ? JSON.stringify(entry.metadata) : null
       try {
         entry.metadata = await enrichModel(modelId, entry.metadata)
       } catch {
         // enrichModel 内部已容错，这里兜底不中断流程
+      }
+      if (
+        beforeEnrich !== null &&
+        !realUpdatedSet.has(modelId) &&
+        JSON.stringify(entry.metadata) !== beforeEnrich
+      ) {
+        realUpdatedSet.add(modelId)
       }
     }
     enriched++
@@ -159,7 +189,7 @@ export async function runSyncFlow({
     state: merged.state,
     summary: {
       newModels: merged.newModels,
-      updatedModels: merged.updatedModels,
+      updatedModels: [...realUpdatedSet],
       removedModels: merged.removedModels,
       errors: discovery.errors,
     },
