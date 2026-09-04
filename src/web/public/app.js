@@ -1837,9 +1837,9 @@ function injectModelsStyles() {
     .p-warn { color: var(--warn); }
     .p-err { color: var(--err); }
     @media (max-width: 900px) { .models-layout { grid-template-columns: 1fr; } }
-    /* 同步变更明细（调试模式表格） */
-    #sync-diff-panel { margin-top: 1rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); padding: 0.75rem; }
-    .sync-diff-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.35rem; }
+    /* 同步变更明细（调试模式表格）：内容多时面板内部滚动，避免撑高页面无法查看完全 */
+    #sync-diff-panel { margin-top: 1rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); padding: 0.75rem; max-height: 40vh; overflow-y: auto; }
+    .sync-diff-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.35rem; position: sticky; top: -0.75rem; background: var(--panel); z-index: 2; padding: 0.25rem 0; }
     .sync-diff-title { font-size: 0.85rem; font-weight: 600; color: var(--fg); }
     .sync-diff-close {
       background: transparent; color: var(--muted); border: 1px solid var(--border);
@@ -1852,7 +1852,7 @@ function injectModelsStyles() {
     .sync-diff-section-title { font-size: 0.78rem; font-weight: 600; color: var(--fg); margin-bottom: 0.3rem; }
     .sync-diff-table { width: 100%; font-size: 0.78rem; border-collapse: collapse; }
     .sync-diff-table th, .sync-diff-table td { padding: 0.3rem 0.4rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; word-break: break-word; }
-    .sync-diff-table th { color: var(--muted); font-weight: 600; background: var(--field-bg); }
+    .sync-diff-table th { color: var(--muted); font-weight: 600; background: var(--field-bg); position: sticky; top: 0; z-index: 1; }
     .sync-diff-table .diff-provider { font-size: 0.68rem; color: var(--muted); }
     .sync-diff-table .diff-old { color: var(--warn); background: var(--warn-soft); }
     .sync-diff-table .diff-new { color: var(--ok); background: var(--ok-soft); }
