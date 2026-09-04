@@ -688,13 +688,30 @@ export function createApp({
       const hiddenResult = depsAll.applyHiddenModels(manualResult.state, hiddenModelsMap)
       result.state = hiddenResult.state
       // 同步完成后统一写盘一次（不逐模型写，与 TUI「合并后统一 dirty」一致）
-      // 有变更（同步 discover + KV 手工/隐藏应用）才落盘 + 自动部署
+      // 有变更（同步 discover + KV 手工/隐藏应用）才落盘
       const hasChanges =
         (result.summary.newModels && result.summary.newModels.length > 0) ||
         (result.summary.updatedModels && result.summary.updatedModels.length > 0) ||
         (result.summary.removedModels && result.summary.removedModels.length > 0) ||
         manualResult.changed ||
         hiddenResult.changed
+      // 部署触发条件：排除「前后均为 hidden 的纯 metadata 变化」。
+      // 隐藏模型不写入 models.json（generate 只取 status==='selected'），其参数变化
+      // 不影响对外暴露的数据；本地 state 仍已落盘，取消隐藏时即可见最新参数。
+      // 注意：此时 state 仍为同步前旧对象（下一行才赋值），result.state 为合并后新对象。
+      const hasDeployChanges =
+        (result.summary.newModels && result.summary.newModels.length > 0) ||
+        (result.summary.removedModels && result.summary.removedModels.length > 0) ||
+        manualResult.changed ||
+        hiddenResult.changed ||
+        (result.summary.updatedModels || []).some((modelId) => {
+          const newEntry = result.state[modelId]
+          const oldEntry = state[modelId]
+          const hiddenBeforeAndAfter =
+            newEntry && newEntry.status === 'hidden' &&
+            oldEntry && oldEntry.status === 'hidden'
+          return !hiddenBeforeAndAfter
+        })
       state = result.state
       if (hasChanges) stateStore.save(state)
 
@@ -703,7 +720,7 @@ export function createApp({
       // 部署失败不中断同步结果，前端提示用户手动重试。
       let autoDeployed = false
       let autoDeployError = null
-      if (hasChanges) {
+      if (hasDeployChanges) {
         emitEvent({ type: 'phase', phase: 'deploy' })
         try {
           depsAll.writeModelsJson(state)
