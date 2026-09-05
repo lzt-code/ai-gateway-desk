@@ -3,6 +3,8 @@
  * @module ai-gateway-desk/src/pipeline/merge
  */
 
+import { normalizeMetadataAliases } from './enrich.js'
+
 /**
  * 比较/合并时应忽略的字段（不影响「是否有真实更新」的判定）：
  *   - id：冗余字段（与 state 的 key 重复），缺失时自动补全不应视为更新
@@ -160,6 +162,9 @@ export function mergeDiscovery(state, discoveryResults) {
           if (VOLATILE_METADATA_FIELDS.includes(key)) continue
           entry.metadata[key] = value
         }
+        // 上游别名归一化（如 context_window → context_length）：网关自带字段
+        // 用的是别名，UI 只读正名；归一化产生的新字段视为真实变更（触发 enrich + 落盘）
+        entry.metadata = normalizeMetadataAliases(entry.metadata)
 
         // 检查 metadata 是否有变化
         if (hasMetadataChanged(oldMetadata, entry.metadata)) {
@@ -180,10 +185,11 @@ export function mergeDiscovery(state, discoveryResults) {
         }
       } else {
         // ---- 新模型 ----
+        // 上游别名先归一化：即使外部富化源匹配失败，网关自带字段也能直接显示
         newState[modelId] = {
           status: 'selected',
           provider,
-          metadata: { ...model },
+          metadata: normalizeMetadataAliases({ ...model }),
         }
         newModels.push(modelId)
       }

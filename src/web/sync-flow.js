@@ -147,7 +147,23 @@ export async function runSyncFlow({
     // 动态路由（dynamic/ 前缀）跳过 enrich：路由名即展示名，不能被
     // OpenRouter 同名模型的显示名覆盖（如 glm-5.3-flash → "Z.ai: GLM 5.3 Flash"）
     .filter((modelId) => !modelId.startsWith('dynamic/'))
-  const total = enrichIds.length
+  // 存量回填：历史上因匹配失败（如双前缀 id）或上游别名字段导致 context_length
+  // 一直缺失的老模型，不在 new/updated 里，常规同步永远跳过 enrich。
+  // 本次将其纳入 enrich（匹配逻辑已修复 + 别名已归一化），一次同步即可回填。
+  const enrichSet = new Set(enrichIds)
+  const backfillIds = []
+  for (const [modelId, entry] of Object.entries(merged.state)) {
+    if (modelId.startsWith('dynamic/')) continue
+    if (enrichSet.has(modelId)) continue
+    if (entry?.manual) continue
+    const m = entry?.metadata
+    if (m && typeof m === 'object' && m.context_length == null) {
+      backfillIds.push(modelId)
+      enrichSet.add(modelId)
+    }
+  }
+  const allEnrichIds = [...enrichIds, ...backfillIds]
+  const total = allEnrichIds.length
   let enriched = 0
 
   // 区分「真实更新」与「name 补救检查触发的 re-enrich 候选」：
@@ -155,7 +171,10 @@ export async function runSyncFlow({
   // name → 标记 updated 以触发 re-enrich 修正历史误匹配）。这些模型若无实际 metadata
   // 变化不应计入 hasChanges，否则每次同步都误报「有更新」→ 不必要的 KV 部署。
   // 真实更新 = merge 改了 entry（status/metadata）OR enrich 改了 metadata。
+  // 回填模型（backfillIds）同理：enrich 实际补上字段才计入，否则 state 不落盘、
+  // 用户下次同步看到的还是缺失。
   const updatedSet = new Set(merged.updatedModels)
+  const trackSet = new Set([...updatedSet, ...backfillIds])
   const realUpdatedSet = new Set()
 
   // (a) pre-enrich：检测 merge 是否改了 entry（对比原始 state vs 合并后 state）
@@ -167,11 +186,11 @@ export async function runSyncFlow({
     }
   }
 
-  for (const modelId of enrichIds) {
+  for (const modelId of allEnrichIds) {
     const entry = merged.state[modelId]
     if (entry) {
       // (b) enrich 前后对比：enrich 实际改了 metadata 才计入真实更新
-      const beforeEnrich = updatedSet.has(modelId) ? JSON.stringify(entry.metadata) : null
+      const beforeEnrich = trackSet.has(modelId) ? JSON.stringify(entry.metadata) : null
       try {
         entry.metadata = await enrichModel(modelId, entry.metadata)
       } catch {

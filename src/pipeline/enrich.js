@@ -27,6 +27,30 @@ let cachedCatalog = null
 let catalogPromise = null
 
 /**
+ * 取短 id（去掉第一段网关前缀）。
+ * 单层如 "custom-glm/glm-5" → "glm-5"；
+ * 双层如 "custom-vercel/spacexai/grok-4.6"（上游 id 本身含 slash）→ "spacexai/grok-4.6"
+ */
+function shortIdOf(modelId) {
+  return modelId.includes('/') ? modelId.split('/').slice(1).join('/') : modelId
+}
+
+/**
+ * 取末段 id（去掉所有前缀）。
+ * "custom-vercel/spacexai/grok-4.6" → "grok-4.6"，用于兼容上游 id 自带 slash 的双前缀场景
+ */
+function baseIdOf(modelId) {
+  return modelId.includes('/') ? modelId.split('/').pop() : modelId
+}
+
+/**
+ * 归一化名称用于模糊匹配：分隔符（- _ / :）统一视为空格后小写比较
+ */
+function normName(s) {
+  return String(s || '').replace(/[-_/:]+/g, ' ').toLowerCase()
+}
+
+/**
  * 带超时的 fetch
  * @param {string} url
  * @param {object} options
@@ -157,9 +181,8 @@ export async function fetchModelsDevCatalog() {
  */
 function matchModel(modelId, orModels) {
   // 提取 modelId 中的短名称（去掉前缀）
-  const shortId = modelId.includes('/')
-    ? modelId.split('/').slice(1).join('/')
-    : modelId
+  const shortId = shortIdOf(modelId)
+  const baseId = baseIdOf(modelId)
 
   // 优先级 a: OpenRouter 模型 id 完全等于 modelId
   const exact = orModels.find((m) => m.id === modelId)
@@ -180,11 +203,25 @@ function matchModel(modelId, orModels) {
   })
   if (prefixlessMatch) return prefixlessMatch
 
-  // 优先级 c: name 模糊匹配 modelId 的 name 部分
-  const namePart = shortId.replace(/[-_]/g, ' ').toLowerCase()
+  // 优先级 b2: 末段精确匹配（兼容上游 id 自带 slash 的双前缀场景）
+  // 例：modelId="custom-vercel/spacexai/grok-4.6" → baseId="grok-4.6"
+  //     OpenRouter id="x-ai/grok-4.6" → 去前缀="grok-4.6" → 精确匹配
+  // 仍是精确比较，不会引入 c 的子串误匹配风险
+  if (baseId && baseId !== shortId) {
+    const baseMatch = orModels.find((m) => {
+      if (!m.id || !m.id.includes('/')) return m.id === baseId
+      const mShort = m.id.split('/').slice(1).join('/')
+      const mBase = m.id.split('/').pop()
+      return mShort === baseId || mBase === baseId
+    })
+    if (baseMatch) return baseMatch
+  }
+
+  // 优先级 c: name 模糊匹配 modelId 的 name 部分（用末段，避免网关前缀干扰）
+  const namePart = normName(baseId)
   const nameMatch = orModels.find((m) => {
     if (!m.name) return false
-    const orName = m.name.replace(/[-_]/g, ' ').toLowerCase()
+    const orName = normName(m.name)
     return orName.includes(namePart) || namePart.includes(orName)
   })
   if (nameMatch) return nameMatch
@@ -372,9 +409,8 @@ function matchModelsDev(modelId, catalog) {
   if (!modelsMap || typeof modelsMap !== 'object') return null
 
   // 提取 modelId 中的短名称（去掉 provider 前缀）
-  const shortId = modelId.includes('/')
-    ? modelId.split('/').slice(1).join('/')
-    : modelId
+  const shortId = shortIdOf(modelId)
+  const baseId = baseIdOf(modelId)
 
   // 优先级 a: catalog.models key 完全等于 modelId
   if (modelsMap[modelId]) {
@@ -391,6 +427,17 @@ function matchModelsDev(modelId, catalog) {
     }
   }
 
+  // 优先级 b2: 末段精确匹配（兼容双前缀，如 custom-vercel/spacexai/grok-4.6 → grok-4.6 ↔ xai/grok-4.6）
+  if (baseId && baseId !== shortId) {
+    for (const [id, m] of Object.entries(modelsMap)) {
+      const mShort = id.includes('/') ? id.split('/').slice(1).join('/') : id
+      const mBase = id.includes('/') ? id.split('/').pop() : id
+      if (mShort === baseId || mBase === baseId) {
+        return { metadata: m, providerModel: findProviderModel(catalog, id) }
+      }
+    }
+  }
+
   // 优先级 c: provider model 的 id（provider-scoped）等于 shortId
   //   catalog.models 没匹配到时，在 catalog.providers 里按 provider-scoped id 找
   const providers = catalog.providers
@@ -403,13 +450,24 @@ function matchModelsDev(modelId, catalog) {
         return { metadata: findMetadataByProviderModel(modelsMap, pm), providerModel: pm }
       }
     }
+    // c2: 末段匹配（双前缀兜底）
+    if (baseId && baseId !== shortId) {
+      for (const p of Object.values(providers)) {
+        const models = p?.models
+        if (!models) continue
+        if (models[baseId]) {
+          const pm = models[baseId]
+          return { metadata: findMetadataByProviderModel(modelsMap, pm), providerModel: pm }
+        }
+      }
+    }
   }
 
-  // 优先级 d: name 模糊匹配 modelId 的短名
-  const namePart = shortId.replace(/[-_]/g, ' ').toLowerCase()
+  // 优先级 d: name 模糊匹配 modelId 的短名（用末段，避免网关前缀干扰）
+  const namePart = normName(baseId)
   for (const [id, m] of Object.entries(modelsMap)) {
     if (!m.name) continue
-    const mdName = m.name.replace(/[-_]/g, ' ').toLowerCase()
+    const mdName = normName(m.name)
     if (mdName.includes(namePart) || namePart.includes(mdName)) {
       return { metadata: m, providerModel: findProviderModel(catalog, id) }
     }
@@ -504,6 +562,42 @@ function enrichFromModelsDev(modelId, existingMetadata, catalog) {
 }
 
 /**
+ * 归一化上游别名字段到正名字段（只补缺失，不覆盖已有值，不修改原对象）：
+ *   - context_window（部分网关 /v1/models 直接返回）→ context_length（UI/表格唯一读取的字段）
+ *   - modalities: { input, output }（同上）→ input_modalities / output_modalities
+ *   - supported_parameters（上游数组）→ supported_sampling_parameters
+ *   - max_tokens（上游）→ max_output_length（best-effort；外部源的同名字段量级一致）
+ * 背景：custom-vercel 等 provider 的 /v1/models 自带丰富字段，但用的是别名，
+ * UI 只读正名，导致“有数据却显示缺失”。
+ * @param {object} metadata
+ * @returns {object} 归一化后的新对象
+ */
+export function normalizeMetadataAliases(metadata) {
+  if (!metadata || typeof metadata !== 'object') return metadata
+  const result = { ...metadata }
+  if (result.context_length === undefined && result.context_window != null) {
+    result.context_length = result.context_window
+  }
+  if (result.max_output_length === undefined && result.max_tokens != null) {
+    result.max_output_length = result.max_tokens
+  }
+  const mods = result.modalities
+  if (result.input_modalities === undefined && Array.isArray(mods?.input)) {
+    result.input_modalities = [...mods.input]
+  }
+  if (result.output_modalities === undefined && Array.isArray(mods?.output)) {
+    result.output_modalities = [...mods.output]
+  }
+  if (
+    result.supported_sampling_parameters === undefined &&
+    Array.isArray(result.supported_parameters)
+  ) {
+    result.supported_sampling_parameters = [...result.supported_parameters]
+  }
+  return result
+}
+
+/**
  * 双源富化：OpenRouter 优先 → models.dev 兜底
  * 只补全 existingMetadata 中不存在的字段；name 由 OR 覆盖（修正历史误匹配），
  * OR 未覆盖时由 MD 补。任一源 fetch 失败静默跳过，不中断流程。
@@ -512,7 +606,9 @@ function enrichFromModelsDev(modelId, existingMetadata, catalog) {
  * @returns {Promise<object>} 合并后的 metadata 对象（不修改原对象）
  */
 export async function enrichModel(modelId, existingMetadata) {
-  let result = { ...existingMetadata }
+  // 先归一化上游别名：网关自带字段（如 context_window）直接转正名，
+  // 即使外部源匹配失败也能显示
+  let result = normalizeMetadataAliases({ ...existingMetadata })
 
   // 源 1: OpenRouter（现有逻辑，name 无条件覆盖以修正历史误匹配）
   try {
