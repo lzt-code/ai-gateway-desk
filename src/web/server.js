@@ -717,35 +717,52 @@ export function createApp({
 
       // 自动部署到 KV（models + hidden-models + manual-models）：
       // 同步后的新数据自动推送到 KV，不同 PC 间无需手动部署即可同步。
-      // 部署失败不中断同步结果，前端提示用户手动重试。
-      let autoDeployed = false
+      // 部署在后台进行：先 emit done（携带 summary/details）让前端立即展示同步结果
+      // 并可继续其它操作，KV 部署完成后再补发 deploy 事件（订阅者已关闭时仅记日志）。
+      // autoDeployed 三态：null=后台部署中（前端视为成功，不标 dirty 阻塞操作）；
+      //                   true=已完成；false=已失败（前端提示手动重试）。
+      const deployConfig = config
+      const deployState = state
+      const deployKvReady = kvReady
+      const deployMgmt = mgmtToken
+      const deployGw = gateway
+      const deployNs = namespaceId
+      let autoDeployed = null
       let autoDeployError = null
-      if (hasDeployChanges) {
-        emitEvent({ type: 'phase', phase: 'deploy' })
-        try {
-          depsAll.writeModelsJson(state)
-          const deployResult = await depsAll.deployToKV(config)
-          if (deployResult && deployResult.success === false) {
-            autoDeployError = deployResult.output || 'KV 部署失败'
-          } else {
-            // models + provider-routes 已由 deployToKV 写入，再写 hidden-models 和 manual-models
-            if (kvReady) {
-              await depsAll.writeKvHiddenModels(
-                mgmtToken, gateway.accountId, namespaceId, depsAll.buildHiddenModelsMap(state),
-              )
-              await depsAll.writeKvManualModels(
-                mgmtToken, gateway.accountId, namespaceId, depsAll.buildManualModelsMap(state),
-              )
-            }
-            autoDeployed = true
-          }
-        } catch (err) {
-          autoDeployError = err instanceof Error ? err.message : String(err)
-        }
-        emitEvent({ type: 'deploy', ok: autoDeployed, error: autoDeployError })
-      }
+      if (!hasDeployChanges) autoDeployed = true
       emitEvent({ type: 'done', summary: result.summary, details: result.details || { added: [], removed: [], updated: [] }, autoDeployed, autoDeployError })
-      return c.json({ ok: true, summary: result.summary, details: result.details || { added: [], removed: [], updated: [] }, autoDeployed, autoDeployError })
+      // 返回响应释放 HTTP 连接；KV 部署作为后台任务继续执行
+      const syncReturn = { ok: true, summary: result.summary, details: result.details || { added: [], removed: [], updated: [] }, autoDeployed, autoDeployError }
+      if (hasDeployChanges) {
+        // 后台部署：不阻塞当前请求，失败仅记日志 + 尝试通知仍在订阅的客户端
+        ;(async () => {
+          let ok = false
+          let err = null
+          try {
+            emitEvent({ type: 'phase', phase: 'deploy' })
+            depsAll.writeModelsJson(deployState)
+            const deployResult = await depsAll.deployToKV(deployConfig)
+            if (deployResult && deployResult.success === false) {
+              err = deployResult.output || 'KV 部署失败'
+            } else {
+              if (deployKvReady) {
+                await depsAll.writeKvHiddenModels(
+                  deployMgmt, deployGw.accountId, deployNs, depsAll.buildHiddenModelsMap(deployState),
+                )
+                await depsAll.writeKvManualModels(
+                  deployMgmt, deployGw.accountId, deployNs, depsAll.buildManualModelsMap(deployState),
+                )
+              }
+              ok = true
+            }
+          } catch (e) {
+            err = e instanceof Error ? e.message : String(e)
+          }
+          if (err) console.error('[aigd] 后台 KV 部署失败:', err)
+          emitEvent({ type: 'deploy', ok, error: err })
+        })().catch(() => {})
+      }
+      return c.json(syncReturn)
     } catch (err) {
       // SSE 推送 error 事件后关闭流（无订阅者时是 no-op），HTTP 层走 onError → 500
       emitEvent({ type: 'error', message: err.message || String(err) })

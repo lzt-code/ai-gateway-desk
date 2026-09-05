@@ -523,6 +523,33 @@ export async function withBlocking(message, work) {
   }
 }
 
+// ── 同步进度面板可见性（仅模型页展示）──────────────────────────
+// #progress-panel 挂在 body 下（视图容器外），逻辑上属于模型同步流程。
+// 需求：拉取模型列表的进度弹窗与结束摘要只在「模型」页展示——切到其它页隐藏，
+// 切回模型页时若同步仍在进行/结果未收起则恢复显示。两套同步路径（全局启动链
+// runGlobalModelSync 与模型视图内 startSync）共用此逻辑态，仅一处 DOM 入口。
+let _progressPanelVisible = false // 逻辑可见性：未被用户关闭且未自动收起
+
+export function syncProgressPanelVisibility() {
+  if (typeof document === 'undefined') return
+  const panel = document.getElementById('progress-panel')
+  if (!panel) return
+  const isModels = _state && _state.currentView === 'models'
+  panel.hidden = !(_progressPanelVisible && isModels)
+}
+
+// 标记进度面板逻辑可见并按当前视图刷新 DOM（切到非模型页时实际隐藏）
+export function showProgressPanel() {
+  _progressPanelVisible = true
+  syncProgressPanelVisibility()
+}
+
+// 标记进度面板逻辑隐藏并刷新 DOM
+export function hideProgressPanel() {
+  _progressPanelVisible = false
+  syncProgressPanelVisibility()
+}
+
 // ── 模型同步期间全局按钮禁用（替代阻塞弹窗）───────────────────
 // 保留全量版本供通用场景；模型同步专用为 setModelPageButtonsDisabled
 // 遍历页面所有 <button> 与链接按钮，禁用时记录原 disabled 态，恢复时
@@ -632,7 +659,6 @@ function _globalShowProgress(title) {
   if (!panel) return
   clearTimeout(_globalAutoHideTimer); _globalAutoHideTimer = null
   _globalProgressDismissed = false
-  panel.hidden = false
   panel.innerHTML = ''
   const header = document.createElement('div')
   header.className = 'progress-header'
@@ -646,18 +672,20 @@ function _globalShowProgress(title) {
   close.textContent = '×'
   close.addEventListener('click', () => {
     _globalProgressDismissed = true
-    panel.hidden = true
+    hideProgressPanel()
     if (_globalAutoHideTimer) { clearTimeout(_globalAutoHideTimer); _globalAutoHideTimer = null }
   })
   header.append(t, close)
   panel.appendChild(header)
+  // 标记逻辑可见并按当前视图刷新 DOM（非模型页时实际隐藏）
+  showProgressPanel()
 }
 
 function _globalRenderProgress(st) {
   if (typeof document === 'undefined') return
   const panel = document.getElementById('progress-panel')
   if (!panel || _globalProgressDismissed) return
-  panel.hidden = false
+  showProgressPanel()
   const slugs = Object.keys(st.providers)
   const doneCount = slugs.filter((k) => st.providers[k].status === 'done').length
   const errCount = slugs.filter((k) => st.providers[k].status === 'error').length
@@ -696,7 +724,7 @@ function _globalRenderProgress(st) {
   close.className = 'progress-close'
   close.setAttribute('aria-label', '关闭同步进度')
   close.textContent = '×'
-  close.addEventListener('click', () => { _globalProgressDismissed = true; panel.hidden = true })
+  close.addEventListener('click', () => { _globalProgressDismissed = true; hideProgressPanel() })
   header.append(t, close)
   panel.appendChild(header)
   const showDetail = !isDone || errCount > 0 || (isError && slugs.length > 0)
@@ -725,10 +753,10 @@ function _globalRenderProgress(st) {
   if (isDone) {
     const hasError = errCount > 0 || !!((st.summary && (st.summary.errors || []).length))
     clearTimeout(_globalAutoHideTimer)
-    _globalAutoHideTimer = setTimeout(() => { if (!_globalProgressDismissed) panel.hidden = true }, hasError ? 8000 : 5000)
+    _globalAutoHideTimer = setTimeout(() => { if (!_globalProgressDismissed) hideProgressPanel() }, hasError ? 8000 : 5000)
   } else if (isError) {
     clearTimeout(_globalAutoHideTimer)
-    _globalAutoHideTimer = setTimeout(() => { if (!_globalProgressDismissed) panel.hidden = true }, 8000)
+    _globalAutoHideTimer = setTimeout(() => { if (!_globalProgressDismissed) hideProgressPanel() }, 8000)
   } else {
     clearTimeout(_globalAutoHideTimer); _globalAutoHideTimer = null
   }
@@ -1244,6 +1272,8 @@ export function renderView(name) {
   if (modelSideActions) modelSideActions.hidden = name !== 'models'
   const routesSideActions = document.getElementById('routes-side-actions')
   if (routesSideActions) routesSideActions.hidden = name !== 'routes'
+  // 切换视图后按当前视图刷新同步进度面板可见性（仅模型页展示，切走即隐藏）
+  syncProgressPanelVisibility()
 }
 
 function appState() {
@@ -2320,9 +2350,10 @@ export function renderModelsView(container) {
     if (!progressPanel) return
     clearTimeout(autoHideTimer); autoHideTimer = null
     progressDismissed = false
-    progressPanel.hidden = false
     progressPanel.innerHTML = ''
     progressPanel.appendChild(buildProgressHeader(initialTitle || '同步中…'))
+    // 标记逻辑可见并按当前视图刷新（非模型页时实际隐藏，仅模型页展示）
+    showProgressPanel()
   }
 
   // 头部：标题 + 关闭按钮（×）。关闭只隐藏面板，不中断同步；
@@ -2346,7 +2377,7 @@ export function renderModelsView(container) {
   function dismissProgress() {
     if (!progressPanel) return
     progressDismissed = true
-    progressPanel.hidden = true
+    hideProgressPanel()
     if (autoHideTimer) { clearTimeout(autoHideTimer); autoHideTimer = null }
   }
 
@@ -2355,14 +2386,14 @@ export function renderModelsView(container) {
     clearTimeout(autoHideTimer)
     autoHideTimer = setTimeout(() => {
       autoHideTimer = null
-      if (!progressDismissed) progressPanel.hidden = true
+      if (!progressDismissed) hideProgressPanel()
     }, ms)
   }
 
   function renderProgress(st) {
     if (!progressPanel) return
     if (progressDismissed) return // 用户已手动收起，本次同步不再弹出
-    progressPanel.hidden = false
+    showProgressPanel()
 
     const slugs = Object.keys(st.providers)
     const doneCount = slugs.filter((k) => st.providers[k].status === 'done').length
@@ -2502,14 +2533,14 @@ export function renderModelsView(container) {
       const shouldShowDiff = hasSyncDiff(details)
       if (shouldShowDiff) renderSyncDiffToPanel(details)
       else clearSyncDiffPanel()
-      // 自动部署成功 → 重置 snapshot（无未保存标记）；
-      // 自动部署失败或未触发 → 保留旧 snapshot（标未保存，提示用户手动部署）
-      if (syncData && syncData.autoDeployed === true) {
+      // 自动部署成功或后台部署中（autoDeployed: true | null）→ 重置 snapshot（无未保存标记）；
+      // 仅部署明确失败（false）或未触发 → 保留旧 snapshot（标未保存，提示用户手动部署）
+      if (syncData && syncData.autoDeployed !== false) {
         snapshot = structuredClone(state)
       }
       updateDirty()
-      // 表格非空且自动部署未成功时强制标未保存（触发自动/手工保存 kv）
-      if (shouldShowDiff && !syncData?.autoDeployed) {
+      // 表格非空且自动部署明确失败时强制标未保存（触发自动/手工保存 kv）
+      if (shouldShowDiff && syncData?.autoDeployed === false) {
         dirtyMark.hidden = false
         appState().set('modelsDirty', true)
       }
