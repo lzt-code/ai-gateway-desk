@@ -1838,8 +1838,8 @@ function injectModelsStyles() {
     .p-err { color: var(--err); }
     @media (max-width: 900px) { .models-layout { grid-template-columns: 1fr; } }
     /* 同步变更明细（调试模式表格）：内容多时面板内部滚动，避免撑高页面无法查看完全 */
-    #sync-diff-panel { margin-top: 1rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--panel); padding: 0.75rem; max-height: 40vh; overflow-y: auto; }
-    .sync-diff-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.35rem; position: sticky; top: -0.75rem; background: var(--panel); z-index: 2; padding: 0.25rem 0; }
+    #sync-diff-panel { margin-top: 1rem; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--elevated); box-shadow: var(--shadow-2); padding: 0.75rem; max-height: 40vh; overflow-y: auto; }
+    .sync-diff-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.35rem; position: sticky; top: -0.75rem; background: var(--elevated); z-index: 2; padding: 0.25rem 0; }
     .sync-diff-title { font-size: 0.85rem; font-weight: 600; color: var(--fg); }
     .sync-diff-close {
       background: transparent; color: var(--muted); border: 1px solid var(--border);
