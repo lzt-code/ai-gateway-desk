@@ -208,6 +208,36 @@ export async function runSyncFlow({
     emit({ type: 'enrich', enriched, total })
   }
 
+  // 动态路由补全 context_length / max_output_length：动态路由本身无上下文窗口
+  // 信息（Cloudflare 路由 API 不返回），取 fallback 链中第一个有 context_length
+  // 的模型的数据补全。链格式 'provider/model' 与 state key 一致，可直接查表。
+  // 在 enrich 之后执行：链中真实模型已在本轮 enrich 填充 context_length。
+  for (const [modelId, entry] of Object.entries(merged.state)) {
+    if (!modelId.startsWith('dynamic/')) continue
+    const chain = entry?.metadata?.route_models
+    if (!Array.isArray(chain) || chain.length === 0) continue
+    let source = null
+    for (const ref of chain) {
+      if (typeof ref !== 'string' || !ref.trim()) continue
+      const refMeta = merged.state[ref]?.metadata
+      if (refMeta?.context_length != null) {
+        source = refMeta
+        break
+      }
+    }
+    if (!source) continue
+    let changed = false
+    if (entry.metadata.context_length !== source.context_length) {
+      entry.metadata.context_length = source.context_length
+      changed = true
+    }
+    if (source.max_output_length != null && entry.metadata.max_output_length !== source.max_output_length) {
+      entry.metadata.max_output_length = source.max_output_length
+      changed = true
+    }
+    if (changed) realUpdatedSet.add(modelId)
+  }
+
   const summary = {
     newModels: merged.newModels,
     updatedModels: [...realUpdatedSet],

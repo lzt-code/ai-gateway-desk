@@ -1115,6 +1115,244 @@ section('测试 32: merge 改了 status → 计入真实更新')
   }
 }
 
+// ── 测试 33：动态路由从 fallback 链补全 context_length / max_output_length ──
+section('测试 33: 动态路由从链首模型补全上下文窗口')
+{
+  const deps = makeDeps()
+  deps.mergeDiscovery = (state, _d) => ({
+    state: {
+      ...structuredClone(state),
+      'custom-agnes/agnes': {
+        status: 'selected',
+        provider: 'custom-agnes',
+        metadata: { name: 'Agnes', context_length: 128000, max_output_length: 16384 },
+      },
+      'dynamic/my-route': {
+        status: 'selected',
+        provider: 'dynamic',
+        metadata: { id: 'dynamic/my-route', name: 'my-route', route_models: ['custom-agnes/agnes'] },
+      },
+    },
+    newModels: ['custom-agnes/agnes', 'dynamic/my-route'],
+    updatedModels: [],
+    removedModels: [],
+  })
+  deps.enrichModel = async (_id, meta) => ({ ...meta })
+
+  const result = await runSyncFlow({
+    config: fakeConfig,
+    gatewayToken: 't',
+    mgmtToken: 'm',
+    state: {},
+    deps,
+  })
+
+  const dynMeta = result.state['dynamic/my-route']?.metadata
+  check(dynMeta?.context_length === 128000, '动态路由从链首模型补全 context_length')
+  check(dynMeta?.max_output_length === 16384, '动态路由从链首模型补全 max_output_length')
+  check(result.summary.updatedModels.includes('dynamic/my-route'), '补全计入 updatedModels')
+}
+
+// ── 测试 34：链首模型无 context_length → 取链中下一个有数据的模型 ──
+section('测试 34: 链首无 context_length → 取链中下一个')
+{
+  const deps = makeDeps()
+  deps.mergeDiscovery = (state, _d) => ({
+    state: {
+      ...structuredClone(state),
+      'provider-a/model-a': { status: 'selected', provider: 'provider-a', metadata: { name: 'A' } },
+      'provider-b/model-b': { status: 'selected', provider: 'provider-b', metadata: { name: 'B', context_length: 64000 } },
+      'dynamic/fallback-route': {
+        status: 'selected',
+        provider: 'dynamic',
+        metadata: {
+          id: 'dynamic/fallback-route',
+          name: 'fallback-route',
+          route_models: ['provider-a/model-a', 'provider-b/model-b'],
+        },
+      },
+    },
+    newModels: ['provider-a/model-a', 'provider-b/model-b', 'dynamic/fallback-route'],
+    updatedModels: [],
+    removedModels: [],
+  })
+  deps.enrichModel = async (_id, meta) => ({ ...meta })
+
+  const result = await runSyncFlow({
+    config: fakeConfig,
+    gatewayToken: 't',
+    mgmtToken: 'm',
+    state: {},
+    deps,
+  })
+
+  const dynMeta = result.state['dynamic/fallback-route']?.metadata
+  check(dynMeta?.context_length === 64000, '链首无 context_length → 取链中下一个有数据的模型（64000）')
+}
+
+// ── 测试 35：链中无模型有 context_length → 不补全 ──
+section('测试 35: 链中无模型有 context_length → 不补全')
+{
+  const deps = makeDeps()
+  deps.mergeDiscovery = (state, _d) => ({
+    state: {
+      ...structuredClone(state),
+      'provider-a/model-a': { status: 'selected', provider: 'provider-a', metadata: { name: 'A' } },
+      'dynamic/no-ctx-route': {
+        status: 'selected',
+        provider: 'dynamic',
+        metadata: { id: 'dynamic/no-ctx-route', name: 'no-ctx-route', route_models: ['provider-a/model-a'] },
+      },
+    },
+    newModels: ['provider-a/model-a', 'dynamic/no-ctx-route'],
+    updatedModels: [],
+    removedModels: [],
+  })
+  deps.enrichModel = async (_id, meta) => ({ ...meta })
+
+  const result = await runSyncFlow({
+    config: fakeConfig,
+    gatewayToken: 't',
+    mgmtToken: 'm',
+    state: {},
+    deps,
+  })
+
+  const dynMeta = result.state['dynamic/no-ctx-route']?.metadata
+  check(dynMeta?.context_length === undefined, '链中无 context_length → 不补全')
+  check(!result.summary.updatedModels.includes('dynamic/no-ctx-route'), '无补全 → 不计入 updatedModels')
+}
+
+// ── 测试 36：动态路由无 route_models → 跳过 ──
+section('测试 36: 动态路由无 route_models → 跳过')
+{
+  const deps = makeDeps()
+  deps.mergeDiscovery = (state, _d) => ({
+    state: {
+      ...structuredClone(state),
+      'dynamic/no-chain': {
+        status: 'selected',
+        provider: 'dynamic',
+        metadata: { id: 'dynamic/no-chain', name: 'no-chain' },
+      },
+    },
+    newModels: ['dynamic/no-chain'],
+    updatedModels: [],
+    removedModels: [],
+  })
+  deps.enrichModel = async (_id, meta) => ({ ...meta })
+
+  const result = await runSyncFlow({
+    config: fakeConfig,
+    gatewayToken: 't',
+    mgmtToken: 'm',
+    state: {},
+    deps,
+  })
+
+  const dynMeta = result.state['dynamic/no-chain']?.metadata
+  check(dynMeta?.context_length === undefined, '无 route_models → 不补全')
+  check(!result.summary.updatedModels.includes('dynamic/no-chain'), '无 route_models → 不计入 updatedModels')
+}
+
+// ── 测试 37：链变化 → 已有 context_length 覆盖为新链首模型的值 ──
+section('测试 37: 链变化 → 已有 context_length 被覆盖')
+{
+  const deps = makeDeps()
+  // 初始 state：动态路由带旧链模型的 context_length（64000）
+  const initial = {
+    'dynamic/my-route': {
+      status: 'selected',
+      provider: 'dynamic',
+      metadata: {
+        id: 'dynamic/my-route',
+        name: 'my-route',
+        route_models: ['provider-old/model-old'],
+        context_length: 64000,
+      },
+    },
+  }
+  deps.mergeDiscovery = (state, _d) => ({
+    state: {
+      ...structuredClone(state),
+      'custom-agnes/agnes': {
+        status: 'selected',
+        provider: 'custom-agnes',
+        metadata: { name: 'Agnes', context_length: 128000 },
+      },
+      'dynamic/my-route': {
+        status: 'selected',
+        provider: 'dynamic',
+        metadata: {
+          id: 'dynamic/my-route',
+          name: 'my-route',
+          route_models: ['custom-agnes/agnes'],
+          context_length: 64000,
+        },
+      },
+    },
+    newModels: [],
+    updatedModels: [],
+    removedModels: [],
+  })
+  deps.enrichModel = async (_id, meta) => ({ ...meta })
+
+  const result = await runSyncFlow({
+    config: fakeConfig,
+    gatewayToken: 't',
+    mgmtToken: 'm',
+    state: initial,
+    deps,
+  })
+
+  const dynMeta = result.state['dynamic/my-route']?.metadata
+  check(dynMeta?.context_length === 128000, '链变化 → context_length 覆盖为新链首模型的值（128000）')
+  check(result.summary.updatedModels.includes('dynamic/my-route'), '覆盖变化计入 updatedModels')
+}
+
+// ── 测试 38：context_length 已与链首模型一致 → 幂等不计入 updatedModels ──
+section('测试 38: 已一致 → 幂等不计入 updatedModels')
+{
+  const deps = makeDeps()
+  const initial = {
+    'custom-agnes/agnes': {
+      status: 'selected',
+      provider: 'custom-agnes',
+      metadata: { name: 'Agnes', context_length: 128000, max_output_length: 16384 },
+    },
+    'dynamic/my-route': {
+      status: 'selected',
+      provider: 'dynamic',
+      metadata: {
+        id: 'dynamic/my-route',
+        name: 'my-route',
+        route_models: ['custom-agnes/agnes'],
+        context_length: 128000,
+        max_output_length: 16384,
+      },
+    },
+  }
+  deps.mergeDiscovery = (state, _d) => ({
+    state: structuredClone(state),
+    newModels: [],
+    updatedModels: [],
+    removedModels: [],
+  })
+  deps.enrichModel = async (_id, meta) => ({ ...meta })
+
+  const result = await runSyncFlow({
+    config: fakeConfig,
+    gatewayToken: 't',
+    mgmtToken: 'm',
+    state: initial,
+    deps,
+  })
+
+  const dynMeta = result.state['dynamic/my-route']?.metadata
+  check(dynMeta?.context_length === 128000, '幂等：context_length 保持不变')
+  check(!result.summary.updatedModels.includes('dynamic/my-route'), '无变化 → 不计入 updatedModels')
+}
+
 console.log(`\n${'='.repeat(56)}`)
 console.log(`测试汇总: ${checks} 项检查, ${failures} 项失败`)
 process.exit(failures ? 1 : 0)
