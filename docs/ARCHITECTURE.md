@@ -116,7 +116,7 @@ Vanilla JS 单页（`app.js` / `index.html` / `style.css`），四个视图 tab�
 
 ### 4.6 模型管道 — `src/pipeline/` + `src/output/`
 
-- `enrich.js`：OpenRouter 富化（模块级缓存，仅新模型、仅补缺失字段，失败静默）
+- `enrich.js`：OpenRouter + models.dev 双源富化（模块级缓存，仅补缺失字段；pricing 例外——覆盖以跟随上游改价，失败静默）
 - `merge.js`：**策略 A：provider 永远覆盖**；仅对成功查询的 provider 执行「未发现 → 直接删除」（manual 条目豁免）
 - `generate.js`：过滤 selected + 隐藏 provider（`enabled===false`）的模型 → 写 `data/models.json`
 - `deploy.js`：`wrangler kv:key put` 部署 models + `provider-routes` 路由映射（slug → pathPrefix）
@@ -129,7 +129,7 @@ Vanilla JS 单页（`app.js` / `index.html` / `style.css`），四个视图 tab�
 
 ### 4.8 同步编排 — `src/web/sync-flow.js`
 
-`runSyncFlow` 纯函数：**provider 同步 → discover → merge → enrich** 四步，依赖全部注入，进度经 `onEvent` 外发（server.js 转 SSE）。容错语义：provider 同步失败不中断 discover、discover 无结果不抛错、enrich 失败静默、merge 深拷贝不改原 state。
+`runSyncFlow` 纯函数：**provider 同步 → discover → merge → enrich** 四步，依赖全部注入，进度经 `onEvent` 外发（server.js 转 SSE）。容错语义：provider 同步失败不中断 discover、discover 无结果不抛错、enrich 失败静默、enrich 的 pricing 覆盖后回写 provider 自报价格（provider 价格优先于富化源）、merge 深拷贝不改原 state。
 
 ### 4.9 TUI 目录 — `src/tui/`
 

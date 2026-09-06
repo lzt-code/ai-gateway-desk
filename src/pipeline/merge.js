@@ -197,7 +197,8 @@ export function mergeDiscovery(state, discoveryResults) {
 
         // provider 不返回 name 但 metadata 有 name：触发 re-enrich 以补全
         // OpenRouter/models.dev 可能新增的富化字段。enrich 对已有字段不覆盖
-        // （fill-only），因此不会产生无变化更新，仅填充缺失字段。
+        // （fill-only；pricing 除外——覆盖以跟随上游改价，provider 自报价格由
+        // sync-flow 在 enrich 后回写还原），因此不会产生无变化更新，仅填充缺失字段。
         if (
           !Object.prototype.hasOwnProperty.call(model, 'name') &&
           entry.metadata.name !== undefined &&

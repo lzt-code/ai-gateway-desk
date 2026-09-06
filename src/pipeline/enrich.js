@@ -8,7 +8,9 @@
  *      tool_call/reasoning/structured_output 布尔能力），OpenRouter 匹配不到或
  *      补全后仍缺失的字段由 models.dev 兜底
  *
- * 语义：只补全 existingMetadata 中不存在的字段（name 例外，见 enrichFromOpenRouter）
+ * 语义：只补全 existingMetadata 中不存在的字段（两个例外：name 由 OR 覆盖以修正
+ *       历史误匹配；pricing 覆盖已有值以跟随上游改价——provider 自报价格的还原
+ *       由 sync-flow 在 enrich 之后统一处理，provider 价格优先于富化源）
  *
  * @module ai-gateway-desk/src/pipeline/enrich
  */
@@ -260,16 +262,50 @@ function parseModality(modality) {
 }
 
 /**
- * 从 OpenRouter 模型列表中匹配并补全字段（只补 existingMetadata 中不存在的）
+ * 归一化 OpenRouter pricing 对象 → { prompt, completion }（USD / token，数字）。
+ * OR 价格为字符串（如 "0.0000015"；"-1" 表示变量计价等无效值，跳过该字段）；
+ * 全部无效返回 null。
+ * @param {object} p - OpenRouter 模型的 pricing 字段
+ * @returns {{ prompt?: number, completion?: number }|null}
+ */
+function normalizeOpenRouterPricing(p) {
+  if (!p || typeof p !== 'object') return null
+  const out = {}
+  const prompt = Number(p.prompt)
+  const completion = Number(p.completion)
+  if (Number.isFinite(prompt) && prompt >= 0) out.prompt = prompt
+  if (Number.isFinite(completion) && completion >= 0) out.completion = completion
+  return Object.keys(out).length > 0 ? out : null
+}
+
+/**
+ * 归一化 models.dev cost 对象 → { prompt, completion }（USD / token，数字）。
+ * cost.input → prompt、cost.output → completion；全部无效返回 null。
+ * @param {object} cost - models.dev 模型的 cost 字段
+ * @returns {{ prompt?: number, completion?: number }|null}
+ */
+function normalizeModelsDevCost(cost) {
+  if (!cost || typeof cost !== 'object') return null
+  const out = {}
+  if (Number.isFinite(cost.input) && cost.input >= 0) out.prompt = cost.input
+  if (Number.isFinite(cost.output) && cost.output >= 0) out.completion = cost.output
+  return Object.keys(out).length > 0 ? out : null
+}
+
+/**
+ * 从 OpenRouter 模型列表中匹配并补全字段（只补 existingMetadata 中不存在的；
+ * pricing 例外：覆盖已有值以跟随上游改价）
  * @param {string} modelId - 带前缀的模型 id
  * @param {object} existingMetadata - 已有元数据对象
  * @param {Array<object>} orModels - OpenRouter 模型列表
- * @returns {object} 合并后的 metadata 对象（匹配不到时返回 existingMetadata 的拷贝）
+ * @returns {{ metadata: object, providedPricing: boolean }}
+ *   metadata：合并后的 metadata 对象（匹配不到时返回 existingMetadata 的拷贝）；
+ *   providedPricing：本轮是否写入了 pricing（供 MD 源做优先级让位判断）
  */
 function enrichFromOpenRouter(modelId, existingMetadata, orModels) {
   const matched = matchModel(modelId, orModels)
   if (!matched) {
-    return { ...existingMetadata }
+    return { metadata: { ...existingMetadata }, providedPricing: false }
   }
 
   // 只补全 existingMetadata 中不存在的字段，已有的不覆盖
@@ -359,7 +395,16 @@ function enrichFromOpenRouter(modelId, existingMetadata, orModels) {
     }
   }
 
-  return result
+  // pricing — 覆盖已有值（例外于 fill-only）：上游改价需跟随更新，否则历史
+  // 价格永远停留。provider 自报价格的还原由 sync-flow 在 enrich 之后统一处理。
+  let providedPricing = false
+  const freshPricing = normalizeOpenRouterPricing(matched.pricing)
+  if (freshPricing) {
+    result.pricing = freshPricing
+    providedPricing = true
+  }
+
+  return { metadata: result, providedPricing }
 }
 
 /**
@@ -496,9 +541,12 @@ function findMetadataByProviderModel(modelsMap, pm) {
  * @param {string} modelId - 带前缀的模型 id
  * @param {object} existingMetadata - 已有元数据对象（可能已被 OR 补全过）
  * @param {object} catalog - models.dev catalog
+ * @param {object} [options]
+ * @param {boolean} [options.skipPricing=false] - OR 本轮已写入 pricing 时为 true，
+ *   跳过 cost 映射（OR 优先级高于 MD，不让 MD 覆盖 OR 的新鲜价格）
  * @returns {object|null} 合并后的 metadata 对象；匹配不到返回 null
  */
-function enrichFromModelsDev(modelId, existingMetadata, catalog) {
+function enrichFromModelsDev(modelId, existingMetadata, catalog, { skipPricing = false } = {}) {
   const matched = matchModelsDev(modelId, catalog)
   if (!matched) return null
 
@@ -533,6 +581,16 @@ function enrichFromModelsDev(modelId, existingMetadata, catalog) {
     }
     if (result.output_modalities === undefined && Array.isArray(modalities.output)) {
       result.output_modalities = [...modalities.output]
+    }
+  }
+
+  // cost — 与 OR 的 pricing 同语义：覆盖已有值以跟随上游改价（归一化为
+  // { prompt, completion }，cost.input → prompt、cost.output → completion）；
+  // OR 本轮已提供 pricing 时跳过（skipPricing），保持 OR > MD 的源优先级
+  if (!skipPricing) {
+    const freshCost = normalizeModelsDevCost(providerModel?.cost ?? metadata?.cost)
+    if (freshCost) {
+      result.pricing = freshCost
     }
   }
 
@@ -600,7 +658,8 @@ export function normalizeMetadataAliases(metadata) {
 /**
  * 双源富化：OpenRouter 优先 → models.dev 兜底
  * 只补全 existingMetadata 中不存在的字段；name 由 OR 覆盖（修正历史误匹配），
- * OR 未覆盖时由 MD 补。任一源 fetch 失败静默跳过，不中断流程。
+ * pricing 由 OR/MD 覆盖（跟随上游改价，OR 优先），OR 未覆盖时由 MD 补。
+ * 任一源 fetch 失败静默跳过，不中断流程。
  * @param {string} modelId - 带前缀的模型 id
  * @param {object} existingMetadata - 已有元数据对象
  * @returns {Promise<object>} 合并后的 metadata 对象（不修改原对象）
@@ -610,21 +669,26 @@ export async function enrichModel(modelId, existingMetadata) {
   // 即使外部源匹配失败也能显示
   let result = normalizeMetadataAliases({ ...existingMetadata })
 
-  // 源 1: OpenRouter（现有逻辑，name 无条件覆盖以修正历史误匹配）
+  // 源 1: OpenRouter（现有逻辑，name 无条件覆盖以修正历史误匹配；
+  //        pricing 覆盖以跟随上游改价）
+  let orPriced = false
   try {
     const orModels = await fetchOpenRouterModels()
     if (orModels && orModels.length > 0) {
-      result = enrichFromOpenRouter(modelId, result, orModels)
+      const or = enrichFromOpenRouter(modelId, result, orModels)
+      result = or.metadata
+      orPriced = or.providedPricing
     }
   } catch {
     // OR fetch 失败，继续尝试 MD
   }
 
-  // 源 2: models.dev（补 OR 未覆盖的字段；OR 没匹配到时全量补）
+  // 源 2: models.dev（补 OR 未覆盖的字段；OR 没匹配到时全量补；
+  //        OR 已提供 pricing 时跳过 cost，保持源优先级）
   try {
     const catalog = await fetchModelsDevCatalog()
     if (catalog) {
-      const mdResult = enrichFromModelsDev(modelId, result, catalog)
+      const mdResult = enrichFromModelsDev(modelId, result, catalog, { skipPricing: orPriced })
       if (mdResult) {
         result = mdResult
       }

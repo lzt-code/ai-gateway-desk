@@ -9,6 +9,7 @@
  *   - provider 同步失败不中断 discover（管理 Token 缺失则跳过）
  *   - discover 无结果不抛错（summary 为空 + errors 携带原因）
  *   - enrich 失败静默跳过（enrichModel 内部已容错，这里兜底）
+ *   - enrich 的 pricing 覆盖后回写 provider 自报价格（provider 价格优先于富化源）
  *   - merge 用 structuredClone 深拷贝，原 state 对象不被修改
  *
  * @module ai-gateway-desk/src/web/sync-flow
@@ -186,26 +187,48 @@ export async function runSyncFlow({
     }
   }
 
+  // (b) enrich 前后对比的快照：比较推迟到 provider pricing 回写之后——
+  //     enrich 的 pricing 为覆盖语义，可能先改写再被回写还原，立即比较会把
+  //     「改写+还原」误判为真实更新，导致每次同步无意义的 KV 部署
+  const enrichSnapshots = new Map()
+
   for (const modelId of allEnrichIds) {
     const entry = merged.state[modelId]
     if (entry) {
-      // (b) enrich 前后对比：enrich 实际改了 metadata 才计入真实更新
-      const beforeEnrich = trackSet.has(modelId) ? JSON.stringify(entry.metadata) : null
+      if (trackSet.has(modelId)) {
+        enrichSnapshots.set(modelId, JSON.stringify(entry.metadata))
+      }
       try {
         entry.metadata = await enrichModel(modelId, entry.metadata)
       } catch {
         // enrichModel 内部已容错，这里兜底不中断流程
       }
-      if (
-        beforeEnrich !== null &&
-        !realUpdatedSet.has(modelId) &&
-        JSON.stringify(entry.metadata) !== beforeEnrich
-      ) {
-        realUpdatedSet.add(modelId)
-      }
     }
     enriched++
     emit({ type: 'enrich', enriched, total })
+  }
+
+  // Provider 价格回写（provider 优先）：enrich 的 pricing 为覆盖语义，可能改写
+  // 本次 discovery 返回的原始价格（OR 含渠道加价、MD 为参考价，均不如 provider
+  // 自报权威）。把原始响应中的 pricing/pricings 回写；provider 未返回时保留
+  // enrich 结果（首次由富化源补价，之后跟随其改价更新）。
+  for (const { models } of discovery.results) {
+    for (const model of models) {
+      const entry = merged.state[model.id]
+      if (!entry || !entry.metadata || typeof entry.metadata !== 'object') continue
+      for (const key of ['pricing', 'pricings']) {
+        if (model[key] !== undefined) entry.metadata[key] = model[key]
+      }
+    }
+  }
+
+  // 回写后复检 (b)：enrich 实际改了 metadata（对比回写后的最终值）才计入真实更新
+  for (const [modelId, beforeJson] of enrichSnapshots) {
+    if (realUpdatedSet.has(modelId)) continue
+    const after = merged.state[modelId]
+    if (after && JSON.stringify(after.metadata) !== beforeJson) {
+      realUpdatedSet.add(modelId)
+    }
   }
 
   // 动态路由补全 context_length / max_output_length：动态路由本身无上下文窗口

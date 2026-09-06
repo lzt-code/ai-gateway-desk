@@ -1353,6 +1353,114 @@ section('测试 38: 已一致 → 幂等不计入 updatedModels')
   check(!result.summary.updatedModels.includes('dynamic/my-route'), '无变化 → 不计入 updatedModels')
 }
 
+// ── 测试 39：provider 自报 pricing 回写（provider 价格优先于富化源）──
+section('测试 39: provider pricing 回写')
+{
+  const deps = makeDeps()
+  // discovery 原始响应带 pricing（provider 自报价格）
+  deps.discoverModels = async (_c, _t, onProgress) => {
+    onProgress?.({ provider: 'custom-agnes', status: 'pending', done: 0, total: 1 })
+    onProgress?.({ provider: 'custom-agnes', status: 'done', models: 1, done: 1, total: 1 })
+    return {
+      results: [
+        {
+          provider: 'custom-agnes',
+          models: [
+            { id: 'custom-agnes/agnes', name: 'Agnes', pricing: { prompt: '0.001', completion: '0.002' } },
+          ],
+        },
+      ],
+      errors: [],
+    }
+  }
+  // 模拟真实 merge：原始 pricing 拷贝进 metadata（新模型）
+  deps.mergeDiscovery = (state, _d) => ({
+    state: {
+      ...structuredClone(state),
+      'custom-agnes/agnes': {
+        status: 'selected',
+        provider: 'custom-agnes',
+        metadata: { id: 'custom-agnes/agnes', name: 'Agnes', pricing: { prompt: '0.001', completion: '0.002' } },
+      },
+    },
+    newModels: ['custom-agnes/agnes'],
+    updatedModels: [],
+    removedModels: [],
+  })
+  // enrich 模拟 OR 覆盖语义：把 pricing 改写成富化源价格
+  deps.enrichModel = async (_id, meta) => ({ ...meta, pricing: { prompt: 0.5, completion: 0.6 } })
+
+  const result = await runSyncFlow({
+    config: fakeConfig,
+    gatewayToken: 't',
+    mgmtToken: 'm',
+    state: {},
+    deps,
+  })
+
+  const meta = result.state['custom-agnes/agnes']?.metadata
+  check(
+    JSON.stringify(meta?.pricing) === JSON.stringify({ prompt: '0.001', completion: '0.002' }),
+    'provider 自报 pricing 回写（不被富化源覆盖）'
+  )
+  check(result.summary.newModels.includes('custom-agnes/agnes'), '新模型仍计入 newModels')
+}
+
+// ── 测试 40：pricing 仅被 enrich 改写又还原 → 不误报 KV 部署 ──
+section('测试 40: pricing 改写+还原不触发 KV 部署')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const providerPricing = { prompt: '0.001', completion: '0.002' }
+    const initial = {
+      'custom-agnes/agnes': {
+        status: 'selected',
+        provider: 'custom-agnes',
+        metadata: { name: 'Agnes', pricing: { ...providerPricing } },
+      },
+    }
+    const deps = makeDeps({ kvHiddenModels: {}, kvManualModels: {}, deployToKVResult: { success: true } })
+    // discovery 返回与现有一致的 pricing（provider 价格未变）
+    deps.discoverModels = async (_c, _t, onProgress) => {
+      onProgress?.({ provider: 'custom-agnes', status: 'done', models: 1, done: 1, total: 1 })
+      return {
+        results: [
+          {
+            provider: 'custom-agnes',
+            models: [{ id: 'custom-agnes/agnes', name: 'Agnes', pricing: { ...providerPricing } }],
+          },
+        ],
+        errors: [],
+      }
+    }
+    // merge 无真实变化，仅 name 补救误报进 updatedModels（触发 re-enrich）
+    deps.mergeDiscovery = (state, _d) => ({
+      state: structuredClone(state),
+      newModels: [],
+      updatedModels: ['custom-agnes/agnes'],
+      removedModels: [],
+    })
+    // enrich 仅改写 pricing（模拟 OR 覆盖），无其他字段变化
+    deps.enrichModel = async (_id, meta) => ({ ...meta, pricing: { prompt: 0.5, completion: 0.6 } })
+
+    const store = makeStore(initial)
+    const app = createApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfigWithKv },
+      deps,
+    })
+    const res = await app.request('/api/sync', { method: 'POST' })
+    const body = await res.json()
+    check(res.status === 200 && body.ok === true, 'HTTP 200 { ok: true }')
+    check(body.summary.updatedModels.length === 0, 'summary.updatedModels 为空（改写已还原，非真实更新）')
+    check(body.autoDeployed === true, 'autoDeployed === true（无需后台部署）')
+    check(!deps.calls.includes('deployToKV'), '未调用 deployToKV')
+    check(!deps.calls.includes('write-models-json'), '未调用 writeModelsJson')
+  } finally {
+    restoreEnv()
+  }
+}
+
 console.log(`\n${'='.repeat(56)}`)
 console.log(`测试汇总: ${checks} 项检查, ${failures} 项失败`)
 process.exit(failures ? 1 : 0)

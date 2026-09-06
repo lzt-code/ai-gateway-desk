@@ -43,7 +43,7 @@ globalThis.fetch = async (url) => {
 }
 
 // ── mock 数据 ──
-// OpenRouter：glm-5.2（无 max_output_length/top_provider，留给 MD 补）；gpt-4o（全字段）
+// OpenRouter：glm-5.2（无 max_output_length/top_provider，留给 MD 补）；gpt-4o（completion=-1 测无效过滤）
 const OR_DATA = [
   {
     id: 'z-ai/glm-5.2',
@@ -56,6 +56,7 @@ const OR_DATA = [
       modality: 'text+image->text',
     },
     supported_parameters: ['tools', 'response_format', 'temperature', 'top_p'],
+    pricing: { prompt: '0.0000015', completion: '0.000002', request: '0' },
   },
   {
     id: 'openai/gpt-4o',
@@ -67,6 +68,12 @@ const OR_DATA = [
       output_modalities: ['text'],
     },
     supported_parameters: ['tools', 'response_format'],
+    pricing: { prompt: '0.0000025', completion: '-1' }, // -1 = 变量计价，应过滤
+  },
+  {
+    id: 'bad/bad-model',
+    name: 'Bad Model',
+    pricing: { prompt: '-1', completion: '-1' }, // 全部无效 → 不写 pricing
   },
 ]
 
@@ -95,6 +102,7 @@ const MD_CATALOG = {
           last_updated: '2026-06-13',
           modalities: { input: ['text', 'image'], output: ['text'] },
           limit: { context: 1000000, output: 131072 },
+          cost: { input: 0.000001, output: 0.000009 },
         },
       },
     },
@@ -119,6 +127,7 @@ const MD_CATALOG = {
           last_updated: '2026-07-24',
           modalities: { input: ['text', 'image', 'pdf'], output: ['text'] },
           limit: { context: 1000000, output: 128000 },
+          cost: { input: 0.000005, output: 0.000025 },
         },
       },
     },
@@ -373,6 +382,63 @@ try {
     check('场景10 input_modalities=OR', r.input_modalities, ['text'])
     // MD 补 output_modalities=['text']
     check('场景10 output_modalities=MD补', r.output_modalities, ['text'])
+  }
+
+  // ── 场景 11：OR pricing 解析 + 覆盖已有旧值（跟随上游改价）──
+  _resetCache()
+  mockOR = OR_DATA
+  mockMD = MD_CATALOG
+  {
+    const r = await enrichModel('custom-glm/glm-5.2', {
+      id: 'custom-glm/glm-5.2',
+      pricing: { prompt: 0.1, completion: 0.2 }, // 旧价格，应被 OR 覆盖
+    })
+    // OR pricing 字符串 → 数字；request 等其他字段不保留
+    check('场景11 pricing=OR覆盖旧值', r.pricing, { prompt: 0.0000015, completion: 0.000002 })
+  }
+
+  // ── 场景 12：OR 无匹配 → MD cost 覆盖已有旧值 ──
+  _resetCache()
+  mockOR = OR_DATA
+  mockMD = MD_CATALOG
+  {
+    const r = await enrichModel('custom-anthropic/claude-opus-5', {
+      id: 'custom-anthropic/claude-opus-5',
+      pricing: { prompt: 0.5, completion: 0.6 }, // 旧价格，OR 不匹配时应被 MD 覆盖
+    })
+    check('场景12 pricing=MD覆盖旧值', r.pricing, { prompt: 0.000005, completion: 0.000025 })
+  }
+
+  // ── 场景 13：OR 与 MD 都提供 → OR 优先（MD 不覆盖 OR 的新鲜价格）──
+  _resetCache()
+  mockOR = OR_DATA
+  mockMD = MD_CATALOG
+  {
+    const r = await enrichModel('custom-glm/glm-5.2', { id: 'custom-glm/glm-5.2' })
+    // MD zhipuai/glm-5.2 cost={input:0.000001, output:0.000009}，不应覆盖 OR 的值
+    check('场景13 pricing=OR优先', r.pricing, { prompt: 0.0000015, completion: 0.000002 })
+  }
+
+  // ── 场景 14：OR pricing 无效值（"-1"）过滤，仅保留有效字段 ──
+  _resetCache()
+  mockOR = OR_DATA
+  mockMD = MD_CATALOG
+  {
+    const r = await enrichModel('custom-openai/gpt-4o', { id: 'custom-openai/gpt-4o' })
+    // OR completion="-1" 过滤，仅 prompt 有效；OR 提供了 pricing → MD 不覆盖
+    check('场景14 pricing=过滤-1', r.pricing, { prompt: 0.0000025 })
+  }
+
+  // ── 场景 15：OR pricing 全部无效且 MD 不匹配 → 不写 pricing ──
+  _resetCache()
+  mockOR = OR_DATA
+  mockMD = MD_CATALOG
+  {
+    const r = await enrichModel('custom-bad/bad-model', {
+      id: 'custom-bad/bad-model',
+      pricing: { prompt: 9 },
+    })
+    check('场景15 pricing=全部无效不覆盖', r.pricing, { prompt: 9 })
   }
 } finally {
   globalThis.fetch = originalFetch
