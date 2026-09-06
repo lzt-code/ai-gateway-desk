@@ -10,9 +10,31 @@ import { normalizeMetadataAliases } from './enrich.js'
  *   - id：冗余字段（与 state 的 key 重复），缺失时自动补全不应视为更新
  *   - created：部分上游（如 OpenCode）每次请求都返回当前时间戳，
  *     时间戳变化不代表模型本身有更新，否则每次同步都会误报更新
+ *   - 以下为展示型/上游原生富字段：本地 state 保留（排查可用），但不写入
+ *     KV（见 generate.js STRIP_FROM_KV），其变化不触发更新判定，避免
+ *     benchmarks 榜单抖动、top_provider 可用性变化等导致无意义的 KV 重部署；
+ *     pricing/pricings 有意保留在外（agent 计费展示需要，变化应触发部署）
  * @type {string[]}
  */
-const VOLATILE_METADATA_FIELDS = ['id', 'created']
+const VOLATILE_METADATA_FIELDS = [
+  'id',
+  'created',
+  'benchmarks',
+  'architecture',
+  'top_provider',
+  'per_request_limits',
+  'default_parameters',
+  'supported_parameters',
+  'supported_voices',
+  'links',
+  'canonical_slug',
+  'hugging_face_id',
+  'knowledge_cutoff',
+  'expiration_date',
+  'modalities',
+  'supported_specifications',
+  'supported_endpoint_types',
+]
 
 /**
  * 比较两个 metadata 对象是否有差异（浅比较）

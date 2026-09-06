@@ -8,8 +8,34 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const MODELS_JSON_PATH = join(__dirname, '..', '..', 'data', 'models.json')
 
 /**
+ * 不写入 KV 的展示型/上游原生富字段（与 merge.js VOLATILE_METADATA_FIELDS 对齐，
+ * status/provider 除外——它俩是顶层剥离逻辑的一部分，不在此表）。
+ * benchmarks 榜单抖动频繁、architecture/top_provider 等是原生冗余大对象，
+ * Worker 转发与客户端列表展示都用不上；pricing/pricings 有意保留
+ * （agent 按量计费展示需要）。本地 state 仍保留这些字段，KV 负载保持精简。
+ * @type {string[]}
+ */
+const STRIP_FROM_KV = [
+  'benchmarks',
+  'architecture',
+  'top_provider',
+  'per_request_limits',
+  'default_parameters',
+  'supported_parameters',
+  'supported_voices',
+  'links',
+  'canonical_slug',
+  'hugging_face_id',
+  'knowledge_cutoff',
+  'expiration_date',
+  'modalities',
+  'supported_specifications',
+  'supported_endpoint_types',
+]
+
+/**
  * 从 state 中过滤所有 status === "selected" 且不属于隐藏 provider 的条目，
- * 提取每个条目的 metadata（去掉 status 和 provider 字段）。
+ * 提取每个条目的 metadata（去掉 status、provider 与 STRIP_FROM_KV 字段）。
  *
  * 隐藏的 provider（config 中 enabled===false）下的模型不写入 models.json，
  * 因此 worker /models 也不会暴露它们；state 本身保留，重新显示即可恢复。
@@ -32,6 +58,9 @@ export function generateModelsJson(state, { hiddenSlugs } = {}) {
 
   return selected.map(([id, entry]) => {
     const { status, provider, ...rest } = entry.metadata || {}
+    for (const field of STRIP_FROM_KV) {
+      delete rest[field]
+    }
     // 手动添加的模型 metadata 不含 id，用 state key 补上
     if (!rest.id) {
       rest.id = id

@@ -1642,12 +1642,20 @@ function deepEqual(a, b) {
 }
 
 // dirty 判定：比较「KV 部署投影」是否变化，覆盖三个 KV 键：
-//   - models.json：selected 条目的 metadata（generate.js 剥离 status/provider）
+//   - models.json：selected 条目的 metadata（generate.js 剥离 status/provider + STRIP_FROM_KV）
 //   - hidden-models：hidden 条目的完整 entry（buildHiddenModelsMap）
 //   - manual-models：manual 条目的完整 entry（buildManualModelsMap）
 // metadata 中 id/created 为易变/冗余字段（与 merge.js VOLATILE_METADATA_FIELDS 对齐），
-// status/provider 在 generate.js 中会被剥离，均不参与对比。
+// benchmarks/architecture/top_provider 等展示型大字段变化不影响 KV（见 merge.js/generate.js，pricing 除外），
+// 均不参与对比。
 function stripForDirty(state) {
+  const STRIP = new Set([
+    'id', 'created', 'status', 'provider',
+    'benchmarks', 'architecture', 'top_provider', 'per_request_limits',
+    'default_parameters', 'supported_parameters', 'supported_voices', 'links',
+    'canonical_slug', 'hugging_face_id', 'knowledge_cutoff', 'expiration_date',
+    'modalities', 'supported_specifications', 'supported_endpoint_types',
+  ])
   if (!state || typeof state !== 'object') return state
   const out = {}
   for (const [k, v] of Object.entries(state)) {
@@ -1656,7 +1664,10 @@ function stripForDirty(state) {
     const projection = { status: v.status, provider: v.provider }
     if (v.manual === true) projection.manual = true
     if (v.metadata && typeof v.metadata === 'object') {
-      const { id: _id, created: _created, status: _s, provider: _p, ...mRest } = v.metadata
+      const mRest = {}
+      for (const [mk, mv] of Object.entries(v.metadata)) {
+        if (!STRIP.has(mk)) mRest[mk] = mv
+      }
       projection.metadata = mRest
     } else {
       projection.metadata = v.metadata
