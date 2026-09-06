@@ -3328,8 +3328,10 @@ function injectRoutesStyles() {
     }
     .route-form-slot {
       position: relative;
-      border: 1px solid var(--border); border-radius: 8px;
+      background: var(--card-sheen), var(--track-bg);
+      border: 1px solid var(--border-strong); border-radius: 8px;
       padding: 0.55rem 0.75rem 0.7rem; margin-top: 0.6rem;
+      box-shadow: var(--shadow-1), var(--highlight);
     }
     .slot-remove { position: absolute; top: 0.5rem; right: 0.5rem; font-size: 0.7rem; padding: 0.05rem 0.45rem; }
     .route-add-level { margin-top: 0.6rem; width: 100%; border-style: dashed; }
