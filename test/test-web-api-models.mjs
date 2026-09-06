@@ -60,8 +60,23 @@ const sampleState = {
   },
 }
 
+// 默认 configStore：隔离真实 data/providers.json（本机可能将 agnes 设为隐藏，
+// 会导致 GET /api/state 与 /api/models/filtered 过滤掉 custom-agnes 模型，
+// 使 count 断言与真实数据耦合而 flaky）。此处默认注入与 sampleState 对齐的
+// 启用 provider，避免测试依赖本机私有配置。
+const defaultMockConfigStore = {
+  load: () => ({
+    gateway: { host: 'gateway.ai.cloudflare.com', accountId: 'acc', gatewayId: 'gw' },
+    kv: { namespaceId: 'ns', key: 'models' },
+    providers: [
+      { id: 'agnes', name: 'Agnes', type: 'custom-provider', enabled: true },
+      { id: 'openrouter', name: 'openrouter', type: 'byok', enabled: true },
+    ],
+  }),
+}
+
 // 快捷：注入内存 store 的 app + req helper
-function makeApp(initial = sampleState, configStore) {
+function makeApp(initial = sampleState, configStore = defaultMockConfigStore) {
   const store = makeStore(initial)
   const app = createApp({ stateStore: store, configStore })
   const req = (method, p, body) =>
