@@ -3279,6 +3279,8 @@ function injectRoutesStyles() {
     .route-table { font-size: 0.82rem; }
     .route-table th:nth-child(1), .route-table td:nth-child(1) { min-width: 150px; }
     .route-table th:nth-child(2), .route-table td:nth-child(2) { white-space: nowrap; }
+    .route-table th:nth-child(4), .route-table td:nth-child(4) { white-space: nowrap; }
+    .route-table th:nth-child(5), .route-table td:nth-child(5) { white-space: nowrap; width: 1px; }
     .route-table tbody tr.row-removed { opacity: 0.55; }
     .route-name { font-weight: 500; color: var(--fg); }
     .route-inv {
@@ -3317,7 +3319,7 @@ function injectRoutesStyles() {
       display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem;
       font-size: 0.72rem; color: var(--muted); flex-wrap: wrap;
     }
-    .route-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+    .route-actions { display: flex; gap: 0.35rem; flex-wrap: nowrap; }
     .route-actions .btn { font-size: 0.72rem; padding: 0.2rem 0.55rem; }
     .route-json-editor {
       width: 100%; min-height: 300px; resize: vertical;
