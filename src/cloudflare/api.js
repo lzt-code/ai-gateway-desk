@@ -477,6 +477,142 @@ export async function getDynamicRouteDetail(apiToken, accountId, gatewayId, rout
   return payload?.result ?? null
 }
 
+/**
+ * 创建动态路由（仅路由壳，流程图通过 createDynamicRouteVersion 提交）
+ *
+ * 与 listDynamicRoutes 同一端点系（官方 API Reference：Create a new AI Gateway
+ * Dynamic Route）。响应体格式与列表一致走 data 兜底。
+ *
+ * @param {string} apiToken - 管理 API Token（账户级）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @param {string} gatewayId - gateway id
+ * @param {object} config
+ * @param {string} config.id - 路由 id（slug，如 "support"；model 调用时为 dynamic/{name}）
+ * @param {string} [config.name] - 显示名，缺省同 id
+ * @returns {Promise<object>} 创建的路由对象（含 id / name）
+ */
+export async function createDynamicRoute(apiToken, accountId, gatewayId, { id, name } = {}) {
+  guard(accountId, 'accountId')
+  guard(gatewayId, 'gatewayId')
+  guard(id, 'id')
+
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/routes`,
+    {
+      method: 'POST',
+      body: { id, name: name || id },
+    }
+  )
+  return payload?.result ?? payload?.data ?? payload ?? null
+}
+
+/**
+ * 为动态路由提交一个新版本（流程图 elements JSON）
+ *
+ * 版本是动态路由的变更单元：每次修改生成新版本（草稿），部署后才生效。
+ * elements 结构见官方文档 Dynamic Routing → JSON Configuration：
+ * start / conditional / percentage / model / rate / end 六种节点，
+ * 由 outputs.{输出名}.elementId 连线。
+ *
+ * @param {string} apiToken - 管理 API Token（账户级）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @param {string} gatewayId - gateway id
+ * @param {string} routeId - 路由 id（listDynamicRoutes 列表项的 id 字段）
+ * @param {Array<object>} elements - 流程图节点数组（CF 原生格式）
+ * @returns {Promise<object>} 版本对象（含 version 号或 id，用于后续部署）
+ */
+export async function createDynamicRouteVersion(apiToken, accountId, gatewayId, routeId, elements) {
+  guard(accountId, 'accountId')
+  guard(gatewayId, 'gatewayId')
+  guard(routeId, 'routeId')
+  if (!Array.isArray(elements)) {
+    throw new TypeError('elements 必须是数组（动态路由流程图节点）')
+  }
+
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/routes/${encodeURIComponent(routeId)}/versions`,
+    {
+      method: 'POST',
+      body: { elements },
+    }
+  )
+  return payload?.result ?? payload?.data ?? payload ?? null
+}
+
+/**
+ * 列出动态路由的全部版本（回滚 / 历史对比用）
+ *
+ * @param {string} apiToken - 管理 API Token（账户级）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @param {string} gatewayId - gateway id
+ * @param {string} routeId - 路由 id
+ * @returns {Promise<Array<object>>} 版本数组（每项含 version 号 + elements）
+ */
+export async function listDynamicRouteVersions(apiToken, accountId, gatewayId, routeId) {
+  guard(accountId, 'accountId')
+  guard(gatewayId, 'gatewayId')
+  guard(routeId, 'routeId')
+
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/routes/${encodeURIComponent(routeId)}/versions`
+  )
+  const result = payload?.result ?? payload?.data ?? []
+  return Array.isArray(result) ? result : (result?.versions ?? [])
+}
+
+/**
+ * 部署动态路由版本（使其成为线上生效版本）
+ *
+ * @param {string} apiToken - 管理 API Token（账户级）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @param {string} gatewayId - gateway id
+ * @param {string} routeId - 路由 id
+ * @param {object} config
+ * @param {number|string} config.version - 要部署的版本号（createDynamicRouteVersion 返回）
+ * @returns {Promise<object>} 部署记录
+ */
+export async function createDynamicRouteDeployment(apiToken, accountId, gatewayId, routeId, { version } = {}) {
+  guard(accountId, 'accountId')
+  guard(gatewayId, 'gatewayId')
+  guard(routeId, 'routeId')
+  guard(version, 'version')
+
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/routes/${encodeURIComponent(routeId)}/deployments`,
+    {
+      method: 'POST',
+      body: { version },
+    }
+  )
+  return payload?.result ?? payload?.data ?? payload ?? null
+}
+
+/**
+ * 删除动态路由（清理用；部署记录与版本随之失效）
+ *
+ * @param {string} apiToken - 管理 API Token（账户级）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @param {string} gatewayId - gateway id
+ * @param {string} routeId - 路由 id
+ * @returns {Promise<object|null>} 删除结果（204 无内容时为 null）
+ */
+export async function deleteDynamicRoute(apiToken, accountId, gatewayId, routeId) {
+  guard(accountId, 'accountId')
+  guard(gatewayId, 'gatewayId')
+  guard(routeId, 'routeId')
+
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/routes/${encodeURIComponent(routeId)}`,
+    { method: 'DELETE' }
+  )
+  return payload?.result ?? payload?.data ?? null
+}
+
 // ─── KV Namespace ────────────────────────────────────────
 
 /**

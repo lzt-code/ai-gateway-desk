@@ -25,9 +25,17 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { streamSSE } from 'hono/streaming'
 import { loadState, saveState, upsertModel } from '../core/state.js'
 import { loadConfig, setDebugFlag } from '../core/config.js'
+import { loadRoutesStore, saveRoutesStore, upsertRoute, removeRoute } from '../core/routes-store.js'
 import { readToken, readManagementToken } from '../core/token-store.js'
 import { writeModelsJson } from '../output/generate.js'
 import { deployProviderRoutesToKV, deployToKV as deployToKVImpl } from '../output/deploy.js'
+import { deployRouteConfig } from '../output/routes-deploy.js'
+import { validateRouteElements } from '../pipeline/routes-validate.js'
+import {
+  listDynamicRoutes,
+  getDynamicRouteDetail,
+  deleteDynamicRoute,
+} from '../cloudflare/api.js'
 import {
   toggleStatus,
   deleteModel,
@@ -108,6 +116,9 @@ const MANUAL_MODELS_KV_KEY = 'manual-models'
 // 缺省 stateStore：绑定真实 data/model-states.json（测试注入内存 mock 隔离）
 const DEFAULT_STATE_STORE = { load: loadState, save: saveState }
 
+// 缺省 routesStore：绑定真实 data/routes.json（测试注入内存 mock 隔离）
+const DEFAULT_ROUTES_STORE = { load: () => loadRoutesStore(), save: (s) => saveRoutesStore(s) }
+
 // 缺省 configStore / deps：绑定真实模块（测试注入 mock 隔离）
 const DEFAULT_CONFIG_STORE = { load: loadConfig }
 const DEFAULT_DEPS = {
@@ -155,6 +166,14 @@ const DEFAULT_DEPS = {
   loadModelsJsonState,
   setDebugFlag,
   spawnFn: spawn,
+  // 动态路由配置（本地编辑 + REST 部署）
+  validateRouteElements,
+  deployRouteConfig,
+  listDynamicRoutes,
+  getDynamicRouteDetail,
+  deleteDynamicRoute,
+  upsertRoute,
+  removeRoute,
 }
 
 // 任务 29：清除 Token 影响面文案（交付包 §4.4 两套固定文案，槽位不同）
@@ -325,6 +344,7 @@ export function createApp({
   publicDir = DEFAULT_PUBLIC_DIR,
   stateStore = DEFAULT_STATE_STORE,
   configStore = DEFAULT_CONFIG_STORE,
+  routesStore = DEFAULT_ROUTES_STORE,
   deps = {},
   heartbeatState = null,
 } = {}) {
@@ -333,6 +353,7 @@ export function createApp({
   // 任务 27 起同步完成后整体替换（let），任务 26 端点原地修改
   let state = stateStore.load()
   const depsAll = { ...DEFAULT_DEPS, ...deps }
+  let routesState = routesStore.load()
 
   // 任务 27：同步状态 + SSE 进度总线（同一时刻至多 1 个订阅者）
   let syncing = false
@@ -1503,6 +1524,215 @@ export function createApp({
       return c.json({ error: err.message || 'spawn failed' }, 500)
     }
     return c.json({ ok: true, started: true })
+  })
+
+  // ─── 动态路由配置 API（本地编辑 + REST 部署，注册在静态文件中间件之前）───
+  // 数据分层：data/routes.json 存本地编辑真相源（CF 原生 elements 格式），
+  // 部署 = POST versions（提交图）→ POST deployments（生效）；刷新 = 云端覆盖本地。
+  // 路由名约定与 provider id 一致：小写 slug（model 调用侧为 dynamic/<name>）。
+
+  // 路由名合法性：与 /api/providers/create 的 slug 规则一致
+  const isRouteName = (name) => typeof name === 'string' && /^[a-z0-9][a-z0-9-]{0,62}$/.test(name)
+
+  // GET /api/routes/config — 本地路由条目 + 云端存在性（无管理 Token 时 cloudRoutes 为 null）
+  app.get('/api/routes/config', async (c) => {
+    const config = configStore.load()
+    const gateway = config.gateway || {}
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    let cloudRoutes = null
+    let cloudError = null
+    if (mgmtToken && gateway.accountId && gateway.gatewayId) {
+      try {
+        const list = await depsAll.listDynamicRoutes(mgmtToken, gateway.accountId, gateway.gatewayId)
+        cloudRoutes = (Array.isArray(list) ? list : [])
+          .filter((r) => r && typeof r.name === 'string')
+          .map((r) => ({ id: r.id, name: r.name }))
+      } catch (err) {
+        cloudError = err instanceof Error ? err.message : String(err)
+      }
+    }
+    const cloudByName = new Map((cloudRoutes || []).map((r) => [r.name, r]))
+    const routes = Object.values(routesState.routes || {})
+      .filter((e) => e && typeof e.name === 'string')
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((entry) => ({
+        name: entry.name,
+        elements: entry.elements || [],
+        cloudId: entry.cloudId || null,
+        deployedVersion: entry.deployedVersion ?? null,
+        dirty: entry.dirty === true,
+        lastDeployedAt: entry.lastDeployedAt || null,
+        lastSyncedAt: entry.lastSyncedAt || null,
+        cloudExists: cloudByName.has(entry.name),
+      }))
+    return c.json({
+      ok: true,
+      routes,
+      cloudRoutes,
+      ...(cloudError ? { cloudError } : {}),
+      readonly: !(mgmtToken && gateway.accountId && gateway.gatewayId),
+    })
+  })
+
+  // POST /api/routes/save — 保存一条路由（先本地校验，落盘 dirty=true，不触网）
+  app.post('/api/routes/save', async (c) => {
+    const body = await readJsonBody(c)
+    if (body === null) return c.json({ error: 'invalid json body' }, 400)
+    if (!isRouteName(body.name)) {
+      return c.json({ error: 'name must be a lowercase slug (letters, digits, hyphens)' }, 400)
+    }
+    const validation = depsAll.validateRouteElements(body.elements)
+    if (!validation.ok) {
+      return c.json({ error: 'elements 校验失败', errors: validation.errors }, 400)
+    }
+    routesState = depsAll.upsertRoute(routesState, body.name, {
+      elements: body.elements,
+      dirty: true,
+    })
+    routesStore.save(routesState)
+    return c.json({ ok: true, name: body.name, entry: routesState.routes[body.name] })
+  })
+
+  // POST /api/routes/deploy — 部署（body.name 可选；缺省部署全部 dirty 条目）。
+  // 编排：创建缺失路由壳 → POST versions → POST deployments；成功条目回写
+  // cloudId / deployedVersion / dirty=false。单条失败不中断其余条目。
+  app.post('/api/routes/deploy', async (c) => {
+    const body = await readJsonBody(c)
+    if (body === null && c.req.header('content-type')) return c.json({ error: 'invalid json body' }, 400)
+    const config = configStore.load()
+    const gateway = config.gateway || {}
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    if (!mgmtToken) return c.json({ error: 'management token not configured' }, 400)
+    if (!gateway.accountId || !gateway.gatewayId) {
+      return c.json({ error: 'gateway config not initialized' }, 400)
+    }
+    const entries = Object.values(routesState.routes || {}).filter((e) => e && typeof e.name === 'string')
+    const targets = body && typeof body.name === 'string' && body.name
+      ? entries.filter((e) => e.name === body.name)
+      : entries.filter((e) => e.dirty === true)
+    if (body && typeof body.name === 'string' && body.name && targets.length === 0) {
+      return c.json({ error: `route '${body.name}' not found` }, 404)
+    }
+    const results = []
+    for (const entry of targets) {
+      const r = await depsAll.deployRouteConfig(
+        mgmtToken, gateway.accountId, gateway.gatewayId, entry
+      )
+      if (r.ok) {
+        routesState.routes[entry.name] = {
+          ...entry,
+          cloudId: r.cloudId,
+          deployedVersion: r.version,
+          dirty: false,
+          lastDeployedAt: new Date().toISOString(),
+        }
+        results.push({ name: entry.name, ok: true, version: r.version, created: r.created === true })
+      } else {
+        results.push({ name: entry.name, ok: false, error: r.error })
+      }
+    }
+    routesStore.save(routesState)
+    const failed = results.filter((r) => !r.ok)
+    return c.json({ ok: failed.length === 0, results })
+  })
+
+  // POST /api/routes/delete — 删除（本地必删；body.cloud=true 且有 cloudId 时同步删云端）
+  app.post('/api/routes/delete', async (c) => {
+    const body = await readJsonBody(c)
+    if (body === null) return c.json({ error: 'invalid json body' }, 400)
+    if (!isRouteName(body.name)) {
+      return c.json({ error: 'name must be a lowercase slug (letters, digits, hyphens)' }, 400)
+    }
+    const entry = routesState.routes?.[body.name]
+    const config = configStore.load()
+    const gateway = config.gateway || {}
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    let cloudDeleted = false
+    let cloudError = null
+    if (body.cloud === true) {
+      if (!mgmtToken) return c.json({ error: 'management token not configured' }, 400)
+      if (!entry?.cloudId) {
+        cloudError = '本地无云端路由 id（未部署过），跳过云端删除'
+      } else if (!gateway.accountId || !gateway.gatewayId) {
+        return c.json({ error: 'gateway config not initialized' }, 400)
+      } else {
+        try {
+          await depsAll.deleteDynamicRoute(mgmtToken, gateway.accountId, gateway.gatewayId, entry.cloudId)
+          cloudDeleted = true
+        } catch (err) {
+          // 404 = 云端已不存在，视为删除成功
+          if (err?.status === 404) {
+            cloudDeleted = true
+          } else {
+            cloudError = err instanceof Error ? err.message : String(err)
+          }
+        }
+      }
+    }
+    if (entry) {
+      routesState = depsAll.removeRoute(routesState, body.name)
+      routesStore.save(routesState)
+    }
+    return c.json({
+      ok: cloudError === null,
+      removed: true,
+      cloudDeleted,
+      ...(cloudError ? { cloudError } : {}),
+    })
+  })
+
+  // POST /api/routes/refresh — 从云端拉取路由图覆盖本地（云端优先，与「拉取云端路由」同语义）。
+  // body.name 可选：缺省刷新全部云端路由；elements 取详情 version.data（数组，实测唯一来源）。
+  app.post('/api/routes/refresh', async (c) => {
+    const body = await readJsonBody(c)
+    if (body === null && c.req.header('content-type')) return c.json({ error: 'invalid json body' }, 400)
+    const config = configStore.load()
+    const gateway = config.gateway || {}
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    if (!mgmtToken) return c.json({ error: 'management token not configured' }, 400)
+    if (!gateway.accountId || !gateway.gatewayId) {
+      return c.json({ error: 'gateway config not initialized' }, 400)
+    }
+    let list
+    try {
+      list = await depsAll.listDynamicRoutes(mgmtToken, gateway.accountId, gateway.gatewayId)
+    } catch (err) {
+      return c.json({ error: `拉取云端路由失败：${err instanceof Error ? err.message : String(err)}` }, 400)
+    }
+    const cloudRoutes = (Array.isArray(list) ? list : []).filter((r) => r && typeof r.name === 'string' && r.name)
+    const wanted = body && typeof body.name === 'string' && body.name
+      ? cloudRoutes.filter((r) => r.name === body.name)
+      : cloudRoutes
+    if (body && typeof body.name === 'string' && body.name && wanted.length === 0) {
+      return c.json({ error: `云端不存在路由 '${body.name}'` }, 404)
+    }
+    const results = []
+    for (const route of wanted) {
+      try {
+        const detail = await depsAll.getDynamicRouteDetail(mgmtToken, gateway.accountId, gateway.gatewayId, route.id)
+        const elements = detail?.version?.data
+        if (!Array.isArray(elements)) {
+          results.push({ name: route.name, ok: false, error: '云端详情缺少 version.data 流程图' })
+          continue
+        }
+        const prev = routesState.routes?.[route.name] || {}
+        routesState.routes[route.name] = {
+          ...prev,
+          name: route.name,
+          elements,
+          cloudId: route.id,
+          dirty: false,
+          lastSyncedAt: new Date().toISOString(),
+          ...(detail?.version?.version != null ? { deployedVersion: detail.version.version } : {}),
+        }
+        results.push({ name: route.name, ok: true })
+      } catch (err) {
+        results.push({ name: route.name, ok: false, error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+    routesStore.save(routesState)
+    const failed = results.filter((r) => !r.ok)
+    return c.json({ ok: failed.length === 0, results })
   })
 
   // 静态文件：/ → index.html；存在文件 → 内容；缺失 → 404；root 外路径穿越自带防护

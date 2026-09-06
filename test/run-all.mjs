@@ -47,6 +47,11 @@ const TESTS = [
   'test-web-dynamic-routes-link.mjs', // 动态路由入口：buildCfDynamicRoutesUrl 纯函数（外链构建/回退/转义）
   'test-web-ai-gateway-logs-link.mjs', // AI Gateway 日志入口：buildCfGatewayLogsUrl 纯函数（外链构建/回退/转义）
   'test-dynamic-routes-view.mjs',     // 动态路由视图：链归一化 + collectDynamicRoutes + tab 骨架契约
+  'test-routes-validate.mjs',         // 动态路由配置：elements 校验纯函数 + 模板生成
+  'test-routes-spec.mjs',             // 动态路由配置：表单 spec ↔ elements 互转（round-trip）
+  'test-routes-store.mjs',            // 动态路由配置：data/routes.json 读写 + upsert/remove
+  'test-routes-deploy.mjs',           // 动态路由配置：REST 部署编排（版本→部署，全 mock）
+  'test-web-api-routes.mjs',          // 动态路由配置：配置 API 端点（保存/部署/删除/刷新，全 mock）
   'test-enrich-models-dev.mjs',       // 双源富化：OpenRouter + models.dev 融合补全、匹配优先级 a/b/c/d、失败降级、缓存
 ]
 

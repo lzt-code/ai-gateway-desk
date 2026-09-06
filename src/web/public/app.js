@@ -157,7 +157,8 @@ export function createState(initial = {}) {
 // ── API 客户端 ─────────────────────────────────────────────
 // 统一请求：自动 JSON 序列化 + content-type + 错误归一
 //  - 2xx → 返回 parsed JSON（204 → null）
-//  - 非 2xx → 抛 ApiError(message, status)，message 取后端 body.error（无则 HTTP 状态文本）
+//  - 非 2xx → 抛 ApiError(message, status)，message 取后端 body.error（无则 HTTP 状态文本）；
+//    响应体完整 JSON 挂在 err.body（如 routes/save 400 的 { error, errors } 明细）
 //  - 网络失败 → 抛 ApiError('网络请求失败', 0)
 //  - body 为 undefined 时 GET 不发 body
 export class ApiError extends Error {
@@ -165,6 +166,7 @@ export class ApiError extends Error {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.body = null
   }
 }
 
@@ -192,14 +194,18 @@ export async function api(url, { method = 'GET', body, signal } = {}) {
     }
   }
   let message = ''
+  let errBody = null
   try {
     const data = await res.json()
     if (data && typeof data.error === 'string' && data.error) message = data.error
+    errBody = data
   } catch {
     // 非 JSON 错误体：用 HTTP 状态文本兜底
   }
   if (!message) message = `HTTP ${res.status} ${res.statusText}`.trim()
-  throw new ApiError(message, res.status)
+  const apiErr = new ApiError(message, res.status)
+  apiErr.body = errBody
+  throw apiErr
 }
 
 // ── 弹窗（原生 <dialog> + Promise API）──────────────────────
@@ -2870,10 +2876,399 @@ export function renderModelsView(container) {
 // 注册模型视图渲染器（覆盖任务 30 的占位渲染器，分派契约）
 registerViewRenderer('models', renderModelsView)
 
-// ── 动态路由视图（view-routes）：只读展示 Cloudflare Dynamic Routes ────
-// 数据来源：/api/state（随「更新模型列表」同步更新）；fallback 链来自
-// metadata.route_models（discover.js 归一化，数组顺序即尝试顺序）。
-// 只读定位：编辑仍在 Cloudflare 后台，视图内提供精化后的外链跳转。
+// ── 动态路由视图（view-routes）：本地配置 + 一键部署 Cloudflare Dynamic Routes ────
+// 数据分两层：
+//   展示层 — /api/state 的 dynamic/<name> 条目（更新模型列表时同步，含 fallback 链）
+//   编辑层 — /api/routes/config（data/routes.json 本地真相源，CF 原生 elements 格式）
+// 部署 = POST /api/routes/deploy（创建路由壳 → 提交版本 → 部署生效，全部走管理 REST API）。
+
+// 路由编辑模板（纯函数，Node 测试环境可直接单测）：
+// 生成的 elements 为 Cloudflare 原生格式，provider/model 为占位值，
+// 用户在 JSON 编辑器中替换为真实 provider slug 与模型名。
+export const ROUTE_TEMPLATES = [
+  { value: 'direct', label: '单模型直连' },
+  { value: 'fallback', label: 'Fallback 链' },
+  { value: 'conditional', label: '条件路由（按 metadata 分流）' },
+  { value: 'rate', label: '限额保护（超限走备用模型）' },
+  { value: 'percentage', label: '灰度分流（A/B）' },
+]
+
+const ROUTE_TEMPLATE_PROVIDER = 'openai'
+const ROUTE_TEMPLATE_MODEL = 'gpt-4o-mini'
+
+/**
+ * 生成指定模板的 elements 流程图（CF 原生格式）
+ * @param {string} kind - 模板类型（ROUTE_TEMPLATES 的 value；未知值回退 direct）
+ * @returns {Array<object>}
+ */
+export function buildTemplateElements(kind) {
+  const P = ROUTE_TEMPLATE_PROVIDER
+  const M = ROUTE_TEMPLATE_MODEL
+  const start = (next) => ({ id: 'START', type: 'start', outputs: { next: { elementId: next } } })
+  const end = () => ({ id: 'END', type: 'end', outputs: {} })
+  const model = (id, props, outputs) => ({
+    id, type: 'model',
+    properties: { provider: P, model: M, timeout: 60000, retries: 2, ...props },
+    outputs,
+  })
+  switch (kind) {
+    case 'fallback':
+      return [
+        start('primary-model'),
+        model('primary-model', {}, { success: { elementId: 'END' }, fallback: { elementId: 'backup-model' } }),
+        model('backup-model', {}, { success: { elementId: 'END' } }),
+        end(),
+      ]
+    case 'conditional':
+      return [
+        start('plan-check'),
+        {
+          id: 'plan-check', type: 'conditional',
+          properties: { conditions: { 'metadata.plan': { '$eq': 'paid' } } },
+          outputs: { true: { elementId: 'premium-model' }, false: { elementId: 'free-model' } },
+        },
+        model('premium-model', {}, { success: { elementId: 'END' } }),
+        model('free-model', {}, { success: { elementId: 'END' } }),
+        end(),
+      ]
+    case 'rate':
+      return [
+        start('quota-guard'),
+        {
+          id: 'quota-guard', type: 'rate',
+          properties: { limitType: 'count', limit: 100, window: 3600, key: 'metadata.user_id' },
+          outputs: { success: { elementId: 'primary-model' }, fallback: { elementId: 'backup-model' } },
+        },
+        model('primary-model', {}, { success: { elementId: 'END' } }),
+        model('backup-model', {}, { success: { elementId: 'END' } }),
+        end(),
+      ]
+    case 'percentage':
+      return [
+        start('ab-split'),
+        {
+          id: 'ab-split', type: 'percentage',
+          // 键必须互异（JSON 对象重复键会被静默覆盖），权重和恒为 100
+          outputs: { '70%': { elementId: 'model-a' }, '30%': { elementId: 'model-b' } },
+        },
+        model('model-a', {}, { success: { elementId: 'END' } }),
+        model('model-b', {}, { success: { elementId: 'END' } }),
+        end(),
+      ]
+    case 'direct':
+    default:
+      return [
+        start('primary-model'),
+        model('primary-model', {}, { success: { elementId: 'END' } }),
+        end(),
+      ]
+  }
+}
+
+/**
+ * 解析「provider/模型名」引用（与 model id 同约定，按第一个 '/' 切分）。
+ * @param {string} ref - 如 "openai/gpt-4o-mini" 或 "custom-opencode/deepseek-v4-flash"
+ * @returns {{ provider: string, model: string }|null} 缺段或空段 → null
+ */
+export function parseModelRef(ref) {
+  const s = String(ref || '').trim()
+  const i = s.indexOf('/')
+  if (i <= 0 || i === s.length - 1) return null
+  return { provider: s.slice(0, i), model: s.slice(i + 1) }
+}
+
+/**
+ * 由表单 spec 生成 elements 流程图（CF 原生格式）。
+ * spec 形如 routeSpecFromElements 的返回值；任一模型引用不合法 → null。
+ * @param {object} spec
+ * @returns {Array<object>|null}
+ */
+export function elementsFromRouteSpec(spec) {
+  if (!spec || typeof spec !== 'object') return null
+  const slot = (n) => parseModelRef(n?.model) || null
+  const modelNode = (id, s, fallbackTo) => {
+    const ref = slot(s)
+    if (!ref) return null
+    const properties = { provider: ref.provider, model: ref.model }
+    const timeout = Number(s.timeout)
+    const retries = Number(s.retries)
+    if (Number.isFinite(timeout) && timeout > 0) properties.timeout = timeout
+    if (Number.isFinite(retries) && retries >= 0) properties.retries = retries
+    const outputs = { success: { elementId: 'END' } }
+    if (fallbackTo) outputs.fallback = { elementId: fallbackTo }
+    return { id, type: 'model', properties, outputs }
+  }
+  const start = { id: 'START', type: 'start', outputs: { next: { elementId: 'START-next' } } }
+  const end = { id: 'END', type: 'end', outputs: {} }
+  const elements = []
+
+  if (spec.kind === 'direct') {
+    const m = modelNode('primary-model', spec.primary)
+    if (!m) return null
+    start.outputs.next.elementId = 'primary-model'
+    elements.push(start, m, end)
+  } else if (spec.kind === 'fallback') {
+    // fallback 链支持任意级数（Cloudflare 原生即无限级）：沿 fallback 边逐级连线，
+    // 每级 success → END，末级无 fallback 边
+    const models = Array.isArray(spec.models) ? spec.models : []
+    if (models.length === 0) return null
+    const nodes = []
+    for (const [i, s] of models.entries()) {
+      const isLast = i === models.length - 1
+      const m = modelNode(`model-level-${i + 1}`, s, isLast ? null : `model-level-${i + 2}`)
+      if (!m) return null
+      nodes.push(m)
+    }
+    start.outputs.next.elementId = 'model-level-1'
+    elements.push(start, ...nodes, end)
+  } else if (spec.kind === 'conditional') {
+    const field = String(spec.condition?.field || '').trim()
+    const op = String(spec.condition?.op || '').trim()
+    if (!field || !op) return null
+    const m1 = modelNode('true-model', spec.trueModel)
+    const m2 = modelNode('false-model', spec.falseModel)
+    if (!m1 || !m2) return null
+    start.outputs.next.elementId = 'condition-check'
+    elements.push(start, {
+      id: 'condition-check',
+      type: 'conditional',
+      properties: { conditions: { [field]: { [op]: spec.condition.value ?? '' } } },
+      outputs: { true: { elementId: 'true-model' }, false: { elementId: 'false-model' } },
+    }, m1, m2, end)
+  } else if (spec.kind === 'rate') {
+    const limitType = spec.limitType === 'cost' ? 'cost' : 'count'
+    const limit = Number(spec.limit)
+    const window = Number(spec.window)
+    const key = String(spec.key || '').trim()
+    if (!Number.isFinite(limit) || limit <= 0 || !Number.isFinite(window) || window <= 0 || !key) return null
+    const m1 = modelNode('primary-model', spec.primary)
+    const m2 = modelNode('backup-model', spec.backup)
+    if (!m1 || !m2) return null
+    start.outputs.next.elementId = 'quota-guard'
+    elements.push(start, {
+      id: 'quota-guard',
+      type: 'rate',
+      properties: { limitType, limit, window, key },
+      outputs: { success: { elementId: 'primary-model' }, fallback: { elementId: 'backup-model' } },
+    }, m1, m2, end)
+  } else if (spec.kind === 'percentage') {
+    const branches = Array.isArray(spec.branches) ? spec.branches : []
+    if (branches.length === 0) return null
+    let sum = 0
+    const pair = []
+    for (const [i, b] of branches.entries()) {
+      const pct = Number(b.pct)
+      if (!Number.isFinite(pct)) return null
+      sum += pct
+      const m = modelNode(`model-branch-${i + 1}`, b)
+      if (!m) return null
+      pair.push([pct, m])
+    }
+    if (Math.abs(sum - 100) > 1e-9) return null
+    const outputs = {}
+    for (const [pct, m] of pair) {
+      outputs[`${pct}%`] = { elementId: m.id }
+    }
+    start.outputs.next.elementId = 'ab-split'
+    elements.push(start, { id: 'ab-split', type: 'percentage', outputs }, ...pair.map(([, m]) => m), end)
+  } else {
+    return null
+  }
+  return elements
+}
+
+/**
+ * 将 elements 流程图反向解析为表单 spec；结构超出表单模板能力（多级 fallback、
+ * 组合节点、额外字段等）时返回 null，调用方应降级到 JSON 编辑模式。
+ * @param {Array<object>} elements
+ * @returns {object|null}
+ */
+export function routeSpecFromElements(elements) {
+  if (!Array.isArray(elements) || elements.length === 0) return null
+  const byId = new Map()
+  for (const node of elements) {
+    if (!node || typeof node !== 'object' || typeof node.id !== 'string') return null
+    byId.set(node.id, node)
+  }
+  const nodes = [...byId.values()]
+  const counts = { start: 0, end: 0, model: 0, conditional: 0, rate: 0, percentage: 0 }
+  for (const n of nodes) {
+    if (!(n.type in counts)) return null
+    counts[n.type]++
+  }
+  if (counts.start !== 1 || counts.end !== 1) return null
+  const start = nodes.find((n) => n.type === 'start')
+  const firstId = start?.outputs?.next?.elementId
+  const first = typeof firstId === 'string' ? byId.get(firstId) : null
+
+  const toSlot = (n) => ({
+    model: `${n.properties.provider}/${n.properties.model}`,
+    timeout: n.properties.timeout,
+    retries: n.properties.retries,
+  })
+  const isModel = (n) => n && n.type === 'model' && n.properties?.provider && n.properties?.model
+
+  // percentage：唯一 percentage 分支，所有 model 都被分支覆盖
+  if (counts.percentage === 1 && counts.conditional === 0 && counts.rate === 0) {
+    const p = nodes.find((n) => n.type === 'percentage')
+    const branches = []
+    for (const [k, target] of Object.entries(p.outputs || {})) {
+      const pct = parseFloat(k)
+      const m = byId.get(target?.elementId)
+      if (!Number.isFinite(pct) || !isModel(m)) return null
+      branches.push({ pct, ...toSlot(m) })
+    }
+    if (first?.type !== 'percentage' || branches.length !== counts.model) return null
+    return { kind: 'percentage', branches }
+  }
+
+  // conditional：唯一条件节点 + 两个 model（true/false 各一）
+  if (counts.conditional === 1 && counts.rate === 0 && counts.percentage === 0) {
+    if (counts.model !== 2 || !first || first.type !== 'conditional') return null
+    const conditions = first.properties?.conditions
+    const keys = conditions && typeof conditions === 'object' ? Object.keys(conditions) : []
+    if (keys.length !== 1) return null
+    const field = keys[0]
+    const rule = conditions[field]
+    const ops = rule && typeof rule === 'object' ? Object.keys(rule) : []
+    if (ops.length !== 1) return null
+    const trueNode = byId.get(first.outputs?.true?.elementId)
+    const falseNode = byId.get(first.outputs?.false?.elementId)
+    if (!isModel(trueNode) || !isModel(falseNode)) return null
+    return {
+      kind: 'conditional',
+      condition: { field, op: ops[0], value: rule[ops[0]] },
+      trueModel: toSlot(trueNode),
+      falseModel: toSlot(falseNode),
+    }
+  }
+
+  // rate：唯一限额节点 + 两个 model（success/fallback 各一）
+  if (counts.rate === 1 && counts.conditional === 0 && counts.percentage === 0) {
+    if (counts.model !== 2 || !first || first.type !== 'rate') return null
+    const p = first.properties || {}
+    const primaryNode = byId.get(first.outputs?.success?.elementId)
+    const backupNode = byId.get(first.outputs?.fallback?.elementId)
+    if (!isModel(primaryNode) || !isModel(backupNode)) return null
+    return {
+      kind: 'rate',
+      limitType: p.limitType === 'cost' ? 'cost' : 'count',
+      limit: p.limit,
+      window: p.window,
+      key: p.key,
+      primary: toSlot(primaryNode),
+      backup: toSlot(backupNode),
+    }
+  }
+
+  // direct / fallback：无特殊节点。沿 fallback 边走完整链（Cloudflare 原生支持
+  // 无限级 fallback），链上所有 model 必须恰好覆盖 counts.model（链外孤儿节点
+  // 无法用表单表达 → null 降级 JSON 模式）
+  if (counts.conditional === 0 && counts.rate === 0 && counts.percentage === 0) {
+    if (!isModel(first)) return null
+    const chain = []
+    const visited = new Set()
+    let cur = first
+    while (isModel(cur) && !visited.has(cur.id)) {
+      visited.add(cur.id)
+      chain.push(toSlot(cur))
+      cur = byId.get(cur.outputs?.fallback?.elementId)
+    }
+    // 链尾必须是「无 fallback 边」或 end；fallback 成环 / 指向其他节点 → 表单不表达
+    if (cur && cur.type !== 'end') return null
+    if (chain.length !== counts.model) return null
+    if (chain.length === 1) {
+      if (first.outputs?.fallback) return null
+      return { kind: 'direct', primary: chain[0] }
+    }
+    return { kind: 'fallback', models: chain }
+  }
+  return null
+}
+
+/**
+ * 从本地 elements 流程图提取 fallback 链（provider/model 字符串数组）。
+ * 与 discover.js parseRouteFallbackChain 同算法（前端无法跨目录 import，保持双份）：
+ * START → outputs.next 进入首个 model，随后沿 outputs.fallback 逐级降级。
+ * @param {Array<object>} elements
+ * @returns {string[]|undefined} 无模型节点时 undefined
+ */
+export function routeChainFromElements(elements) {
+  if (!Array.isArray(elements)) return undefined
+  const byId = new Map()
+  for (const node of elements) {
+    if (node && typeof node === 'object' && typeof node.id === 'string') byId.set(node.id, node)
+  }
+  let start = null
+  for (const node of byId.values()) {
+    if (node.type === 'start' || node.id === 'START') { start = node; break }
+  }
+  const firstId = start && start.outputs && start.outputs.next && start.outputs.next.elementId
+  let cur = typeof firstId === 'string' ? byId.get(firstId) : null
+  const chain = []
+  const visited = new Set()
+  while (cur && cur.type === 'model' && !visited.has(cur.id)) {
+    visited.add(cur.id)
+    const provider = cur.properties && cur.properties.provider
+    const model = cur.properties && cur.properties.model
+    if (typeof provider === 'string' && provider.trim() && typeof model === 'string' && model.trim()) {
+      chain.push(`${provider.trim()}/${model.trim()}`)
+    }
+    const nextId = cur.outputs && cur.outputs.fallback && cur.outputs.fallback.elementId
+    cur = typeof nextId === 'string' ? byId.get(nextId) : null
+  }
+  return chain.length > 0 ? chain : undefined
+}
+
+/**
+ * 合并展示层（state 收集的云端路由）与编辑层（本地配置条目）为统一的行模型。
+ * 以路由名为键取并集：state 顺序优先，本地独有条目按字母序追加。
+ * @param {Array<object>} configRoutes - /api/routes/config 的 routes（本地编辑层）
+ * @param {Array<object>} stateRoutes - collectDynamicRoutes 结果（展示层）
+ * @returns {Array<{ name: string, modelId: string, chain: string[], status: string|null,
+ *                    inLocal: boolean, inCloud: boolean, dirty: boolean,
+ *                    deployedVersion: number|string|null }>}
+ */
+export function mergeRouteRows(configRoutes, stateRoutes) {
+  const byName = new Map()
+  for (const r of stateRoutes || []) {
+    if (!r || typeof r.name !== 'string' || !r.name) continue
+    byName.set(r.name, {
+      name: r.name,
+      modelId: r.modelId || `dynamic/${r.name}`,
+      chain: Array.isArray(r.chain) ? r.chain : [],
+      status: r.status || null,
+      inLocal: false,
+      inCloud: true,
+      dirty: false,
+      deployedVersion: null,
+    })
+  }
+  for (const e of configRoutes || []) {
+    if (!e || typeof e.name !== 'string' || !e.name) continue
+    const localChain = routeChainFromElements(e.elements) || []
+    const prev = byName.get(e.name)
+    if (prev) {
+      prev.inLocal = true
+      prev.dirty = e.dirty === true
+      prev.deployedVersion = e.deployedVersion ?? null
+      prev.inCloud = e.cloudExists === true || prev.inCloud
+      if (!prev.chain.length && localChain.length) prev.chain = localChain
+    } else {
+      byName.set(e.name, {
+        name: e.name,
+        modelId: `dynamic/${e.name}`,
+        chain: localChain,
+        status: null,
+        inLocal: true,
+        inCloud: e.cloudExists === true,
+        dirty: e.dirty === true,
+        deployedVersion: e.deployedVersion ?? null,
+      })
+    }
+  }
+  return [...byName.values()]
+}
 
 function injectRoutesStyles() {
   if (document.getElementById('routes-view-styles')) return
@@ -2922,6 +3317,36 @@ function injectRoutesStyles() {
       display: flex; align-items: center; gap: 0.75rem; margin-top: 0.9rem;
       font-size: 0.72rem; color: var(--muted); flex-wrap: wrap;
     }
+    .route-actions { display: flex; gap: 0.35rem; flex-wrap: wrap; }
+    .route-actions .btn { font-size: 0.72rem; padding: 0.2rem 0.55rem; }
+    .route-json-editor {
+      width: 100%; min-height: 300px; resize: vertical;
+      font-family: var(--font-mono); font-size: 0.75rem; line-height: 1.5;
+      white-space: pre; overflow: auto;
+    }
+    .route-form-slot {
+      position: relative;
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.55rem 0.75rem 0.7rem; margin-top: 0.6rem;
+    }
+    .slot-remove { position: absolute; top: 0.5rem; right: 0.5rem; font-size: 0.7rem; padding: 0.05rem 0.45rem; }
+    .route-add-level { margin-top: 0.6rem; width: 100%; border-style: dashed; }
+    .route-form-slot-title {
+      font-size: 0.74rem; color: var(--accent); font-weight: 500; margin-bottom: 0.4rem;
+    }
+    .route-form-inline { display: flex; gap: 0.5rem; }
+    .route-form-inline label { flex: 1; min-width: 0; }
+    .route-mode-row {
+      display: flex; align-items: center; gap: 0.4rem; margin-top: 0.7rem;
+      font-size: 0.78rem; color: var(--muted);
+    }
+    .route-mode-row input[type='checkbox'] { width: auto; margin: 0; }
+    .route-mode-note { font-size: 0.72rem; color: var(--warn); margin-top: 0.4rem; }
+    .route-editor-error {
+      color: var(--err); background: var(--err-soft); border: 1px solid var(--err-border);
+      border-radius: 6px; padding: 0.4rem 0.6rem; font-size: 0.75rem; margin-top: 0.5rem;
+      white-space: pre-wrap;
+    }
   `
   document.head.appendChild(style)
 }
@@ -2942,13 +3367,15 @@ export function renderRoutesView(container) {
           <th>路由名称</th>
           <th>Fallback</th>
           <th>路由内容</th>
+          <th>状态</th>
+          <th>操作</th>
         </tr></thead>
         <tbody id="routes-list"></tbody>
       </table>
     </div>
-    <div class="routes-empty" id="routes-empty" hidden>未发现动态路由。需先在 Cloudflare 后台创建路由，再点「拉取云端路由」从云端拉取。</div>
+    <div class="routes-empty" id="routes-empty" hidden>暂无动态路由。点「添加路由」本地创建并部署，或点「拉取云端路由」同步已有路由。</div>
     <div class="routes-foot">
-      <span>fallback 链自左向右依次尝试（前一级失败才降级）；「拉取云端路由」从云端拉取最新路由，全量同步（更新模型列表）也会顺带更新</span>
+      <span>fallback 链自左向右依次尝试（前一级失败才降级）；「部署」将本地配置推送到 Cloudflare（提交版本 → 部署生效），「拉取云端路由」同步云端路由与模型列表</span>
       <a id="routes-cf-link" href="${CF_GATEWAY_FALLBACK_URL}" target="_blank" rel="noopener noreferrer">在 Cloudflare 中编辑 ↗</a>
     </div>
   `
@@ -2960,21 +3387,37 @@ export function renderRoutesView(container) {
   // 刷新按钮在右侧提示栏下方（#routes-side-actions，index.html 静态定义，随视图显隐）；
   // Node 测试环境无该元素，静默跳过相关交互
   const btnRefresh = document.getElementById('rbtn-sync')
+  const btnAdd = document.getElementById('rbtn-add')
   const cfLink = container.querySelector('#routes-cf-link')
 
+  // 双层缓存：展示层（state 收集的云端路由）+ 编辑层（本地配置）
+  let stateRoutes = []
+  let configRoutes = []
+  let readonlyConfig = false
+  let rawState = {} // 原始 model-states（编辑器「provider/模型」下拉建议的数据源）
+
+  // 状态列徽章：本地修改 > 未部署 > 已部署 vN > 云端 only
+  function statusBadgeHtml(row) {
+    if (row.dirty) return '<span class="route-badge warn">本地修改 · 未部署</span>'
+    if (!row.inLocal) return '<span class="route-badge">仅云端</span>'
+    if (row.deployedVersion != null) return `<span class="route-badge">已部署 v${escapeHtml(String(row.deployedVersion))}</span>`
+    if (!row.inCloud) return '<span class="route-badge warn">未部署</span>'
+    return '<span class="route-badge">已同步</span>'
+  }
+
   // 单行路由 HTML（escapeHtml 已在模块内定义，转义所有动态值）：
-  // 三列 — 路由名称（附 modelId）/ fallback 级别 / 路由链内容
-  function routeRowHtml(route) {
-    const removed = route.status === 'removed'
+  // 五列 — 路由名称（附 modelId）/ fallback 级别 / 路由链内容 / 状态 / 操作
+  function routeRowHtml(row) {
+    const removed = row.status === 'removed'
     const badge = removed
       ? '<span class="route-badge err">已移除</span>'
-      : route.chain.length === 1
+      : row.chain.length === 1
         ? '<span class="route-badge">直连</span>'
-        : route.chain.length > 1
-          ? `<span class="route-badge">${route.chain.length} 级 fallback</span>`
+        : row.chain.length > 1
+          ? `<span class="route-badge">${row.chain.length} 级 fallback</span>`
           : '<span class="route-badge warn">未知</span>'
-    const chainHtml = route.chain.length
-      ? route.chain
+    const chainHtml = row.chain.length
+      ? row.chain
           .map(
             (m, i) =>
               `${i > 0 ? '<span class="route-arrow"><span class="arrow-label">失败</span>' +
@@ -2984,28 +3427,49 @@ export function renderRoutesView(container) {
               `<span class="route-step"><span class="step-idx">${i + 1}</span>${escapeHtml(m)}</span>`,
           )
           .join('')
-      : '<span class="route-chain-empty">暂无路由链信息（重新同步后展示）</span>'
+      : '<span class="route-chain-empty">暂无路由链信息</span>'
+    const ro = readonlyConfig
+    const editBtn = row.inLocal
+      ? `<button class="btn row-act-edit" data-route="${escapeHtml(row.name)}" type="button" title="编辑路由流程图（本地保存）">编辑</button>`
+      : `<button class="btn row-act-pull" data-route="${escapeHtml(row.name)}" type="button"${ro ? ' disabled' : ''} title="从云端拉取到本地后可编辑">拉取到本地</button>`
+    const deployBtn = row.inLocal
+      ? `<button class="btn row-act-deploy" data-route="${escapeHtml(row.name)}" type="button"${ro ? ' disabled' : ''} title="推送到 Cloudflare（提交版本并部署生效）">部署</button>`
+      : ''
+    const deleteBtn = `<button class="btn row-act-delete" data-route="${escapeHtml(row.name)}" type="button" title="删除路由">✕</button>`
     return `
-      <tr class="route-row${removed ? ' row-removed' : ''}">
+      <tr class="route-row${removed ? ' row-removed' : ''}" data-route-name="${escapeHtml(row.name)}">
         <td>
-          <span class="route-name">${escapeHtml(route.name)}</span>
-          <span class="route-inv">${escapeHtml(route.modelId)}</span>
+          <span class="route-name">${escapeHtml(row.name)}</span>
+          <span class="route-inv">${escapeHtml(row.modelId)}</span>
         </td>
         <td>${badge}</td>
         <td><div class="route-chain">${chainHtml}</div></td>
+        <td>${statusBadgeHtml(row)}</td>
+        <td><div class="route-actions">${editBtn}${deployBtn}${deleteBtn}</div></td>
       </tr>
     `
   }
 
+  function renderTable() {
+    const rows = mergeRouteRows(configRoutes, stateRoutes)
+    listEl.innerHTML = rows.map(routeRowHtml).join('')
+    tableWrapEl.hidden = rows.length === 0
+    emptyEl.hidden = rows.length > 0
+    countEl.hidden = rows.length === 0
+    countEl.textContent = `${rows.length} 条路由`
+  }
+
   async function load() {
     try {
-      const s = await api('/api/state')
-      const routes = collectDynamicRoutes((s && s.state) || {})
-      listEl.innerHTML = routes.map(routeRowHtml).join('')
-      tableWrapEl.hidden = routes.length === 0
-      emptyEl.hidden = routes.length > 0
-      countEl.hidden = routes.length === 0
-      countEl.textContent = `${routes.length} 条路由`
+      const [s, cfg] = await Promise.all([
+        api('/api/state').catch(() => null),
+        api('/api/routes/config'),
+      ])
+      stateRoutes = s ? collectDynamicRoutes((s && s.state) || {}) : []
+      rawState = (s && s.state) || {}
+      configRoutes = (cfg && cfg.routes) || []
+      readonlyConfig = Boolean(cfg && cfg.readonly)
+      renderTable()
     } catch (err) {
       emptyEl.hidden = false
       emptyEl.textContent = `路由数据加载失败：${err.message}`
@@ -3014,6 +3478,532 @@ export function renderRoutesView(container) {
       countEl.hidden = true
     }
   }
+
+  // ── 路由编辑器弹窗（原生 <dialog>；校验失败不关闭，错误就地展示）──
+  // 双模式：表单模式（默认）按模板结构填字段，JSON 自动生成；
+  // 高级模式直接编辑 elements JSON。两模式经 spec 互转（routeSpecFromElements /
+  // elementsFromRouteSpec），结构超出表单能力时自动降级 JSON 并提示。
+  function openRouteEditor(existing) {
+    const isNew = !existing
+    const prevActive = document.activeElement
+
+    // 「provider/模型」下拉建议：来自 model-states（排除 dynamic/ 虚拟条目）
+    const modelRefs = Object.keys(rawState || {})
+      .filter((id) => typeof id === 'string' && id.includes('/') && !id.startsWith('dynamic/'))
+      .sort()
+
+    let spec = null // 表单模式当前编辑的 spec
+    let jsonMode = false
+
+    const dialog = document.createElement('dialog')
+    const header = document.createElement('div')
+    header.className = 'dialog-header'
+    header.textContent = isNew ? '添加动态路由' : `编辑动态路由：${existing.name}`
+
+    const bodyEl = document.createElement('div')
+    bodyEl.className = 'dialog-body'
+
+    // 路由名（仅新建可填）
+    const nameLabel = document.createElement('label')
+    nameLabel.append(document.createTextNode('路由名（model = dynamic/路由名）'))
+    const nameInput = document.createElement('input')
+    nameInput.type = 'text'
+    nameInput.name = 'route-name'
+    nameInput.value = isNew ? '' : String(existing.name)
+    nameInput.placeholder = '如 support（小写字母/数字/连字符）'
+    if (!isNew) nameInput.disabled = true
+    nameLabel.appendChild(nameInput)
+    bodyEl.appendChild(nameLabel)
+
+    // 模板选择
+    const tplLabel = document.createElement('label')
+    tplLabel.append(document.createTextNode('模板（切换即重置下方内容）'))
+    const tplSelect = document.createElement('select')
+    tplSelect.name = 'route-template'
+    for (const t of ROUTE_TEMPLATES) {
+      const opt = document.createElement('option')
+      opt.value = t.value
+      opt.textContent = t.label
+      tplSelect.appendChild(opt)
+    }
+    tplLabel.appendChild(tplSelect)
+    bodyEl.appendChild(tplLabel)
+
+    // 高级模式开关
+    const modeRow = document.createElement('div')
+    modeRow.className = 'route-mode-row'
+    const modeCheck = document.createElement('input')
+    modeCheck.type = 'checkbox'
+    modeCheck.id = 'route-json-mode'
+    const modeText = document.createElement('span')
+    modeText.textContent = '高级模式（直接编辑 JSON）'
+    modeRow.append(modeCheck, modeText)
+    bodyEl.appendChild(modeRow)
+
+    // 表单容器（表单模式）
+    const formEl = document.createElement('div')
+    bodyEl.appendChild(formEl)
+
+    // JSON 容器（高级模式）
+    const jsonWrap = document.createElement('div')
+    jsonWrap.hidden = true
+    const jsonLabel = document.createElement('label')
+    jsonLabel.append(document.createTextNode('流程图 JSON（elements，Cloudflare 原生格式）'))
+    const ta = document.createElement('textarea')
+    ta.className = 'route-json-editor'
+    ta.spellcheck = false
+    jsonLabel.appendChild(ta)
+    jsonWrap.appendChild(jsonLabel)
+    const modeNote = document.createElement('div')
+    modeNote.className = 'route-mode-note'
+    modeNote.hidden = true
+    jsonWrap.appendChild(modeNote)
+    bodyEl.appendChild(jsonWrap)
+
+    const errEl = document.createElement('div')
+    errEl.className = 'route-editor-error'
+    errEl.hidden = true
+    const showError = (msg) => { errEl.textContent = msg; errEl.hidden = false }
+    const hideError = () => { errEl.hidden = true }
+    bodyEl.appendChild(errEl)
+
+    // ── 表单渲染：按 spec.kind 生成字段，输入直接回写 spec ──
+    const slotTitles = {
+      primary: '主模型', backup: '备用模型',
+      trueModel: '满足条件时', falseModel: '不满足条件时',
+    }
+    function slotFields(title, obj, weightObj = null) {
+      const box = document.createElement('div')
+      box.className = 'route-form-slot'
+      const t = document.createElement('div')
+      t.className = 'route-form-slot-title'
+      t.textContent = title
+      box.appendChild(t)
+      if (weightObj) {
+        const pLabel = document.createElement('label')
+        pLabel.append(document.createTextNode('流量权重 %（全部分支之和需为 100）'))
+        const pInput = document.createElement('input')
+        pInput.type = 'number'
+        pInput.min = '0'
+        pInput.max = '100'
+        pInput.value = weightObj.pct != null ? String(weightObj.pct) : ''
+        pInput.addEventListener('input', () => { weightObj.pct = Number(pInput.value) })
+        pLabel.appendChild(pInput)
+        box.appendChild(pLabel)
+      }
+      const ref = document.createElement('label')
+      ref.append(document.createTextNode('模型（provider/模型名）'))
+      const refInput = document.createElement('input')
+      refInput.type = 'text'
+      refInput.value = obj.model != null ? String(obj.model) : ''
+      refInput.placeholder = '如 openai/gpt-4o-mini'
+      refInput.setAttribute('list', 'route-model-refs')
+      refInput.addEventListener('input', () => { obj.model = refInput.value })
+      ref.appendChild(refInput)
+      box.appendChild(ref)
+      const row = document.createElement('div')
+      row.className = 'route-form-inline'
+      const tLabel = document.createElement('label')
+      tLabel.append(document.createTextNode('超时 ms'))
+      const tInput = document.createElement('input')
+      tInput.type = 'number'
+      tInput.min = '0'
+      tInput.value = obj.timeout != null ? String(obj.timeout) : ''
+      tInput.placeholder = '60000'
+      tInput.addEventListener('input', () => { obj.timeout = tInput.value === '' ? '' : Number(tInput.value) })
+      tLabel.appendChild(tInput)
+      const rLabel = document.createElement('label')
+      rLabel.append(document.createTextNode('重试次数'))
+      const rInput = document.createElement('input')
+      rInput.type = 'number'
+      rInput.min = '0'
+      rInput.value = obj.retries != null ? String(obj.retries) : ''
+      rInput.placeholder = '2'
+      rInput.addEventListener('input', () => { obj.retries = rInput.value === '' ? '' : Number(rInput.value) })
+      rLabel.appendChild(rInput)
+      row.append(tLabel, rLabel)
+      box.appendChild(row)
+      return box
+    }
+
+    function renderForm() {
+      formEl.innerHTML = ''
+      const kind = spec.kind
+      if (kind === 'direct') {
+        formEl.appendChild(slotFields('主模型', spec.primary))
+      } else if (kind === 'fallback') {
+        // N 级 fallback 链（Cloudflare 原生无限级）：可逐级增删
+        spec.models.forEach((s, i) => {
+          const title = i === 0 ? '主模型（第 1 级）' : `备用模型（第 ${i + 1} 级）`
+          const box = slotFields(title, s)
+          if (spec.models.length > 2) {
+            const del = document.createElement('button')
+            del.type = 'button'
+            del.className = 'btn btn-danger slot-remove'
+            del.textContent = '✕'
+            del.title = '移除此级'
+            del.addEventListener('click', () => {
+              spec.models.splice(i, 1)
+              renderForm()
+            })
+            box.appendChild(del)
+          }
+          formEl.appendChild(box)
+        })
+        const add = document.createElement('button')
+        add.type = 'button'
+        add.className = 'btn btn-default route-add-level'
+        add.textContent = '+ 添加一级备用模型'
+        add.addEventListener('click', () => {
+          spec.models.push({ model: '', timeout: 60000, retries: 2 })
+          renderForm()
+        })
+        formEl.appendChild(add)
+      } else if (kind === 'conditional') {
+        const box = document.createElement('div')
+        box.className = 'route-form-slot'
+        const t = document.createElement('div')
+        t.className = 'route-form-slot-title'
+        t.textContent = '分流条件（metadata 由客户端请求头 cf-aig-metadata 提供）'
+        box.appendChild(t)
+        const fLabel = document.createElement('label')
+        fLabel.append(document.createTextNode('条件字段'))
+        const fInput = document.createElement('input')
+        fInput.type = 'text'
+        fInput.value = spec.condition.field || ''
+        fInput.placeholder = '如 metadata.plan'
+        fInput.setAttribute('list', 'route-cond-fields')
+        fInput.addEventListener('input', () => { spec.condition.field = fInput.value })
+        fLabel.appendChild(fInput)
+        box.appendChild(fLabel)
+        const row = document.createElement('div')
+        row.className = 'route-form-inline'
+        const opLabel = document.createElement('label')
+        opLabel.append(document.createTextNode('操作符'))
+        const opSelect = document.createElement('select')
+        for (const op of ['$eq', '$ne', '$in']) {
+          const o = document.createElement('option')
+          o.value = op
+          o.textContent = op
+          if (op === spec.condition.op) o.selected = true
+          opSelect.appendChild(o)
+        }
+        opSelect.addEventListener('change', () => { spec.condition.op = opSelect.value })
+        opLabel.appendChild(opSelect)
+        const vLabel = document.createElement('label')
+        vLabel.append(document.createTextNode('比较值'))
+        const vInput = document.createElement('input')
+        vInput.type = 'text'
+        vInput.value = spec.condition.value != null ? String(spec.condition.value) : ''
+        vInput.placeholder = '如 paid'
+        vInput.addEventListener('input', () => { spec.condition.value = vInput.value })
+        vLabel.appendChild(vInput)
+        row.append(opLabel, vLabel)
+        box.appendChild(row)
+        formEl.appendChild(box)
+        formEl.appendChild(slotFields('满足条件时', spec.trueModel))
+        formEl.appendChild(slotFields('不满足条件时', spec.falseModel))
+      } else if (kind === 'rate') {
+        const box = document.createElement('div')
+        box.className = 'route-form-slot'
+        const t = document.createElement('div')
+        t.className = 'route-form-slot-title'
+        t.textContent = '限额规则（超限请求走备用模型）'
+        box.appendChild(t)
+        const row = document.createElement('div')
+        row.className = 'route-form-inline'
+        const typeLabel = document.createElement('label')
+        typeLabel.append(document.createTextNode('限额类型'))
+        const typeSelect = document.createElement('select')
+        for (const [v, txt] of [['count', '请求次数'], ['cost', '花费上限']]) {
+          const o = document.createElement('option')
+          o.value = v
+          o.textContent = txt
+          if (v === spec.limitType) o.selected = true
+          typeSelect.appendChild(o)
+        }
+        typeSelect.addEventListener('change', () => { spec.limitType = typeSelect.value })
+        typeLabel.appendChild(typeSelect)
+        const lLabel = document.createElement('label')
+        lLabel.append(document.createTextNode('上限'))
+        const lInput = document.createElement('input')
+        lInput.type = 'number'
+        lInput.min = '1'
+        lInput.value = spec.limit != null ? String(spec.limit) : ''
+        lInput.addEventListener('input', () => { spec.limit = Number(lInput.value) })
+        lLabel.appendChild(lInput)
+        const wLabel = document.createElement('label')
+        wLabel.append(document.createTextNode('时间窗口（秒）'))
+        const wInput = document.createElement('input')
+        wInput.type = 'number'
+        wInput.min = '1'
+        wInput.value = spec.window != null ? String(spec.window) : ''
+        wInput.addEventListener('input', () => { spec.window = Number(wInput.value) })
+        wLabel.appendChild(wInput)
+        row.append(typeLabel, lLabel, wLabel)
+        box.appendChild(row)
+        const kLabel = document.createElement('label')
+        kLabel.append(document.createTextNode('限流维度字段（metadata 键，如 metadata.user_id）'))
+        const kInput = document.createElement('input')
+        kInput.type = 'text'
+        kInput.value = spec.key || ''
+        kInput.setAttribute('list', 'route-cond-fields')
+        kInput.addEventListener('input', () => { spec.key = kInput.value })
+        kLabel.appendChild(kInput)
+        box.appendChild(kLabel)
+        formEl.appendChild(box)
+        formEl.appendChild(slotFields('正常请求模型', spec.primary))
+        formEl.appendChild(slotFields('超限备用模型', spec.backup))
+      } else if (kind === 'percentage') {
+        spec.branches.forEach((b, i) => {
+          formEl.appendChild(slotFields(`分支 ${i + 1}`, b, b))
+        })
+      }
+    }
+
+    // ── 模式切换 ──
+    function applyJsonMode() {
+      const elements = elementsFromRouteSpec(spec)
+      if (!elements) {
+        showError('表单存在未填完整的字段，无法切换到 JSON 模式（请先补全或取消）')
+        modeCheck.checked = false
+        return
+      }
+      ta.value = JSON.stringify(elements, null, 2)
+      formEl.hidden = true
+      jsonWrap.hidden = false
+      modeNote.hidden = true
+      jsonMode = true
+      hideError()
+    }
+    function applyFormMode() {
+      let parsed = null
+      try {
+        parsed = JSON.parse(ta.value)
+      } catch (err) {
+        showError(`JSON 解析失败，无法切回表单模式：${err.message}`)
+        modeCheck.checked = true
+        return
+      }
+      const next = routeSpecFromElements(parsed)
+      if (!next) {
+        showError('该流程图结构超出表单模板能力（如多级 fallback / 组合节点），请继续使用 JSON 模式')
+        modeCheck.checked = true
+        return
+      }
+      spec = next
+      formEl.hidden = false
+      jsonWrap.hidden = true
+      jsonMode = false
+      renderForm()
+      hideError()
+    }
+    modeCheck.addEventListener('change', () => {
+      if (modeCheck.checked) applyJsonMode()
+      else applyFormMode()
+    })
+
+    // ── 模板切换 ──
+    tplSelect.addEventListener('change', () => {
+      const next = routeSpecFromElements(buildTemplateElements(tplSelect.value))
+      if (!next) return // 模板必然可表单化，防御性跳过
+      spec = next
+      hideError()
+      if (jsonMode) {
+        ta.value = JSON.stringify(elementsFromRouteSpec(spec), null, 2)
+      } else {
+        renderForm()
+      }
+    })
+
+    // 下拉建议数据源（datalist 挂在 dialog 内，随弹窗销毁）
+    const refs = document.createElement('datalist')
+    refs.id = 'route-model-refs'
+    for (const r of modelRefs) {
+      const o = document.createElement('option')
+      o.value = r
+      refs.appendChild(o)
+    }
+    const condFields = document.createElement('datalist')
+    condFields.id = 'route-cond-fields'
+    for (const f of ['metadata.plan', 'metadata.user_id', 'metadata.tier', 'metadata.team']) {
+      const o = document.createElement('option')
+      o.value = f
+      condFields.appendChild(o)
+    }
+    bodyEl.append(refs, condFields)
+
+    const actionsEl = document.createElement('div')
+    actionsEl.className = 'dialog-actions'
+    const btnSave = document.createElement('button')
+    btnSave.type = 'button'
+    btnSave.className = 'btn btn-primary'
+    btnSave.textContent = isNew ? '创建' : '保存'
+    const btnCancel = document.createElement('button')
+    btnCancel.type = 'button'
+    btnCancel.className = 'btn btn-default'
+    btnCancel.textContent = '取消'
+    btnCancel.addEventListener('click', () => dialog.close('cancel'))
+    actionsEl.append(btnSave, btnCancel)
+
+    dialog.append(header, bodyEl, actionsEl)
+    dialog.addEventListener('click', (e) => {
+      const r = dialog.getBoundingClientRect()
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+        dialog.close()
+      }
+    })
+    dialog.addEventListener('close', () => {
+      dialog.remove()
+      if (prevActive && typeof prevActive.focus === 'function' && document.contains(prevActive)) {
+        prevActive.focus()
+      }
+    })
+
+    // ── 保存 ──
+    btnSave.addEventListener('click', async () => {
+      let elements
+      if (jsonMode) {
+        try {
+          elements = JSON.parse(ta.value)
+        } catch (err) {
+          showError(`JSON 解析失败：${err.message}`)
+          return
+        }
+      } else {
+        elements = elementsFromRouteSpec(spec)
+        if (!elements) {
+          showError('存在未填完整的字段：模型需填「provider/模型名」格式；灰度权重之和需为 100；限额上限/窗口需为正数')
+          return
+        }
+      }
+      const name = String(nameInput.value || '').trim()
+      if (isNew && !/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) {
+        showError('路由名需为小写字母/数字/连字符（1-63 位），调用时 model = dynamic/路由名')
+        return
+      }
+      btnSave.disabled = true
+      try {
+        await api('/api/routes/save', { method: 'POST', body: { name: isNew ? name : existing.name, elements } })
+        dialog.close('saved')
+        flash(isNew ? `路由 ${name} 已保存（本地）` : `路由 ${existing.name} 已保存（本地）`, 'ok')
+        logActivity(`动态路由已保存：${isNew ? name : existing.name}（本地，需部署生效）`, 'ok')
+        await load()
+      } catch (err) {
+        const detail = err.body && Array.isArray(err.body.errors) && err.body.errors.length
+          ? '\n' + err.body.errors.join('\n')
+          : ''
+        showError(`${err.message}${detail}`)
+      } finally {
+        btnSave.disabled = false
+      }
+    })
+
+    // ── 初始化：优先表单模式；现有结构超出表单能力 → 自动降级 JSON ──
+    if (isNew) {
+      spec = routeSpecFromElements(buildTemplateElements('direct'))
+      renderForm()
+    } else {
+      spec = routeSpecFromElements(existing.elements)
+      if (spec) {
+        // 模板下拉定位到对应类型（找不到保持第一项即可）
+        const match = ROUTE_TEMPLATES.find((t) => t.value === spec.kind)
+        if (match) tplSelect.value = match.value
+        renderForm()
+      } else {
+        jsonMode = true
+        modeCheck.checked = true
+        formEl.hidden = true
+        jsonWrap.hidden = false
+        ta.value = JSON.stringify(existing.elements || [], null, 2)
+        modeNote.textContent = '该路由结构超出表单模板能力，已切换到 JSON 模式（保存后仍可部署）'
+        modeNote.hidden = false
+      }
+    }
+
+    document.body.appendChild(dialog)
+    dialog.showModal()
+    nameInput.focus()
+  }
+
+  // 表格动作（事件委托）
+  listEl.addEventListener('click', async (e) => {
+    const editBtn = e.target.closest('.row-act-edit')
+    if (editBtn) {
+      const name = editBtn.dataset.route
+      const entry = configRoutes.find((r) => r.name === name)
+      if (entry) openRouteEditor(entry)
+      return
+    }
+    const pullBtn = e.target.closest('.row-act-pull')
+    if (pullBtn) {
+      const name = pullBtn.dataset.route
+      try {
+        await withBlocking(`正在拉取路由 ${name}…`, () =>
+          api('/api/routes/refresh', { method: 'POST', body: { name } }),
+        )
+        flash(`路由 ${name} 已拉取到本地`, 'ok')
+        logActivity(`动态路由已拉取到本地：${name}`, 'ok')
+      } catch (err) {
+        flash(`拉取失败：${err.message}`, 'err')
+      }
+      await load()
+      return
+    }
+    const deployBtn = e.target.closest('.row-act-deploy')
+    if (deployBtn) {
+      const name = deployBtn.dataset.route
+      deployBtn.disabled = true
+      try {
+        const res = await api('/api/routes/deploy', { method: 'POST', body: { name } })
+        const r = res && res.results && res.results[0]
+        if (r && r.ok) {
+          flash(`路由 ${name} 已部署（v${r.version}）`, 'ok')
+          logActivity(`动态路由部署成功：${name} → v${r.version}`, 'ok')
+        } else {
+          const msg = (r && r.error) || '部署失败'
+          flash(`部署失败：${msg}`, 'err')
+          logActivity(`动态路由部署失败：${name} — ${msg}`, 'err')
+        }
+      } catch (err) {
+        flash(`部署失败：${err.message}`, 'err')
+        logActivity(`动态路由部署失败：${name} — ${err.message}`, 'err')
+      }
+      await load()
+      return
+    }
+    const deleteBtn = e.target.closest('.row-act-delete')
+    if (deleteBtn) {
+      const name = deleteBtn.dataset.route
+      const row = mergeRouteRows(configRoutes, stateRoutes).find((r) => r.name === name)
+      const action = await showDialog({
+        title: '删除动态路由',
+        body: `确定删除路由 ${name} 吗？<br><span class="muted">仅删本地配置不影响云端；连云端删除后 model = dynamic/${escapeHtml(name)} 将立即不可用。</span>`,
+        actions: [
+          { id: 'cloud', label: '本地 + 云端', variant: 'danger' },
+          { id: 'local', label: '仅本地' },
+          { id: 'cancel', label: '取消' },
+        ],
+      })
+      if (!action || action === 'cancel') return
+      const cloud = action === 'cloud'
+      try {
+        const res = await api('/api/routes/delete', { method: 'POST', body: { name, cloud } })
+        if (res && res.cloudError) {
+          flash(`已删除本地配置；云端删除失败：${res.cloudError}`, 'warn')
+        } else {
+          flash(cloud && res.cloudDeleted ? `路由 ${name} 已删除（本地 + 云端）` : `路由 ${name} 已删除（本地）`, 'ok')
+        }
+        logActivity(`动态路由已删除：${name}${cloud ? '（含云端）' : '（仅本地）'}`, 'ok')
+      } catch (err) {
+        flash(`删除失败：${err.message}`, 'err')
+      }
+      await load()
+    }
+  })
+
+  // 「添加路由」侧栏按钮（Node 测试环境无该元素，静默跳过）
+  if (btnAdd) btnAdd.addEventListener('click', () => openRouteEditor(null))
 
   // Cloudflare 外链按账户状态精化（未配置保持回退；静默失败）。
   // 同时精化右侧侧栏「在 Cloudflare 中编辑路由」（index.html 静态定义）与视图内脚注链接
@@ -3031,7 +4021,7 @@ export function renderRoutesView(container) {
   })()
 
   // 「拉取云端路由」= 从云端拉取最新路由（POST /api/sync + provider:'dynamic'，仅拉路由不动其他
-  // provider）→ 完成后重读 /api/state 重渲染。管理 Token 缺失时后端会静默空转
+  // provider）→ 完成后重读 /api/state 与本地配置重渲染。管理 Token 缺失时后端会静默空转
   // （discover fetchRoutes=false → 空结果无报错），故前端先探账户状态提前拦截提示。
   let syncingRoutes = false
   async function syncRoutes() {

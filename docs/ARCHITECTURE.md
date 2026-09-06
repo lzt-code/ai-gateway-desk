@@ -56,13 +56,17 @@ ai-gateway-desk/
 │   ├── bin/aigd.js     # CLI 入口（web 默认 / setup / help）
 │   ├── setup.js              # 初始化向导（7 步，终端交互）
 │   ├── core/                 # config（providers.json 校验）/ state（model-states）/
+│   │                         # routes-store（data/routes.json 动态路由真相源）/
 │   │                         # token-store（双凭证安全存储）
-│   ├── cloudflare/           # api.js（REST 封装）/ kv.js（管理端直读写 KV）/
+│   ├── cloudflare/           # api.js（REST 封装，含 Dynamic Routes 读写）/
+│   │                         # kv.js（管理端直读写 KV）/
 │   │                         # providers-sync.js（云端列表同步）/ discover.js（模型发现）
-│   ├── pipeline/             # enrich（OpenRouter 富化）/ merge（策略 A 状态合并）
-│   ├── output/               # generate（models.json）/ deploy（KV 部署 + 路由映射）
+│   ├── pipeline/             # enrich（OpenRouter 富化）/ merge（策略 A 状态合并）/
+│   │                         # routes-validate（动态路由 elements 校验，纯函数）
+│   ├── output/               # generate（models.json）/ deploy（KV 部署 + 路由映射）/
+│   │                         # routes-deploy（动态路由 REST 部署编排）
 │   ├── web/                  # server.js（Hono + 心跳退出）/ sync-flow.js（四步编排）/
-│   │                         # public/（前端四视图，Vanilla JS）
+│   │                         # public/（前端五视图，Vanilla JS）
 │   └── tui/                  # 纯逻辑模块（render / actions / provider-actions / account-actions）
 ├── ai-gateway-desk-worker/      # Cloudflare Worker（零依赖转发层）
 │   └── src/                  # index.js / http.js / config.js / models-list.js / routes/
@@ -97,13 +101,15 @@ Hono 应用，`createApp` 支持依赖注入（测试可 mock stateStore / confi
 | 调试 | `GET /api/settings/debug`、`POST /api/settings/debug`（详细日志开关，持久化到 providers.json 顶层 `debug` 字段） |
 | Worker | `GET /api/workers/status`、`POST /api/workers/deploy` |
 | 账户 | `GET /api/account/status`、`POST /api/account/{update-token,clear-token,setup}` |
+| 动态路由配置 | `GET /api/routes/config`、`POST /api/routes/{save,deploy,delete,refresh}`（本地编辑 + REST 部署，见 §4.11） |
 
 ### 4.4 前端 — `src/web/public/`
 
-Vanilla JS 单页（`app.js` / `index.html` / `style.css`），四个视图 tab：
+Vanilla JS 单页（`app.js` / `index.html` / `style.css`），五个视图 tab：
 
 - **Provider**：云端+本地合并列表，编辑/隐藏/删除，同步刷新
 - **模型**：模型表格 + Provider 侧栏 + 关键字筛选，状态切换（selected/hidden）、编辑、手动添加、批量删除
+- **动态路由**：路由表格（fallback 链 / 状态 / 操作），表单化编辑（模板 + 「provider/模型」下拉建议）→ 一键部署（REST），「拉取云端路由」同步展示层
 - **Worker**：部署状态面板（KV / models.json / KV key 三态），一键部署
 - **账户**：双 token 槽位管理 + gateway 信息 + 初始化向导入口
 
@@ -147,6 +153,27 @@ UI 已迁移至 Web（2026-08-10），目录保留**纯逻辑模块**供 API 层
 
 核心映射：`Authorization: Bearer <token>` → `cf-aig-authorization`（原样透传），删除原 `Authorization`。Body 流式直传，不缓冲。
 
+### 4.11 动态路由配置 — `src/core/routes-store.js` + `src/pipeline/routes-validate.js` + `src/output/routes-deploy.js`
+
+本地配置动态路由（绕开 Cloudflare 画布编辑器），部署走管理 REST API：
+
+| 模块 | 职责 |
+|------|------|
+| `routes-store.js` | `data/routes.json` 读写（本地真相源，CF 原生 elements 格式 1:1 存取，可双向同步） |
+| `routes-validate.js` | elements 图本地校验（纯函数）：start/end 约束、连线悬挂、percentage 权重和、model/rate/conditional 必填字段 |
+| `routes-deploy.js` | 部署编排（API 函数可注入）：创建路由壳（409 → 列表查回 id）→ `POST versions` 提交图 → `POST deployments` 生效；cloudId 失效（404）自动重建重试 |
+
+`server.js` 端点与数据流：
+
+```
+POST /api/routes/save     本地保存（服务端校验 elements，dirty=true，不触网）
+POST /api/routes/deploy   编排部署（缺省全部 dirty；成功回写 cloudId/deployedVersion/dirty=false）
+POST /api/routes/refresh  云端覆盖本地（elements 取详情 version.data，dirty 归零）
+POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删云端（404 视为成功）
+```
+
+关键决策：**数据格式 1:1 采用 Cloudflare 原生 JSON**（GET versions 读回即同构，云端↔本地 round-trip 不丢信息，无转换层）；编辑器双模式——**表单模式默认**（模板提供骨架 + spec↔elements 互转纯函数 `routeSpecFromElements` / `elementsFromRouteSpec`，模型字段用「provider/模型名」格式并带 model-states 下拉建议；**fallback 链支持任意级数**，与 Cloudflare 原生一致，表单内逐级增删，链外孤儿/成环结构降级 JSON），**JSON 模式兜底**（组合节点等超出表单能力的结构自动降级）。
+
 ## 5. 数据模型
 
 ### 5.1 `data/providers.json`（私有，gitignore）
@@ -186,6 +213,24 @@ UI 已迁移至 Web（2026-08-10），目录保留**纯逻辑模块**供 API 层
 ### 5.3 `data/models.json`（生成产物，gitignore）
 
 由 generate 过滤 selected + 隐藏 provider 后输出数组，直接部署到 KV。
+
+### 5.4 `data/routes.json`（私有，gitignore）
+
+动态路由本地真相源（见 §4.11）。`routes[name]` 条目：
+
+```json
+{
+  "name": "support",
+  "elements": [ ...CF 原生流程图节点（start/conditional/percentage/model/rate/end）... ],
+  "cloudId": "云端路由 UUID（首次部署后回填）",
+  "deployedVersion": 3,
+  "dirty": true,
+  "lastDeployedAt": "ISO 时间戳",
+  "lastSyncedAt": "ISO 时间戳"
+}
+```
+
+调用侧：各 PC Agent 请求 model 填 `dynamic/<name>`，Worker 原样透传到 compat 端点（`routes/chat.js` 的 slug 解析不命中 provider-routes，走默认 compat）。
 
 ## 6. 凭证架构
 
@@ -417,8 +462,13 @@ npm test   # 聚合运行 test/ 下全部测试（test/run-all.mjs）
 | `test-provider-create.mjs` | Provider 创建纯函数 |
 | `test-web-api-provider-create.mjs` | Provider 创建 API 端点 |
 | `test-web-provider-add-view.mjs` | 前端 Provider 添加视图纯函数 |
+| `test-routes-validate.mjs` | 动态路由 elements 校验纯函数 + 模板生成 |
+| `test-routes-spec.mjs` | 动态路由表单 spec ↔ elements 互转（round-trip / N 级 fallback / 降级判定） |
+| `test-routes-store.mjs` | data/routes.json 读写 + upsert/remove 纯函数 |
+| `test-routes-deploy.mjs` | 动态路由 REST 部署编排（创建/版本/部署，全 mock） |
+| `test-web-api-routes.mjs` | 动态路由配置 API 端点（保存/部署/删除/刷新，全 mock） |
 
-> 当前共 26 个测试文件（原 README 标注的 22 个已过时，新增 provider 创建 / 路由映射 / 添加视图相关测试）。
+> 当前共 37 个测试文件（新增动态路由配置 5 个：校验 / spec 互转 / 存储 / 部署编排 / API 端点）。
 
 ## 14. 开源与仓库约定
 

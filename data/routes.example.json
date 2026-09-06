@@ -1,0 +1,28 @@
+{
+  "routes": {
+    "support": {
+      "name": "support",
+      "elements": [
+        { "id": "START", "type": "start", "outputs": { "next": { "elementId": "primary-model" } } },
+        {
+          "id": "primary-model",
+          "type": "model",
+          "properties": { "provider": "openai", "model": "gpt-4o-mini", "timeout": 60000, "retries": 2 },
+          "outputs": { "success": { "elementId": "END" }, "fallback": { "elementId": "backup-model" } }
+        },
+        {
+          "id": "backup-model",
+          "type": "model",
+          "properties": { "provider": "openai", "model": "gpt-4.1-nano", "timeout": 60000, "retries": 2 },
+          "outputs": { "success": { "elementId": "END" } }
+        },
+        { "id": "END", "type": "end", "outputs": {} }
+      ],
+      "cloudId": null,
+      "deployedVersion": null,
+      "dirty": true,
+      "lastDeployedAt": null,
+      "lastSyncedAt": null
+    }
+  }
+}

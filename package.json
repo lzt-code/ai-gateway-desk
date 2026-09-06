@@ -16,7 +16,8 @@
     "ai-gateway-desk-worker/wrangler.toml",
     "LICENSE",
     "data/providers.example.json",
-    "data/models.example.json"
+    "data/models.example.json",
+    "data/routes.example.json"
   ],
   "scripts": {
     "dev": "node scripts/deploy.mjs dev",
