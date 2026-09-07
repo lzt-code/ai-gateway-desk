@@ -928,6 +928,23 @@ export function createApp({
     })
   }
 
+  // 本地快照：零网络开销，启动时先渲染本地缓存，消除空白期
+  const handleProvidersLocal = async (c) => {
+    const config = configStore.load()
+    const localProviders = Array.isArray(config.providers) ? config.providers : []
+    const merged = depsAll.mergeProviderViews(localProviders, null)
+    return c.json({
+      ok: true,
+      providers: merged.providers,
+      readonly: merged.readonly,
+      sourceCounts: countByType(localProviders),
+      cloudErrors: [],
+      degradedReason: 'local-snapshot',
+      snapshot: true,
+    })
+  }
+
+  app.get('/api/providers/local', handleProvidersLocal)
   app.get('/api/providers', handleProvidersList)
   app.post('/api/providers/refresh', handleProvidersList)
 

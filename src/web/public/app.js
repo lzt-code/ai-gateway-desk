@@ -4542,23 +4542,86 @@ export function renderProvidersView(container) {
   // 超时兜底（30s，与后端 Cloudflare 拉取上限一致）：后端挂起时按钮能恢复为可点
   // 「更新 Provider 列表」，视图不会永远停在「更新中…」假死（无超时即表现为「没有按钮」）
   const FETCH_TIMEOUT = 30_000
+
+  function applyProviderResponse(res) {
+    providers = Array.isArray(res.providers) ? res.providers : []
+    readonly = res.readonly === true
+    renderTable()
+    applyReadonlyUI()
+  }
+
   async function refreshProviders(force) {
+    // 启动路径（force=false）：本地快照先渲染，消除等待云端时的空白；随后后台静默刷新云端并二次渲染
+    if (!force) {
+      for (const l of buildProviderDetailLogs({ force })) logActivity(l.text, l.type)
+      // ① 本地快照：落盘文件读取，无网络开销，失败静默；仅渲染列表，不切换只读态避免闪动
+      try {
+        const localRes = await api('/api/providers/local')
+        if (Array.isArray(localRes.providers)) {
+          providers = localRes.providers
+          renderTable()
+        }
+      } catch {
+        // 本地快照失败不阻断，继续走云端同步
+      }
+      // ② 云端同步：后台进行，用 withBusy 轻量指示，不阻塞交互
+      btnRefresh.disabled = true
+      const prevText = btnRefresh.textContent
+      btnRefresh.textContent = '更新中…'
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT)
+      try {
+        const res = await withBusy('正在同步 Provider 列表…', api('/api/providers', {
+          method: 'GET',
+          signal: controller.signal,
+        }))
+        applyProviderResponse(res)
+        const logs = buildProviderDetailLogs({
+          force,
+          ok: true,
+          count: providers.length,
+          readonly,
+          providers,
+          sourceCounts: res.sourceCounts,
+          cloudErrors: res.cloudErrors,
+          degradedReason: res.degradedReason,
+        })
+        for (const l of logs) logActivity(l.text, l.type)
+        if (!_startupModelSyncTriggered && !_modelsAutoSyncDone) {
+          try {
+            const r = await api('/api/sync/ready')
+            if (r && r.ready) {
+              logActivity('Provider 列表更新完成，自动开始更新模型列表…', 'info')
+              triggerGlobalModelSync()
+            }
+          } catch {
+            // 探测失败静默（不阻断 Provider 已渲染的列表）
+          }
+        }
+      } catch (err) {
+        flash(err.message, 'err')
+        for (const l of buildProviderDetailLogs({ force, ok: false, error: err.message })) logActivity(l.text, l.type)
+      } finally {
+        clearTimeout(timer)
+        btnRefresh.textContent = prevText
+        btnRefresh.disabled = false
+      }
+      return
+    }
+
+    // 手动刷新（force=true）：保持阻塞弹窗，单次云端拉取
     btnRefresh.disabled = true
     const prevText = btnRefresh.textContent
     btnRefresh.textContent = '更新中…'
-    // 详细日志：开始行 + 结果摘要 + 每个 provider 逐条 + 各源失败（buildProviderDetailLogs）
     for (const l of buildProviderDetailLogs({ force })) logActivity(l.text, l.type)
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT)
     try {
-      const res = await withBlocking(force ? '正在更新 Provider 列表…' : '正在加载 Provider 列表…', api(force ? '/api/providers/refresh' : '/api/providers', {
-        method: force ? 'POST' : 'GET',
+      const res = await withBlocking('正在更新 Provider 列表…', api('/api/providers/refresh', {
+        method: 'POST',
         signal: controller.signal,
       }))
-      providers = Array.isArray(res.providers) ? res.providers : []
-      readonly = res.readonly === true
-      renderTable()
-      applyReadonlyUI()
+      applyProviderResponse(res)
       const logs = buildProviderDetailLogs({
         force,
         ok: true,
@@ -4570,18 +4633,6 @@ export function renderProvidersView(container) {
         degradedReason: res.degradedReason,
       })
       for (const l of logs) logActivity(l.text, l.type)
-      // 启动链：首次自动加载 Provider 完成后自动更新模型列表（不等待进入模型页）
-      if (!force && !_startupModelSyncTriggered && !_modelsAutoSyncDone) {
-        try {
-          const r = await api('/api/sync/ready')
-          if (r && r.ready) {
-            logActivity('Provider 列表更新完成，自动开始更新模型列表…', 'info')
-            triggerGlobalModelSync()
-          }
-        } catch {
-          // 探测失败静默（不阻断 Provider 已渲染的列表）
-        }
-      }
     } catch (err) {
       flash(err.message, 'err')
       for (const l of buildProviderDetailLogs({ force, ok: false, error: err.message })) logActivity(l.text, l.type)
