@@ -88,13 +88,11 @@ export function mergeProviderViews(localProviders, cloudResult) {
       merged.push({ ...cloudItem, enabled: cloudItem.enabled !== false, mark: 'new' })
     }
   }
-  // c. 本地有、云端没有（拉取完整时）→ 保留本地条目并标记 {云端已删}
-  //    （删除该条目时仅移除本地，云端已无）
-  if (!cloudIncomplete) {
-    for (const localItem of local) {
-      if (!cloudById.has(localItem.id)) {
-        merged.push({ ...localItem, mark: 'removed' })
-      }
+  // c. 本地有、云端没有 → 保留本地条目
+  //    拉取完整时标 {云端已删}，不完整时仅保留不标，避免 7003 等网关错误导致本地列表被清空
+  for (const localItem of local) {
+    if (!cloudById.has(localItem.id)) {
+      merged.push({ ...localItem, mark: cloudIncomplete ? null : 'removed' })
     }
   }
 

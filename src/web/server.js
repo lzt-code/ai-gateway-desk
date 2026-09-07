@@ -1653,14 +1653,24 @@ export function createApp({
     return c.json({ ok: failed.length === 0, results })
   })
 
-  // POST /api/routes/delete — 删除（本地必删；body.cloud=true 且有 cloudId 时同步删云端）
+  // POST /api/routes/delete — 删除（本地必删；body.cloud=true 时同步删云端）
   app.post('/api/routes/delete', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
-    if (!isRouteName(body.name)) {
+    if (typeof body.name !== 'string' || !body.name) {
       return c.json({ error: 'name must be a lowercase slug (letters, digits, hyphens)' }, 400)
     }
-    const entry = routesState.routes?.[body.name]
+    // 兼容调用方误传 modelId（dynamic/<name>）：统一剥离前缀后再查本地
+    const routeName = body.name.startsWith('dynamic/') ? body.name.slice('dynamic/'.length) : body.name
+    if (!routeName) {
+      return c.json({ error: 'name must be a lowercase slug (letters, digits, hyphens)' }, 400)
+    }
+    const entry = routesState.routes?.[routeName]
+    // 云端同步的路由名可能包含点号等非 slug 字符（如 glm-5.3flash-5.2），
+    // 本地已存在的条目应直接放行删除；不存在的条目仍需符合 slug 规范
+    if (!entry && !isRouteName(routeName)) {
+      return c.json({ error: 'name must be a lowercase slug (letters, digits, hyphens)' }, 400)
+    }
     const config = configStore.load()
     const gateway = config.gateway || {}
     const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
@@ -1668,32 +1678,70 @@ export function createApp({
     let cloudError = null
     if (body.cloud === true) {
       if (!mgmtToken) return c.json({ error: 'management token not configured' }, 400)
-      if (!entry?.cloudId) {
-        cloudError = '本地无云端路由 id（未部署过），跳过云端删除'
-      } else if (!gateway.accountId || !gateway.gatewayId) {
+      if (!gateway.accountId || !gateway.gatewayId) {
         return c.json({ error: 'gateway config not initialized' }, 400)
-      } else {
+      }
+      // 本地 cloudId 缺失时（如仅同步过 state、或本地新建未部署），按名称回查云端再删
+      let cloudId = entry?.cloudId || null
+      if (!cloudId) {
         try {
-          await depsAll.deleteDynamicRoute(mgmtToken, gateway.accountId, gateway.gatewayId, entry.cloudId)
-          cloudDeleted = true
+          const list = await depsAll.listDynamicRoutes(mgmtToken, gateway.accountId, gateway.gatewayId)
+          const hit = (Array.isArray(list) ? list : []).find((r) => r && r.name === routeName)
+          if (hit?.id) cloudId = hit.id
         } catch (err) {
-          // 404 = 云端已不存在，视为删除成功
-          if (err?.status === 404) {
+          cloudError = err instanceof Error ? err.message : String(err)
+        }
+      }
+      if (cloudError === null) {
+        if (!cloudId) {
+          // 云端本来就没有该路由 → 视为已删除成功，不再报“跳过云端删除”
+          cloudDeleted = true
+        } else {
+          try {
+            await depsAll.deleteDynamicRoute(mgmtToken, gateway.accountId, gateway.gatewayId, cloudId)
             cloudDeleted = true
-          } else {
-            cloudError = err instanceof Error ? err.message : String(err)
+          } catch (err) {
+            // 404 = 云端已不存在，视为删除成功
+            if (err?.status === 404) {
+              cloudDeleted = true
+            } else {
+              cloudError = err instanceof Error ? err.message : String(err)
+            }
           }
         }
       }
     }
+    let routesRemoved = false
     if (entry) {
-      routesState = depsAll.removeRoute(routesState, body.name)
+      routesState = depsAll.removeRoute(routesState, routeName)
       routesStore.save(routesState)
+      routesRemoved = true
+    }
+    // 同步清理 model-states 中的动态模型，避免仅删 routes.json 后仍由 stateRoutes 残留
+    // - 本地+云端且云端成功删除 → 必须清理 state，否则页面仍显示“仅云端”
+    // - 仅本地且从未部署（无 cloudId）→ 本地是唯一来源，清理 state 后视图立即消失
+    // - 仅本地但已部署（有 cloudId）→ 保留 state，让视图退化为“仅云端”供下次拉取
+    const modelId = `dynamic/${routeName}`
+    const hasStateEntry = !!state[modelId]
+    let shouldCleanState = false
+    if (hasStateEntry) {
+      if (body.cloud === true && cloudDeleted) {
+        shouldCleanState = true
+      } else if (routesRemoved && !entry?.cloudId) {
+        shouldCleanState = true
+      } else if (!entry && body.cloud === true && cloudDeleted) {
+        shouldCleanState = true
+      }
+    }
+    if (shouldCleanState) {
+      delete state[modelId]
+      stateStore.save(state)
     }
     return c.json({
       ok: cloudError === null,
       removed: true,
       cloudDeleted,
+      stateCleaned: shouldCleanState,
       ...(cloudError ? { cloudError } : {}),
     })
   })
