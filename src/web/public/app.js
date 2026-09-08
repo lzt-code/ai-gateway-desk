@@ -2923,7 +2923,7 @@ export function buildTemplateElements(kind) {
       return [
         start('primary-model'),
         model('primary-model', {}, { success: { elementId: 'END' }, fallback: { elementId: 'backup-model' } }),
-        model('backup-model', {}, { success: { elementId: 'END' } }),
+        model('backup-model', {}, { success: { elementId: 'END' }, fallback: { elementId: 'END' } }),
         end(),
       ]
     case 'conditional':
@@ -2934,8 +2934,8 @@ export function buildTemplateElements(kind) {
           properties: { conditions: { 'metadata.plan': { '$eq': 'paid' } } },
           outputs: { true: { elementId: 'premium-model' }, false: { elementId: 'free-model' } },
         },
-        model('premium-model', {}, { success: { elementId: 'END' } }),
-        model('free-model', {}, { success: { elementId: 'END' } }),
+        model('premium-model', {}, { success: { elementId: 'END' }, fallback: { elementId: 'END' } }),
+        model('free-model', {}, { success: { elementId: 'END' }, fallback: { elementId: 'END' } }),
         end(),
       ]
     case 'rate':
@@ -2946,8 +2946,8 @@ export function buildTemplateElements(kind) {
           properties: { limitType: 'count', limit: 100, window: 3600, key: 'metadata.user_id' },
           outputs: { success: { elementId: 'primary-model' }, fallback: { elementId: 'backup-model' } },
         },
-        model('primary-model', {}, { success: { elementId: 'END' } }),
-        model('backup-model', {}, { success: { elementId: 'END' } }),
+        model('primary-model', {}, { success: { elementId: 'END' }, fallback: { elementId: 'END' } }),
+        model('backup-model', {}, { success: { elementId: 'END' }, fallback: { elementId: 'END' } }),
         end(),
       ]
     case 'percentage':
@@ -2958,15 +2958,15 @@ export function buildTemplateElements(kind) {
           // 键必须互异（JSON 对象重复键会被静默覆盖），权重和恒为 100
           outputs: { '70%': { elementId: 'model-a' }, '30%': { elementId: 'model-b' } },
         },
-        model('model-a', {}, { success: { elementId: 'END' } }),
-        model('model-b', {}, { success: { elementId: 'END' } }),
+        model('model-a', {}, { success: { elementId: 'END' }, fallback: { elementId: 'END' } }),
+        model('model-b', {}, { success: { elementId: 'END' }, fallback: { elementId: 'END' } }),
         end(),
       ]
     case 'direct':
     default:
       return [
         start('primary-model'),
-        model('primary-model', {}, { success: { elementId: 'END' } }),
+        model('primary-model', {}, { success: { elementId: 'END' }, fallback: { elementId: 'END' } }),
         end(),
       ]
   }
@@ -3001,8 +3001,8 @@ export function elementsFromRouteSpec(spec) {
     const retries = Number(s.retries)
     if (Number.isFinite(timeout) && timeout > 0) properties.timeout = timeout
     if (Number.isFinite(retries) && retries >= 0) properties.retries = retries
-    const outputs = { success: { elementId: 'END' } }
-    if (fallbackTo) outputs.fallback = { elementId: fallbackTo }
+    // Cloudflare 校验要求 model 必须同时含 success 与 fallback（末级也需 fallback→END，实测 7001）
+    const outputs = { success: { elementId: 'END' }, fallback: { elementId: fallbackTo || 'END' } }
     return { id, type: 'model', properties, outputs }
   }
   const start = { id: 'START', type: 'start', outputs: { next: { elementId: 'START-next' } } }
@@ -3016,13 +3016,13 @@ export function elementsFromRouteSpec(spec) {
     elements.push(start, m, end)
   } else if (spec.kind === 'fallback') {
     // fallback 链支持任意级数（Cloudflare 原生即无限级）：沿 fallback 边逐级连线，
-    // 每级 success → END，末级无 fallback 边
+    // 每级 success → END / fallback → 下一级，末级双边均指向 END（Cloudflare 校验 fallback 必填）
     const models = Array.isArray(spec.models) ? spec.models : []
     if (models.length === 0) return null
     const nodes = []
     for (const [i, s] of models.entries()) {
       const isLast = i === models.length - 1
-      const m = modelNode(`model-level-${i + 1}`, s, isLast ? null : `model-level-${i + 2}`)
+      const m = modelNode(`model-level-${i + 1}`, s, isLast ? 'END' : `model-level-${i + 2}`)
       if (!m) return null
       nodes.push(m)
     }
@@ -3185,9 +3185,11 @@ export function routeSpecFromElements(elements) {
     if (cur && cur.type !== 'end') return null
     if (chain.length !== counts.model) return null
     if (chain.length === 1) {
-      if (first.outputs?.fallback) return null
+      const fb = first.outputs?.fallback?.elementId
+      if (fb && fb !== 'END') return null
       return { kind: 'direct', primary: chain[0] }
     }
+    // fallback 链末级 fallback 指向 END 时 cur 为 END，已在上方通过；兼容末级双边 END
     return { kind: 'fallback', models: chain }
   }
   return null

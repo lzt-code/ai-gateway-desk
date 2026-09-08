@@ -118,7 +118,7 @@ section('N 级 fallback 链（Cloudflare 原生无限级）')
     { id: 'START', type: 'start', outputs: { next: { elementId: 'm1' } } },
     { id: 'm1', type: 'model', properties: { provider: 'a', model: '1' }, outputs: { success: { elementId: 'END' }, fallback: { elementId: 'm2' } } },
     { id: 'm2', type: 'model', properties: { provider: 'c', model: '2' }, outputs: { success: { elementId: 'END' }, fallback: { elementId: 'm3' } } },
-    { id: 'm3', type: 'model', properties: { provider: 'e', model: '3' }, outputs: { success: { elementId: 'END' } } },
+    { id: 'm3', type: 'model', properties: { provider: 'e', model: '3' }, outputs: { success: { elementId: 'END' }, fallback: { elementId: 'END' } } },
     { id: 'END', type: 'end', outputs: {} },
   ]
   const spec = routeSpecFromElements(three)
@@ -143,8 +143,8 @@ section('N 级 fallback 链（Cloudflare 原生无限级）')
     byId.get('model-level-1')?.outputs?.fallback?.elementId === 'model-level-2' &&
     byId.get('model-level-2')?.outputs?.fallback?.elementId === 'model-level-3' &&
     byId.get('model-level-3')?.outputs?.fallback?.elementId === 'model-level-4' &&
-    byId.get('model-level-4')?.outputs?.fallback === undefined,
-    '四级链 fallback 边逐级连接、末级无边',
+    byId.get('model-level-4')?.outputs?.fallback?.elementId === 'END',
+    '四级链 fallback 边逐级连接、末级 fallback→END（Cloudflare 7001 必填）',
   )
 }
 // 链外孤儿模型：无法用线性链表达 → null（编辑器降级 JSON）

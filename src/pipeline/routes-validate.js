@@ -111,6 +111,15 @@ export function validateRouteElements(elements) {
       if (p.retries !== undefined && !Number.isInteger(p.retries)) {
         errors.push(`节点 ${id}：retries 必须是整数`)
       }
+      // Cloudflare 现行校验（实测 2026-09-08）：model 节点 outputs 必须同时含 success 与 fallback
+      // 缺 fallback 直接 7001 Required at body.elements[n].outputs.fallback
+      const mOutputs = el.outputs || {}
+      if (!mOutputs.success || typeof mOutputs.success.elementId !== 'string' || !mOutputs.success.elementId.trim()) {
+        errors.push(`节点 ${id}：model 节点缺少 outputs.success`)
+      }
+      if (!mOutputs.fallback || typeof mOutputs.fallback.elementId !== 'string' || !mOutputs.fallback.elementId.trim()) {
+        errors.push(`节点 ${id}：model 节点缺少 outputs.fallback（cloud 7001，末级也需 fallback→END）`)
+      }
     }
 
     if (type === 'rate') {

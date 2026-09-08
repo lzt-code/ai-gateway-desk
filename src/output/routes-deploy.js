@@ -23,10 +23,14 @@ import {
 export function normalizeVersionId(resp) {
   const candidates = [
     resp?.result?.version,
+    resp?.result?.version_id,
+    resp?.result?.versionId,
     resp?.result?.id,
     resp?.data?.version,
+    resp?.data?.version_id,
     resp?.data?.id,
     resp?.version,
+    resp?.version_id,
     resp?.id,
   ]
   for (const v of candidates) {
@@ -69,6 +73,34 @@ export async function deployRouteConfig(apiToken, accountId, gatewayId, entry, f
   if (!name || !Array.isArray(elements)) {
     return { ok: false, error: 'entry 缺少 name 或 elements' }
   }
+  // Cloudflare 7001 防御：末级 model 也必须带 fallback→END，历史数据可能缺该字段
+  // 仅当检测到缺口时深拷贝补齐，避免无变更时破坏调用方引用相等性（测试断言 elements === ELEMENTS）
+  const normalizedElements = (() => {
+    let needsPatch = false
+    for (const n of elements) {
+      if (n?.type === 'model') {
+        const out = n.outputs || {}
+        if (!out.success || typeof out.success.elementId !== 'string' || !out.success.elementId.trim()) { needsPatch = true; break }
+        if (!out.fallback || typeof out.fallback.elementId !== 'string' || !out.fallback.elementId.trim()) { needsPatch = true; break }
+      }
+    }
+    if (!needsPatch) return elements
+    const copy = JSON.parse(JSON.stringify(elements))
+    const byId = new Map(copy.filter((n) => n && typeof n.id === 'string').map((n) => [n.id, n]))
+    const hasEnd = byId.has('END')
+    for (const n of copy) {
+      if (n?.type === 'model') {
+        const out = n.outputs || (n.outputs = {})
+        if (!out.success || typeof out.success.elementId !== 'string' || !out.success.elementId.trim()) {
+          out.success = { elementId: 'END' }
+        }
+        if (!out.fallback || typeof out.fallback.elementId !== 'string' || !out.fallback.elementId.trim()) {
+          out.fallback = { elementId: hasEnd ? 'END' : out.success.elementId }
+        }
+      }
+    }
+    return copy
+  })()
 
   // ── 1. 确保路由壳存在 ──
   let cloudId = entry.cloudId || null
@@ -77,7 +109,7 @@ export async function deployRouteConfig(apiToken, accountId, gatewayId, entry, f
     // 已有 cloudId：直接复用；版本提交 404（云端已删）时回退重建（下方 catch）
   } else {
     try {
-      const createdRoute = await fnsAll.createDynamicRoute(apiToken, accountId, gatewayId, { id: name, name })
+      const createdRoute = await fnsAll.createDynamicRoute(apiToken, accountId, gatewayId, { id: name, name, elements: normalizedElements })
       cloudId = createdRoute?.id || name // 创建响应缺 id 时以 name 兜底（与创建参数一致）
       created = true
     } catch (err) {
@@ -98,14 +130,14 @@ export async function deployRouteConfig(apiToken, accountId, gatewayId, entry, f
   // ── 2. 提交版本 ──
   let versionResp
   try {
-    versionResp = await fnsAll.createDynamicRouteVersion(apiToken, accountId, gatewayId, cloudId, elements)
+    versionResp = await fnsAll.createDynamicRouteVersion(apiToken, accountId, gatewayId, cloudId, normalizedElements)
   } catch (err) {
     // cloudId 失效（云端已删 / 手动重建）→ 404 时重建路由壳后重试一次
     if (err?.status === 404 && !created) {
       try {
-        const recreated = await fnsAll.createDynamicRoute(apiToken, accountId, gatewayId, { id: name, name })
+        const recreated = await fnsAll.createDynamicRoute(apiToken, accountId, gatewayId, { id: name, name, elements: normalizedElements })
         cloudId = recreated?.id || name
-        versionResp = await fnsAll.createDynamicRouteVersion(apiToken, accountId, gatewayId, cloudId, elements)
+        versionResp = await fnsAll.createDynamicRouteVersion(apiToken, accountId, gatewayId, cloudId, normalizedElements)
       } catch (retryErr) {
         return { ok: false, error: `提交版本失败（重建后仍失败）：${retryErr instanceof Error ? retryErr.message : String(retryErr)}` }
       }

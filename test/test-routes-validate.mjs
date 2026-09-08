@@ -84,8 +84,8 @@ check(!ok(graphWith({ id: 'm', type: 'model', properties: { provider: 'openai' }
   'model 缺 model 名 → 不通过')
 check(!ok(graphWith({ id: 'm', type: 'model', properties: { provider: 'p', model: 'm', retries: 'x' }, outputs: { success: { elementId: 'END' } } })),
   'retries 非整数 → 不通过')
-check(ok(graphWith({ id: 'm', type: 'model', properties: { provider: 'p', model: 'm' }, outputs: { success: { elementId: 'END' } } })),
-  'model 最小合法 → 通过')
+check(ok(graphWith({ id: 'm', type: 'model', properties: { provider: 'p', model: 'm' }, outputs: { success: { elementId: 'END' }, fallback: { elementId: 'END' } } })),
+  'model 最小合法（含 fallback→END，Cloudflare 7001） → 通过')
 check(!ok(graphWith({ id: 'r', type: 'rate', properties: { limitType: 'banana', limit: 0, window: -1 }, outputs: { success: { elementId: 'END' } } })),
   'rate 非法 limitType/limit/window/缺 key → 不通过')
 check(ok(graphWith({ id: 'r', type: 'rate', properties: { limitType: 'count', limit: 100, window: 3600, key: 'metadata.user_id' }, outputs: { success: { elementId: 'END' } } })),

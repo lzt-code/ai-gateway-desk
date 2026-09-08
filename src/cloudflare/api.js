@@ -491,17 +491,28 @@ export async function getDynamicRouteDetail(apiToken, accountId, gatewayId, rout
  * @param {string} [config.name] - 显示名，缺省同 id
  * @returns {Promise<object>} 创建的路由对象（含 id / name）
  */
-export async function createDynamicRoute(apiToken, accountId, gatewayId, { id, name } = {}) {
+export async function createDynamicRoute(apiToken, accountId, gatewayId, { id, name, elements } = {}) {
   guard(accountId, 'accountId')
   guard(gatewayId, 'gatewayId')
-  guard(id, 'id')
+  // Cloudflare 现行 API（2026 实测/官方文档）：POST /routes 要求 body 含 name + elements
+  // 缺 elements 直接 7001 Required（见 issue glm-5-2）。保留 id 兼容旧调用，但优先 name。
+  const routeName = name || id
+  guard(routeName, 'name')
+  if (elements !== undefined && !Array.isArray(elements)) {
+    throw new TypeError('elements 必须是数组（动态路由流程图节点）')
+  }
 
   const payload = await request(
     apiToken,
     `/accounts/${encodeURIComponent(accountId)}/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/routes`,
     {
       method: 'POST',
-      body: { id, name: name || id },
+      body: {
+        // 官方必填：name + elements；id 为历史别名，部分环境仍接受，保留兼容
+        ...(id !== undefined ? { id } : {}),
+        name: routeName,
+        ...(Array.isArray(elements) ? { elements } : {}),
+      },
     }
   )
   return payload?.result ?? payload?.data ?? payload ?? null
@@ -574,18 +585,20 @@ export async function listDynamicRouteVersions(apiToken, accountId, gatewayId, r
  * @param {number|string} config.version - 要部署的版本号（createDynamicRouteVersion 返回）
  * @returns {Promise<object>} 部署记录
  */
-export async function createDynamicRouteDeployment(apiToken, accountId, gatewayId, routeId, { version } = {}) {
+export async function createDynamicRouteDeployment(apiToken, accountId, gatewayId, routeId, { version, version_id, versionId } = {}) {
   guard(accountId, 'accountId')
   guard(gatewayId, 'gatewayId')
   guard(routeId, 'routeId')
-  guard(version, 'version')
+  // 官方必填字段为 version_id（字符串），历史代码用 version；三别名兼容
+  const vid = version_id ?? versionId ?? version
+  guard(vid, 'version')
 
   const payload = await request(
     apiToken,
     `/accounts/${encodeURIComponent(accountId)}/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/routes/${encodeURIComponent(routeId)}/deployments`,
     {
       method: 'POST',
-      body: { version },
+      body: { version_id: String(vid) },
     }
   )
   return payload?.result ?? payload?.data ?? payload ?? null
