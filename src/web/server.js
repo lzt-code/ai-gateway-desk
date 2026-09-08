@@ -48,6 +48,7 @@ import {
   hiddenProviderSlugs,
   filterVisibleState,
 } from '../tui/actions.js'
+import { logRequest as ioLogRequest, logResponse as ioLogResponse, logResult as ioLogResult, isDebugEnabled, getRecentLogs, subscribeLogs } from '../core/io-logger.js'
 import { discoverModels, gatewaySlug } from '../cloudflare/discover.js'
 import { fetchCloudProviders } from '../cloudflare/providers-sync.js'
 import { readKvJson, writeKvJson } from '../cloudflare/kv.js'
@@ -780,6 +781,8 @@ export function createApp({
             err = e instanceof Error ? e.message : String(e)
           }
           if (err) console.error('[aigd] 后台 KV 部署失败:', err)
+          ioLogResult('kv:deploy:models', { ok, message: err || 'ok', extra: `ns=${deployNs} hidden/manual=${deployKvReady}` })
+          if (isDebugEnabled()) ioLogRequest('kv:deploy:models', { method: 'PUT', path: `kv/${deployNs}/models`, meta: { hiddenManual: deployKvReady } })
           emitEvent({ type: 'deploy', ok, error: err })
         })().catch(() => {})
       }
@@ -798,10 +801,14 @@ export function createApp({
   // 成功后额外写 hidden-models 和 manual-models 到 KV（REST API），实现跨 PC 同步。
   // KV 写入失败不回滚已部署的 models（wrangler 已成功），由前端提示重试。
   app.post('/api/save-deploy', async (c) => {
+    const start = Date.now()
+    const op = 'save-deploy'
     const config = configStore.load()
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'POST', path: '/api/save-deploy', meta: { models: Object.keys(state).length } })
     const result = await depsAll.saveAndDeploy({ state, config })
     if (!result.ok) {
       const error = result.error instanceof Error ? result.error.message : String(result.error)
+      ioLogResult(op, { ok: false, message: `step ${result.step}: ${error}`, elapsedMs: Date.now() - start })
       return c.json({ ok: false, step: result.step, error })
     }
     // saveAndDeploy 成功后写 hidden-models + manual-models 到 KV（跨 PC 同步）
@@ -821,23 +828,31 @@ export function createApp({
         kvError = err instanceof Error ? err.message : String(err)
       }
     }
+    ioLogResult(op, { ok: !kvError, message: kvError ? `kvError: ${kvError}` : 'ok', elapsedMs: Date.now() - start })
+    if (isDebugEnabled() && kvError) ioLogResponse(op, { status: 200, output: kvError, elapsedMs: Date.now() - start })
     return c.json({ ok: true, kvError })
   })
 
   // POST /api/save — 仅保存（saveState + writeModelsJson 两步，不部署）
   app.post('/api/save', async (c) => {
+    const op = 'save'
+    const start = Date.now()
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'POST', path: '/api/save', meta: { models: Object.keys(state).length } })
     try {
       stateStore.save(state)
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
+      ioLogResult(op, { ok: false, message: `step1: ${msg}`, elapsedMs: Date.now() - start })
       return c.json({ ok: false, step: 1, error: msg })
     }
     try {
       depsAll.writeModelsJson(state)
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error)
+      ioLogResult(op, { ok: false, message: `step2: ${msg}`, elapsedMs: Date.now() - start })
       return c.json({ ok: false, step: 2, error: msg })
     }
+    ioLogResult(op, { ok: true, message: 'ok', elapsedMs: Date.now() - start })
     return c.json({ ok: true })
   })
 
@@ -1137,6 +1152,8 @@ export function createApp({
         } catch {}
       }
     }
+    ioLogResult(`provider:update:${body.id}`, { ok: true, message: `cloud:${cloudChanged} local:${localChanged} kv:${kvDeployed ? 'ok' : kvError || 'skipped'}`, extra: `name:${name || '-'} apiKey:${apiKey ? 'changed' : '-'} pathPrefix:${changes.pathPrefix ?? '-'}` })
+    if (isDebugEnabled()) ioLogRequest(`provider:update:${body.id}`, { method: 'POST', path: '/api/providers/update', body: { id: body.id, changes: { name: name ? 'set' : '-', apiKey: apiKey ? '***' : '-', baseUrl: baseUrl || '-', localEnabled: visibilityChanged ? changes.localEnabled : '-', pathPrefix: changes.pathPrefix ?? '-' } } })
     return c.json({
       ok: true,
       provider: providerView,
@@ -1249,6 +1266,8 @@ export function createApp({
     if (providerView && body.apiKey) {
       providerView.apiKeyPreview = maskApiKey(String(body.apiKey).trim())
     }
+    ioLogResult(`provider:create:${body.id}`, { ok: true, message: `${body.type} kv:${kvDeployed ? 'ok' : kvError || 'skipped'}`, extra: `name:${body.name || '-'}` })
+    if (isDebugEnabled()) ioLogRequest(`provider:create:${body.id}`, { method: 'POST', path: '/api/providers/create', body: { id: body.id, type: body.type, name: body.name || '-' } })
     return c.json({
       ok: true,
       provider: providerView,
@@ -1417,6 +1436,8 @@ export function createApp({
         mgmtToken, gateway.accountId, namespaceId, buildVisibilityMap(local)
       ))
     }
+    ioLogResult(`provider:delete:${body.id}`, { ok: true, message: `cloud:${cloudAction} models:${modelsDeleted} kv:${kvDeployed ? 'ok' : kvError || 'skipped'}` })
+    if (isDebugEnabled()) ioLogRequest(`provider:delete:${body.id}`, { method: 'POST', path: '/api/providers/delete', body: { id: body.id } })
     return c.json({ ok: true, removed: true, cloudAction, modelsDeleted, kvDeployed, kvSkipped, kvError })
   })
 
@@ -1446,9 +1467,15 @@ export function createApp({
   // 退出码 0 → { ok:true, exitCode, output }；非 0 → HTTP 200 { ok:false, exitCode, output }
   // （业务失败 ≠ HTTP 错误，与 save-deploy 决策一致）；超时 → kill + 500 { error:'deploy timeout' }
   app.post('/api/workers/deploy', async (c) => {
+    const op = 'worker:deploy'
+    const start = Date.now()
     const config = configStore.load()
     const namespaceId = (config && config.kv && config.kv.namespaceId) || ''
-    if (!namespaceId) return c.json({ error: 'kv namespace not configured' }, 400)
+    if (!namespaceId) {
+      ioLogResult(op, { ok: false, message: 'kv namespace not configured', elapsedMs: Date.now() - start })
+      return c.json({ error: 'kv namespace not configured' }, 400)
+    }
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'POST', path: '/api/workers/deploy', meta: { namespaceId } })
     const timeoutMs = depsAll.deployTimeoutMs ?? 120_000
     const child = depsAll.spawnFn(process.execPath, [SCRIPTS_DEPLOY_PATH, 'deploy'], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1478,7 +1505,13 @@ export function createApp({
         clearTimeout(timer)
         reject(err)
       })
+    }).catch(async (err) => {
+      ioLogResult(op, { ok: false, message: err.message, elapsedMs: Date.now() - start })
+      throw err
     })
+    const ok = exitCode === 0
+    ioLogResult(op, { ok, message: ok ? 'ok' : `exit ${exitCode}`, elapsedMs: Date.now() - start, extra: output ? output.slice(0, 400) : '' })
+    if (isDebugEnabled()) ioLogResponse(op, { status: exitCode, output, elapsedMs: Date.now() - start })
     if (exitCode === 0) return c.json({ ok: true, exitCode, output })
     return c.json({ ok: false, exitCode, output })
   })
@@ -1650,6 +1683,8 @@ export function createApp({
     }
     routesStore.save(routesState)
     const failed = results.filter((r) => !r.ok)
+    ioLogResult(`routes:deploy`, { ok: failed.length === 0, message: `${results.length} 条, 失败 ${failed.length}`, extra: results.map((r) => `${r.name}:${r.ok ? 'ok' : r.error}`).join(', ').slice(0, 400) })
+    if (isDebugEnabled()) ioLogRequest(`routes:deploy`, { method: 'POST', path: '/api/routes/deploy', body: { targets: results.map((r) => r.name) } })
     return c.json({ ok: failed.length === 0, results })
   })
 
@@ -1798,6 +1833,38 @@ export function createApp({
     routesStore.save(routesState)
     const failed = results.filter((r) => !r.ok)
     return c.json({ ok: failed.length === 0, results })
+  })
+
+  // ─── 处理过程日志（与终端一致）──
+  // io-logger 的 result/request/response 统一写入内存环形缓冲，前端通过 SSE 实时
+  // 镜像到“处理过程日志”面板，使 UI 日志与 terminal 完全一致：
+  //   - debug 关：仅 result（操作结果）
+  //   - debug 开：result + request/response 细节（脱敏）
+  // 兼容无 EventSource 环境：提供 GET /api/logs 轮询；正常环境用 /api/logs/stream。
+  app.get('/api/logs', (c) => {
+    const limit = Math.min(200, Math.max(1, Number(c.req.query('limit')) || 200))
+    return c.json({ ok: true, logs: getRecentLogs(limit) })
+  })
+
+  app.get('/api/logs/stream', (c) => {
+    return streamSSE(c, async (stream) => {
+      // 先推送历史缓冲
+      for (const e of getRecentLogs(200)) {
+        await stream.writeSSE({ event: 'log', data: JSON.stringify(e) })
+      }
+      let done = false
+      const handler = (entry) => {
+        if (done) return
+        stream.writeSSE({ event: 'log', data: JSON.stringify(entry) }).catch(() => {})
+      }
+      const off = subscribeLogs(handler)
+      await new Promise((resolve) => {
+        const onAbort = () => { done = true; off(); resolve() }
+        if (typeof stream.onAbort === 'function') stream.onAbort(onAbort)
+        else if (c.req.raw?.signal) c.req.raw.signal.addEventListener('abort', onAbort, { once: true })
+        else setTimeout(resolve, 24 * 60 * 60 * 1000) // 兜底：24h 后自动结束
+      })
+    })
   })
 
   // 静态文件：/ → index.html；存在文件 → 内容；缺失 → 404；root 外路径穿越自带防护

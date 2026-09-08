@@ -9,6 +9,8 @@
  *       与 gateway token（cfut_xxx，绑定单个 gateway）职责不同，勿混用。
  */
 
+import { logRequest, logResponse, logResult } from '../core/io-logger.js'
+
 const API_BASE = 'https://api.cloudflare.com/client/v4'
 const FETCH_TIMEOUT = 30_000 // 30 秒超时
 
@@ -112,30 +114,47 @@ async function request(apiToken, path, { method = 'GET', body, timeoutMs = FETCH
     headers['Content-Type'] = 'application/json'
   }
 
-  const response = await fetchWithTimeout(
-    url,
-    {
-      method,
-      headers,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    },
-    timeoutMs
-  )
-
-  const text = await response.text()
+  const op = `cf-api:${method} ${path}`
+  const start = Date.now()
+  logRequest(op, { method, url, path, headers, body })
+  let response
+  let text = ''
   let payload = null
-  if (text) {
-    try {
-      payload = JSON.parse(text)
-    } catch {
-      payload = null
+  try {
+    response = await fetchWithTimeout(
+      url,
+      {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      },
+      timeoutMs
+    )
+    text = await response.text()
+    if (text) {
+      try {
+        payload = JSON.parse(text)
+      } catch {
+        payload = null
+      }
     }
+  } catch (err) {
+    logResponse(op, { status: null, output: err.message, elapsedMs: Date.now() - start })
+    logResult(op, { ok: false, message: err.message, elapsedMs: Date.now() - start })
+    throw err
   }
 
+  const elapsed = Date.now() - start
+  const bytes = Buffer.byteLength(text || '', 'utf8')
+  const respHeaders = response.headers && typeof response.headers.entries === 'function' ? Object.fromEntries(response.headers.entries()) : (response.headers || null)
+  logResponse(op, { status: response.status, statusText: response.statusText, headers: respHeaders, body: text, bytes, elapsedMs: elapsed, truncated: text.length > 2000 })
   if (!response.ok) {
-    throw createAPIError(response.status, payload)
+    const apiErr = createAPIError(response.status, payload)
+    logResult(op, { ok: false, message: apiErr.message, elapsedMs: elapsed, extra: `HTTP ${response.status}` })
+    throw apiErr
   }
 
+  logResult(op, { ok: true, message: `HTTP ${response.status}`, elapsedMs: elapsed })
   return payload
 }
 

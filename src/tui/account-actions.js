@@ -23,6 +23,7 @@ import {
   writeManagementToken,
   clearManagementToken,
 } from '../core/token-store.js'
+import { logRequest as ioLogRequest, logResponse as ioLogResponse, logResult as ioLogResult } from '../core/io-logger.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -225,16 +226,27 @@ function resolveWranglerCommand() {
  */
 export async function checkKVKey(namespaceId, key, deps = {}) {
   const { execFileFn = execFile } = deps
-  if (!namespaceId || !key) return 'skipped'
+  if (!namespaceId || !key) {
+    ioLogResult('wrangler:kv:get', { ok: true, message: 'skipped(未配置)' })
+    return 'skipped'
+  }
 
   const { command, args: cmdArgs } = resolveWranglerCommand()
+  const op = `wrangler:kv:get ${key}`
+  const wranglerArgs = [...cmdArgs, 'kv:key', 'get', '--namespace-id', namespaceId, key]
+  const start = Date.now()
+  ioLogRequest(op, { command, args: wranglerArgs, namespaceId, key })
   return new Promise((resolve) => {
     execFileFn(
       command,
-      [...cmdArgs, 'kv:key', 'get', '--namespace-id', namespaceId, key],
+      wranglerArgs,
       { timeout: 15_000, maxBuffer: 1024 * 1024 },
       (err) => {
-        resolve(err ? 'error' : 'exists')
+        const elapsed = Date.now() - start
+        const result = err ? 'error' : 'exists'
+        ioLogResponse(op, { status: err ? 1 : 0, output: err ? err.message : result, elapsedMs: elapsed })
+        ioLogResult(op, { ok: result !== 'error', message: result, elapsedMs: elapsed })
+        resolve(result)
       }
     )
   })

@@ -1050,6 +1050,47 @@ function initActivityLog() {
   }
 }
 
+// ── 服务端 IO 日志实时镜像（与 terminal 一致）─────────────────
+// 服务端 io-logger 的 result/request/response 统一写入内存缓冲，
+// 前端通过 SSE /api/logs/stream 实时镜像到“处理过程日志”面板：
+//   - 调试关：仅镜像 result（操作结果）
+//   - 调试开：额外镜像 request/response 细节（脱敏）
+// 兼容无 EventSource 环境则回退轮询 GET /api/logs。
+let _logEs = null
+let _logRetryTimer = null
+
+export function startLogStream() {
+  if (typeof document === 'undefined' || typeof EventSource === 'undefined') return
+  if (_logEs) return
+  const connect = () => {
+    try {
+      const es = new EventSource('/api/logs/stream')
+      _logEs = es
+      es.addEventListener('log', (e) => {
+        try {
+          const entry = JSON.parse(e.data)
+          if (entry && entry.text) logActivity(entry.text, entry.type || 'info')
+        } catch {}
+      })
+      es.onerror = () => {
+        try { es.close() } catch {}
+        _logEs = null
+        clearTimeout(_logRetryTimer)
+        _logRetryTimer = setTimeout(connect, 3000)
+      }
+    } catch {
+      _logEs = null
+    }
+  }
+  api('/api/logs').then((res) => {
+    if (res && Array.isArray(res.logs)) {
+      for (const entry of res.logs) {
+        if (entry && entry.text) logActivity(entry.text, entry.type || 'info')
+      }
+    }
+  }).catch(() => {}).finally(connect)
+}
+
 // /models 调用 debug 事件 → 日志行数组 [{ text, type }]（纯函数，可单测）
 // 载荷来自 discover.js 的 status:'debug' 事件（config.debug 开启时产生）：
 //   phase 'request'  → { method, url, headers }（authorization 已脱敏）
@@ -1377,6 +1418,7 @@ export function start() {
   if (typeof document === 'undefined') return
   const go = () => {
     initActivityLog() // 底部处理过程日志栏（清空 / 收起展开按钮）
+    startLogStream() // 服务端 IO 日志实时镜像（与 terminal 一致）
     initCfRoutesLink() // 模型页侧栏「动态路由 ↗」精化到当前网关（静默失败）
     initCfLogsLink() // 模型页侧栏「查看日志 ↗」精化到当前网关（静默失败）
     const bar = document.getElementById('tab-bar')

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { gatewaySlug } from '../cloudflare/discover.js'
 import { readManagementToken } from '../core/token-store.js'
+import { logRequest, logResponse, logResult } from '../core/io-logger.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -64,30 +65,32 @@ function resolveWranglerCommand() {
  */
 function runKvPut(namespaceId, key, value) {
   const { command, args: cmdArgs } = resolveWranglerCommand()
-
+  const op = `wrangler:kv:put ${key}`
+  const wranglerArgs = [...cmdArgs, 'kv:key', 'put', '--namespace-id', namespaceId, key, value]
+  const start = Date.now()
+  logRequest(op, { command, args: wranglerArgs, namespaceId, key, meta: { bytes: Buffer.byteLength(value, 'utf8') } })
   return new Promise((resolve) => {
     const child = execFile(
       command,
-      [
-        ...cmdArgs,
-        'kv:key',
-        'put',
-        '--namespace-id', namespaceId,
-        key,
-        value,
-      ],
+      wranglerArgs,
       {
         timeout: 15_000,
         maxBuffer: 10 * 1024 * 1024,
         env: buildChildEnv(),
       },
       (error, stdout, stderr) => {
+        const elapsed = Date.now() - start
         if (error) {
           const message = stderr || error.message || String(error)
+          logResponse(op, { status: 1, output: message, elapsedMs: elapsed })
+          logResult(op, { ok: false, message, elapsedMs: elapsed })
           resolve({ success: false, output: message })
           return
         }
-        resolve({ success: true, output: (stdout || '').trim() })
+        const output = (stdout || '').trim()
+        logResponse(op, { status: 0, output, elapsedMs: elapsed })
+        logResult(op, { ok: true, message: output || 'ok', elapsedMs: elapsed })
+        resolve({ success: true, output })
       }
     )
   })
@@ -147,34 +150,38 @@ export async function deployProviderRoutesToKV(config) {
  * @returns {Promise<{ success: boolean, output: string }>}
  */
 export async function deployToKV(config) {
+  const op = 'deploy:kv:models'
+  const start = Date.now()
+  logRequest(op, { path: MODELS_JSON_PATH, meta: { namespaceId: config?.kv?.namespaceId, key: config?.kv?.key } })
   // 检查 models.json 是否存在
   if (!existsSync(MODELS_JSON_PATH)) {
+    const msg = `data/models.json 不存在：${MODELS_JSON_PATH}\n请先运行 generate 模块生成 models.json`
+    logResult(op, { ok: false, message: msg, elapsedMs: Date.now() - start })
     return {
       success: false,
-      output: `data/models.json 不存在：${MODELS_JSON_PATH}\n请先运行 generate 模块生成 models.json`,
+      output: msg,
     }
   }
 
   const { namespaceId, key } = config.kv
 
   if (!namespaceId) {
-    return { success: false, output: '缺少 kv.namespaceId 配置' }
+    const msg = '缺少 kv.namespaceId 配置'
+    logResult(op, { ok: false, message: msg, elapsedMs: Date.now() - start })
+    return { success: false, output: msg }
   }
 
   const { command, args: cmdArgs } = resolveWranglerCommand()
 
   // ─── 写入模型列表（用 --path 读文件） ───
+  const modelsOp = `wrangler:kv:put:${key}`
+  const modelsArgs = [...cmdArgs, 'kv:key', 'put', '--namespace-id', namespaceId, key, '--path', MODELS_JSON_PATH]
+  logRequest(modelsOp, { command, args: modelsArgs, namespaceId, key, meta: { file: MODELS_JSON_PATH } })
+  const modelsStart = Date.now()
   const modelsResult = await new Promise((resolve) => {
     const child = execFile(
       command,
-      [
-        ...cmdArgs,
-        'kv:key',
-        'put',
-        '--namespace-id', namespaceId,
-        key,
-        '--path', MODELS_JSON_PATH,
-      ],
+      modelsArgs,
       {
         timeout: 30_000,
         maxBuffer: 10 * 1024 * 1024, // 10MB
@@ -190,8 +197,12 @@ export async function deployToKV(config) {
       }
     )
   })
+  const modelsElapsed = Date.now() - modelsStart
+  logResponse(modelsOp, { status: modelsResult.success ? 0 : 1, output: modelsResult.output, elapsedMs: modelsElapsed })
+  logResult(modelsOp, { ok: modelsResult.success, message: modelsResult.output || (modelsResult.success ? 'ok' : 'failed'), elapsedMs: modelsElapsed })
 
   if (!modelsResult.success) {
+    logResult(op, { ok: false, message: modelsResult.output, elapsedMs: Date.now() - start })
     return modelsResult
   }
 
@@ -199,11 +210,14 @@ export async function deployToKV(config) {
   const routesResult = await deployProviderRoutesToKV(config)
 
   if (!routesResult.success) {
+    const msg = `模型列表已写入，但 provider 路由写入失败：${routesResult.output}`
+    logResult(op, { ok: false, message: msg, elapsedMs: Date.now() - start })
     return {
       success: false,
-      output: `模型列表已写入，但 provider 路由写入失败：${routesResult.output}`,
+      output: msg,
     }
   }
 
+  logResult(op, { ok: true, message: modelsResult.output || 'ok', elapsedMs: Date.now() - start })
   return { success: true, output: modelsResult.output }
 }
