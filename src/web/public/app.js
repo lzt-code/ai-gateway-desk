@@ -3418,7 +3418,9 @@ export function mergeRouteRows(configRoutes, stateRoutes) {
       prev.dirty = e.dirty === true
       prev.deployedVersion = e.deployedVersion ?? null
       prev.inCloud = e.cloudExists === true || prev.inCloud
-      if (!prev.chain.length && localChain.length) prev.chain = localChain
+      // 本地编辑态优先：dirty 或链不一致时以本地 elements 为准，使修改后立即在表格可见
+      // （此前仅在 state 无链时才取本地，导致已部署路由的本地修改在下次同步前仍显示旧链）
+      if (localChain.length) prev.chain = localChain
     } else {
       byName.set(e.name, {
         name: e.name,

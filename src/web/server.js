@@ -49,7 +49,7 @@ import {
   filterVisibleState,
 } from '../tui/actions.js'
 import { logRequest as ioLogRequest, logResponse as ioLogResponse, logResult as ioLogResult, isDebugEnabled, getRecentLogs, subscribeLogs } from '../core/io-logger.js'
-import { discoverModels, gatewaySlug } from '../cloudflare/discover.js'
+import { discoverModels, gatewaySlug, parseRouteFallbackChain } from '../cloudflare/discover.js'
 import { fetchCloudProviders } from '../cloudflare/providers-sync.js'
 import { readKvJson, writeKvJson } from '../cloudflare/kv.js'
 import { mergeDiscovery } from '../pipeline/merge.js'
@@ -355,6 +355,53 @@ export function createApp({
   let state = stateStore.load()
   const depsAll = { ...DEFAULT_DEPS, ...deps }
   let routesState = routesStore.load()
+
+  // 动态路由：按本地 elements 刷新 state 中 dynamic/<name> 条目（供 /api/state 与 /models 即时一致）
+  // chain 由 parseRouteFallbackChain 从 CF 原生 elements 解析（与 discover.js 同算法）
+  const syncDynamicStateForRoute = (name, elements) => {
+    const chain = parseRouteFallbackChain(elements)
+    const modelId = `dynamic/${name}`
+    let entry = state[modelId]
+    if (!entry) {
+      entry = { status: 'selected', provider: 'dynamic', metadata: { id: modelId, object: 'model', name, owned_by: '动态路由' } }
+      state[modelId] = entry
+    }
+    if (!entry.metadata || typeof entry.metadata !== 'object') entry.metadata = { id: modelId }
+    entry.provider = 'dynamic'
+    entry.metadata.id = modelId
+    if (!entry.metadata.name) entry.metadata.name = name
+    if (!entry.metadata.object) entry.metadata.object = 'model'
+    if (!entry.metadata.owned_by) entry.metadata.owned_by = '动态路由'
+    if (Array.isArray(chain) && chain.length) entry.metadata.route_models = chain
+    else delete entry.metadata.route_models
+    if (typeof entry.metadata.created !== 'number') entry.metadata.created = Math.floor(Date.now() / 1000)
+    // 补全 context_length / max_output_length（与 sync-flow 同逻辑：取链上首个有上下文的模型）
+    if (Array.isArray(chain) && chain.length) {
+      let source = null
+      for (const ref of chain) {
+        const refMeta = state[ref]?.metadata
+        if (refMeta && refMeta.context_length != null) { source = refMeta; break }
+      }
+      if (source) {
+        if (entry.metadata.context_length !== source.context_length) entry.metadata.context_length = source.context_length
+        if (source.max_output_length != null && entry.metadata.max_output_length !== source.max_output_length) entry.metadata.max_output_length = source.max_output_length
+      }
+    }
+  }
+
+  // 将当前 state 落盘并同步到 KV（models 列表），使 Worker /models 立即一致
+  // 失败不抛错（仅日志），调用方按需决定是否透出 kvError
+  const syncModelsToKv = async () => {
+    try { stateStore.save(state) } catch {}
+    try { depsAll.writeModelsJson(state) } catch {}
+    try {
+      const cfg = configStore.load()
+      const r = await depsAll.deployToKV(cfg)
+      if (r && r.success === false) console.error('[aigd] models KV 部署失败:', r.output)
+    } catch (e) {
+      console.error('[aigd] models KV 部署异常:', e instanceof Error ? e.message : String(e))
+    }
+  }
 
   // 任务 27：同步状态 + SSE 进度总线（同一时刻至多 1 个订阅者）
   let syncing = false
@@ -1682,6 +1729,24 @@ export function createApp({
       }
     }
     routesStore.save(routesState)
+    // 成功部署的路由立即同步到 model-states（route_models + context_length），并推送到 KV 使 /models 即时一致
+    const succeeded = results.filter((r) => r.ok)
+    let stateChanged = false
+    for (const r of succeeded) {
+      const ent = routesState.routes[r.name]
+      if (ent && Array.isArray(ent.elements)) {
+        const before = JSON.stringify(state[`dynamic/${r.name}`]?.metadata?.route_models || null)
+        syncDynamicStateForRoute(r.name, ent.elements)
+        const after = JSON.stringify(state[`dynamic/${r.name}`]?.metadata?.route_models || null)
+        if (before !== after) stateChanged = true
+        else if (!state[`dynamic/${r.name}`]) stateChanged = true
+        else stateChanged = true // 已部署即视为需要刷新 models（即使链未变，也需保证 KV 存在）
+      }
+    }
+    if (succeeded.length > 0) {
+      // 即使链未变也需落盘+推 KV（首次部署或上下文回填场景）
+      await syncModelsToKv()
+    }
     const failed = results.filter((r) => !r.ok)
     ioLogResult(`routes:deploy`, { ok: failed.length === 0, message: `${results.length} 条, 失败 ${failed.length}`, extra: results.map((r) => `${r.name}:${r.ok ? 'ok' : r.error}`).join(', ').slice(0, 400) })
     if (isDebugEnabled()) ioLogRequest(`routes:deploy`, { method: 'POST', path: '/api/routes/deploy', body: { targets: results.map((r) => r.name) } })
@@ -1770,7 +1835,7 @@ export function createApp({
     }
     if (shouldCleanState) {
       delete state[modelId]
-      stateStore.save(state)
+      await syncModelsToKv()
     }
     return c.json({
       ok: cloudError === null,
@@ -1831,6 +1896,17 @@ export function createApp({
       }
     }
     routesStore.save(routesState)
+    // 云端 elements 已覆盖本地，同时刷新 state 使 /api/state 与本地视图一致，并推 KV
+    let refreshedState = false
+    for (const r of results) {
+      if (!r.ok) continue
+      const ent = routesState.routes[r.name]
+      if (ent && Array.isArray(ent.elements)) {
+        syncDynamicStateForRoute(r.name, ent.elements)
+        refreshedState = true
+      }
+    }
+    if (refreshedState) await syncModelsToKv()
     const failed = results.filter((r) => !r.ok)
     return c.json({ ok: failed.length === 0, results })
   })
