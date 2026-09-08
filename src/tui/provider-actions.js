@@ -66,6 +66,13 @@ export function mergeProviderViews(localProviders, cloudResult) {
   const cloud = cloudResult.providers
   // 云端拉取不完整（任一源失败）时 removed 判断不可靠：不标 {云端已删}（复用任务 14 抑制逻辑）
   const cloudIncomplete = Array.isArray(cloudResult.errors) && cloudResult.errors.length > 0
+  // 不完整且云端空列表：视为整体拉取失败，降级展示本地缓存（避免本地列表被清空为空）
+  if (cloudIncomplete && cloud.length === 0) {
+    return {
+      providers: local.map((p) => ({ ...p, mark: null })),
+      readonly: true,
+    }
+  }
 
   const localById = new Map(local.map((p) => [p.id, p]))
   const cloudById = new Map(cloud.map((p) => [p.id, p]))
