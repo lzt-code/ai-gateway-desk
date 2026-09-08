@@ -884,6 +884,28 @@ dialog::backdrop {
   #side-panel { order: 2; position: static; }
 }
 
+/* ── 初始化全局阻塞：Provider/模型同步期间仅允许查看 ────── */
+/* 操作区按钮在初始化期间禁用（视图切换 #tab-bar、日志栏 #activity-log、主题切换除外） */
+body.init-blocking #view-providers button,
+body.init-blocking #view-models button,
+body.init-blocking #view-routes button,
+body.init-blocking #view-workers button,
+body.init-blocking #view-account button,
+body.init-blocking #side-actions button,
+body.init-blocking #model-side-actions button,
+body.init-blocking #routes-side-actions button,
+body.init-blocking #view-providers a.btn,
+body.init-blocking #view-models a.btn,
+body.init-blocking #view-routes a.btn,
+body.init-blocking #side-actions a.btn,
+body.init-blocking #model-side-actions a.btn,
+body.init-blocking #routes-side-actions a.btn,
+body.init-blocking #view-providers a.side-ext-link,
+body.init-blocking #view-models a.side-ext-link {
+  pointer-events: none !important;
+  opacity: 0.45 !important;
+}
+
 /* ── 动效降级：尊重用户 prefers-reduced-motion ─────────── */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

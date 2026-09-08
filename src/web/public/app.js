@@ -132,6 +132,10 @@ export function triggerGlobalModelSync(opts) {
   return false
 }
 
+// ── 初始化全局阻塞（步骤 5）：Provider→模型串行初始化期间仅允许查看 ──
+let _initInProgress = false
+export function isInitializing() { return _initInProgress }
+
 // ── 全局状态 ───────────────────────────────────────────────
 // 返回 { currentView, setView, get, set, data }；纯内存对象，无 DOM 依赖。
 export function createState(initial = {}) {
@@ -654,6 +658,87 @@ export function setModelPageButtonsDisabled(disabled) {
   }
 }
 
+// ── 初始化全局阻塞：操作区按钮禁用（仅允许查看/切页）────────
+// 覆盖所有操作区：各视图 + 各侧栏操作区；#tab-bar / 主题切换 / 日志栏按钮 不在范围内保持可点。
+// 用 body.init-blocking 类兜底未来新增按钮（CSS pointer-events），JS 负责当前按钮的 disabled 态。
+export function setInitOperationButtonsDisabled(disabled) {
+  if (typeof document === 'undefined') return
+  const sels = ['#view-providers', '#view-models', '#view-routes', '#view-workers', '#view-account', '#side-actions', '#model-side-actions', '#routes-side-actions']
+  const collect = () => {
+    const els = []
+    for (const sel of sels) {
+      const root = document.querySelector(sel)
+      if (!root) continue
+      els.push(...root.querySelectorAll('button'))
+      els.push(...root.querySelectorAll('a.btn, a.side-ext-link'))
+    }
+    return els
+  }
+  if (disabled) {
+    if (typeof document !== 'undefined') document.body.classList.add('init-blocking')
+    for (const el of collect()) {
+      const isBtn = el.tagName === 'BUTTON'
+      if (el.dataset.initLock === '1') continue
+      el.dataset.initLock = '1'
+      if (isBtn) {
+        el.dataset.initPrevDisabled = el.disabled ? '1' : '0'
+        el.disabled = true
+      } else {
+        el.dataset.initPrevPointer = el.style.pointerEvents || ''
+        el.dataset.initPrevOpacity = el.style.opacity || ''
+        el.style.pointerEvents = 'none'
+        el.style.opacity = '0.6'
+        el.setAttribute('aria-disabled', 'true')
+      }
+    }
+  } else {
+    if (typeof document !== 'undefined') document.body.classList.remove('init-blocking')
+    for (const el of collect()) {
+      if (el.dataset.initLock !== '1') continue
+      const isBtn = el.tagName === 'BUTTON'
+      if (isBtn) {
+        el.disabled = el.dataset.initPrevDisabled === '1'
+        delete el.dataset.initPrevDisabled
+      } else {
+        el.style.pointerEvents = el.dataset.initPrevPointer || ''
+        el.style.opacity = el.dataset.initPrevOpacity || ''
+        el.removeAttribute('aria-disabled')
+        delete el.dataset.initPrevPointer
+        delete el.dataset.initPrevOpacity
+      }
+      delete el.dataset.initLock
+    }
+  }
+}
+
+function enterInitBlocking(message) {
+  if (_initInProgress) return
+  _initInProgress = true
+  setInitOperationButtonsDisabled(true)
+  showBusy(message || '初始化中…')
+  if (typeof logActivity === 'function') logActivity(message || '初始化中…', 'info')
+}
+
+function updateInitBusyMessage(message) {
+  if (!_initInProgress) return
+  busyText = message || '初始化中…'
+  renderBusyIndicator()
+}
+
+function leaveInitBlocking() {
+  if (!_initInProgress) return
+  _initInProgress = false
+  setInitOperationButtonsDisabled(false)
+  hideBusy()
+}
+
+function guardInitBlocked(actionName) {
+  if (!_initInProgress) return false
+  flash('初始化进行中，请稍后再操作', 'warn')
+  if (typeof logActivity === 'function') logActivity(`${actionName} 已拦截：初始化进行中`, 'warn')
+  return true
+}
+
 // ── 全局模型同步（无视图依赖，供启动链直接调用）───────────────
 // 应用打开后 Provider 刷新完成后自动触发，不依赖模型视图是否已渲染。
 // 复用底部的 #progress-panel 与 #activity-log，拉取阶段全局禁用按钮，
@@ -821,7 +906,11 @@ function _globalFinishSync() {
   _globalFinished = true
   if (_globalEs) { _globalEs.close(); _globalEs = null }
   _globalSyncing = false
-  setModelPageButtonsDisabled(false)
+  if (isInitializing()) {
+    leaveInitBlocking()
+  } else {
+    setModelPageButtonsDisabled(false)
+  }
 }
 
 export function runGlobalModelSync({ providerFilter } = {}) {
@@ -840,7 +929,12 @@ export function runGlobalModelSync({ providerFilter } = {}) {
   _globalFinished = false
   _globalDeployReleased = false
   _globalProgressDismissed = false
-  setModelPageButtonsDisabled(true)
+  if (isInitializing()) {
+    updateInitBusyMessage(isOne ? `正在初始化… 拉取 ${titleFilter}…` : '正在初始化… 模型同步中…')
+    setInitOperationButtonsDisabled(true)
+  } else {
+    setModelPageButtonsDisabled(true)
+  }
   _globalShowProgress(isOne ? `拉取 ${titleFilter}…` : '同步中…')
   logActivity(isOne ? `开始拉取 ${titleFilter} 模型…` : '开始同步（Provider 同步 → 发现模型 → 合并 → 富化 → 部署 KV）…', 'info')
   _globalEs = new EventSource('/api/sync/progress')
@@ -854,7 +948,7 @@ export function runGlobalModelSync({ providerFilter } = {}) {
     const isDeployPhase = (evtName === 'phase' && data && data.phase === 'deploy') || evtName === 'deploy'
     if (isDeployPhase && !_globalDeployReleased) {
       _globalDeployReleased = true
-      setModelPageButtonsDisabled(false)
+      if (!isInitializing()) setModelPageButtonsDisabled(false)
     }
   }
   _globalEs.addEventListener('phase', collect('phase'))
@@ -2135,6 +2229,7 @@ export function renderModelsView(container) {
 
   // ── 变更操作（响应驱动更新内存态，再重新 applyFilter）────
   async function toggleModel(modelId) {
+    if (guardInitBlocked('切换模型状态')) return
     if (syncing) return
     try {
       const res = await withBusy('正在切换模型…', api('/api/models/toggle', { method: 'POST', body: { modelId } }))
@@ -2150,6 +2245,7 @@ export function renderModelsView(container) {
   }
 
   async function removeModel(modelId) {
+    if (guardInitBlocked('删除模型')) return
     if (syncing) return
     const yes = await confirmDialog(
       '删除模型',
@@ -2172,6 +2268,7 @@ export function renderModelsView(container) {
   }
 
   async function batchToggle() {
+    if (guardInitBlocked('批量切换')) return
     if (syncing) return
     const targets = items
       .filter((it) => it.entry)
@@ -2195,6 +2292,7 @@ export function renderModelsView(container) {
   }
 
   async function batchRemove() {
+    if (guardInitBlocked('批量删除')) return
     if (syncing) return
     const targets = items
       .filter((it) => it.entry)
@@ -2231,6 +2329,7 @@ export function renderModelsView(container) {
   }
 
   async function editModel(modelId) {
+    if (guardInitBlocked('编辑模型')) return
     if (syncing) return
     if (!modelId) {
       flash('请先选中一行', 'warn')
@@ -2281,6 +2380,7 @@ export function renderModelsView(container) {
   }
 
   async function addModel() {
+    if (guardInitBlocked('添加模型')) return
     if (syncing) return
     const bodyEl = document.createElement('div')
     const providerSelect = document.createElement('select')
@@ -2377,6 +2477,7 @@ export function renderModelsView(container) {
   }
 
   async function saveModels(deploy) {
+    if (guardInitBlocked(deploy ? '保存并部署' : '保存')) return
     logActivity(deploy ? '开始保存并提交部署…' : '开始保存（写 model-states + models.json）…', 'info')
     try {
       const res = await withBlocking(deploy ? '正在保存并部署（同步 KV）…' : '正在保存…', api(deploy ? '/api/save-deploy' : '/api/save', { method: 'POST' }))
@@ -2579,8 +2680,12 @@ export function renderModelsView(container) {
     }
     syncing = false
     appState().set('modelsSyncing', false)
-    // 拉取阶段已在 deploy 提前放开，此处兜底放开（若未提前放开则此处恢复）
-    setModelPageButtonsDisabled(false)
+    if (isInitializing()) {
+      leaveInitBlocking()
+    } else {
+      // 拉取阶段已在 deploy 提前放开，此处兜底放开（若未提前放开则此处恢复）
+      setModelPageButtonsDisabled(false)
+    }
     // 放开会按原禁用态还原，需按当前 provider 选择 / 批量删除点亮条件修正
     updateSyncOneButton()
     updateBatchRemoveButton()
@@ -2704,7 +2809,12 @@ export function renderModelsView(container) {
     // 清空上一次同步的新增高亮：done 事件到达后由 refreshAfterSync 重新填充
     newModelIds = new Set()
     appState().set('modelsSyncing', true)
-    setModelPageButtonsDisabled(true)
+    if (isInitializing()) {
+      updateInitBusyMessage(isOne ? `正在初始化… 拉取 ${providerName}…` : '正在初始化… 模型同步中…')
+      setInitOperationButtonsDisabled(true)
+    } else {
+      setModelPageButtonsDisabled(true)
+    }
     showProgress(isOne ? `拉取 ${providerName}…` : '同步中…')
     logActivity(
       isOne ? `开始拉取 ${providerName} 模型…` : '开始同步（Provider 同步 → 发现模型 → 合并 → 富化 → 部署 KV）…',
@@ -2722,14 +2832,16 @@ export function renderModelsView(container) {
       streamEvents.push({ event: evtName, data })
       logSyncEvent(evtName, data)
       renderProgress(buildSyncProgressState(streamEvents))
-      // 拉取完成进入部署阶段即可放开按钮（KV 部署不影响前端操作）
+      // 拉取完成进入部署阶段即可放开按钮（KV 部署不影响前端操作）；初始化期间保持阻塞直至完成
       const isDeployPhase = (evtName === 'phase' && data && data.phase === 'deploy') || evtName === 'deploy'
       if (isDeployPhase && !deployReleased) {
         deployReleased = true
-        setModelPageButtonsDisabled(false)
-        // 恢复后按当前筛选修正「拉取当前 Provider」与「批量删除」按钮态
-        updateSyncOneButton()
-        updateBatchRemoveButton()
+        if (!isInitializing()) {
+          setModelPageButtonsDisabled(false)
+          // 恢复后按当前筛选修正「拉取当前 Provider」与「批量删除」按钮态
+          updateSyncOneButton()
+          updateBatchRemoveButton()
+        }
       }
     }
     es.addEventListener('phase', collect('phase'))
@@ -2890,7 +3002,7 @@ export function renderModelsView(container) {
   // 未就绪/无 EventSource/探测失败均静默跳过，无弹窗打扰。
   ;(async () => {
     try {
-      await withBlocking('正在加载模型列表…', async () => {
+      const doLoad = async () => {
         const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
         state = s.state || {}
         providers = p.providers || []
@@ -2901,7 +3013,9 @@ export function renderModelsView(container) {
         // 进入视图时若已有历史同步明细，则按当前调试模式恢复表格（调试关=简要，调试开=高亮对比）
         const cached = appState().get('lastSyncDetails')
         if (hasSyncDiff(cached)) renderSyncDiffToPanel(cached)
-      })
+      }
+      if (isInitializing()) await doLoad()
+      else await withBlocking('正在加载模型列表…', doLoad)
     } catch (err) {
       flash(err.message, 'err')
       return
@@ -4074,6 +4188,7 @@ export function renderRoutesView(container) {
   // （discover fetchRoutes=false → 空结果无报错），故前端先探账户状态提前拦截提示。
   let syncingRoutes = false
   async function syncRoutes() {
+    if (guardInitBlocked('同步动态路由')) return
     if (syncingRoutes) return
     // 前置检查：管理 Token 是否可用（env CLOUDFLARE_API_TOKEN 或本地槽位）
     let hasMgmt = true
@@ -4596,8 +4711,15 @@ export function renderProvidersView(container) {
   }
 
   async function refreshProviders(force) {
-    // 启动路径（force=false）：本地快照先渲染，消除等待云端时的空白；随后后台静默刷新云端并二次渲染
+    // 初始化阶段（force=false）需全局阻塞：仅允许查看/切页，其余拉取/提交操作禁用直至模型同步完成
+    if (force && isInitializing()) {
+      guardInitBlocked('更新 Provider 列表')
+      return
+    }
+    // 启动路径（force=false）：本地快照先渲染，消除等待云端时的空白；随后后台刷新云端并二次渲染
     if (!force) {
+      const shouldEnterInit = !_initInProgress
+      if (shouldEnterInit) enterInitBlocking('正在初始化… Provider 同步中…')
       for (const l of buildProviderDetailLogs({ force })) logActivity(l.text, l.type)
       // ① 本地快照：落盘文件读取，无网络开销，失败静默；仅渲染列表，不切换只读态避免闪动
       try {
@@ -4605,22 +4727,26 @@ export function renderProvidersView(container) {
         if (Array.isArray(localRes.providers)) {
           providers = localRes.providers
           renderTable()
+          if (shouldEnterInit) setInitOperationButtonsDisabled(true)
         }
       } catch {
         // 本地快照失败不阻断，继续走云端同步
       }
-      // ② 云端同步：后台进行，用 withBusy 轻量指示，不阻塞交互
-      btnRefresh.disabled = true
+      // ② 云端同步：初始化期间由全局阻塞统一禁用与忙指示，不再用局部 withBusy/按钮禁用
       const prevText = btnRefresh.textContent
-      btnRefresh.textContent = '更新中…'
+      if (shouldEnterInit) btnRefresh.textContent = '初始化中…'
+      else { btnRefresh.disabled = true; btnRefresh.textContent = '更新中…' }
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT)
+      let modelSyncTriggered = false
       try {
-        const res = await withBusy('正在同步 Provider 列表…', api('/api/providers', {
+        const fetchPromise = api('/api/providers', {
           method: 'GET',
           signal: controller.signal,
-        }))
+        })
+        const res = shouldEnterInit ? await fetchPromise : await withBusy('正在同步 Provider 列表…', fetchPromise)
         applyProviderResponse(res)
+        if (shouldEnterInit) setInitOperationButtonsDisabled(true)
         const logs = buildProviderDetailLogs({
           force,
           ok: true,
@@ -4637,7 +4763,9 @@ export function renderProvidersView(container) {
             const r = await api('/api/sync/ready')
             if (r && r.ready) {
               logActivity('Provider 列表更新完成，自动开始更新模型列表…', 'info')
-              triggerGlobalModelSync()
+              if (shouldEnterInit) updateInitBusyMessage('正在初始化… 模型同步中…')
+              const ok = triggerGlobalModelSync()
+              modelSyncTriggered = ok || _pendingStartupSync
             }
           } catch {
             // 探测失败静默（不阻断 Provider 已渲染的列表）
@@ -4649,7 +4777,14 @@ export function renderProvidersView(container) {
       } finally {
         clearTimeout(timer)
         btnRefresh.textContent = prevText
-        btnRefresh.disabled = false
+        if (!shouldEnterInit) {
+          btnRefresh.disabled = false
+        } else if (!modelSyncTriggered) {
+          leaveInitBlocking()
+        } else {
+          updateInitBusyMessage('正在初始化… 模型同步中…')
+          setInitOperationButtonsDisabled(true)
+        }
       }
       return
     }
@@ -4692,6 +4827,7 @@ export function renderProvidersView(container) {
   // 点击状态列切换启用/隐藏（本地可见性，写本地 + KV；原编辑对话框「隐藏 Provider」开关迁移至此）
   // readonly 模式下按钮 disabled 不可达（可见性写 KV 需管理 Token）
   async function toggleProviderVisibility(id) {
+    if (guardInitBlocked('切换 Provider 可见性')) return
     const provider = providers.find((p) => p.id === id)
     if (!provider) return
     const nextEnabled = provider.enabled === false // 隐藏 → 启用；启用 → 隐藏
@@ -4721,6 +4857,7 @@ export function renderProvidersView(container) {
   }
 
   async function editProvider(id) {
+    if (guardInitBlocked('编辑 Provider')) return
     const provider = providers.find((p) => p.id === id)
     if (!provider) return
     const values = await promptDialog(`编辑 Provider：${id}`, buildEditFields(provider, { readonly }))
@@ -4773,6 +4910,7 @@ export function renderProvidersView(container) {
   }
 
   async function deleteProvider(id) {
+    if (guardInitBlocked('删除 Provider')) return
     const provider = providers.find((p) => p.id === id)
     if (!provider) return
     // 已知坑 8：确认文案必须含「同步删除云端配置与本地记录」，danger 变体
@@ -4816,6 +4954,7 @@ export function renderProvidersView(container) {
   // 添加 Provider（FP5）：两步表单（先选类型，再填字段）→ buildAddPayload 校验 →
   // POST /api/providers/create → 响应 provider push 进内存再 renderTable（已知坑 5，不整页重拉）
   async function addProvider() {
+    if (guardInitBlocked('添加 Provider')) return
     // 第一步：选择类型（byok / custom-provider）
     const typePick = await promptDialog('添加 Provider', [
       {
@@ -5131,6 +5270,7 @@ export function renderWorkersView(container) {
   // 部署（已知坑 1/2：wrangler 长请求，期间按钮禁用 + 「部署中…」防重复；失败时
   // flash 只显示前 200 字符 output，完整 output 放 dialog <pre>，escapeHtml 防 HTML 注入）
   async function deploy() {
+    if (guardInitBlocked('部署 Worker')) return
     if (deploying) return
     deploying = true
     applyDeployUI()
@@ -5230,6 +5370,7 @@ export function renderAccountView(container) {
 
   // 更新 token（已知坑 4：空提交 → 后端 { ok:false, skipped:true } → 静默不提示）
   async function updateToken(slot) {
+    if (guardInitBlocked('更新 Token')) return
     const values = await promptDialog(`更新 ${slotLabel(slot)}`, [
       { name: 'token', label: slotLabel(slot), type: 'password' },
     ])
@@ -5253,6 +5394,7 @@ export function renderAccountView(container) {
 
   // 清除 token（已知坑 3：确认框用通用文案，影响面文案只从后端响应 impact 读）
   async function clearToken(slot) {
+    if (guardInitBlocked('清除 Token')) return
     const yes = await confirmDialog(
       `清除 ${slotLabel(slot)}？`,
       '清除后相关功能将不可用（可随时重新配置）',
