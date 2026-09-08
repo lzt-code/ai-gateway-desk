@@ -209,11 +209,13 @@ export async function api(url, { method = 'GET', body, signal } = {}) {
 }
 
 // ── 弹窗（原生 <dialog> + Promise API）──────────────────────
-// showDialog({ title, body, actions }) → Promise<action id | null>
+// showDialog({ title, body, actions, dismissOnBackdrop }) → Promise<action id | null>
 //  - body 可为 HTML 字符串或 DOM 节点
 //  - actions: [{ id, label, variant?: 'primary'|'danger'|'default' }]
-//  - resolve(action.id)（点按钮）/ resolve(null)（Esc / 点击遮罩）
-export function showDialog({ title, body, actions = [] }) {
+//  - dismissOnBackdrop: 默认 true（确认/展示类点阴影 = 取消，便捷）；
+//    表单输入类必须传 false，避免误触阴影丢失已填内容（promptDialog / 添加模型等）
+//  - resolve(action.id)（点按钮）/ resolve(null)（Esc / 允许时的点击遮罩）
+export function showDialog({ title, body, actions = [], dismissOnBackdrop = true }) {
   return new Promise((resolve) => {
     const dialog = document.createElement('dialog')
     const prevActive = document.activeElement
@@ -247,13 +249,16 @@ export function showDialog({ title, body, actions = [] }) {
     dialog.appendChild(bodyEl)
     dialog.appendChild(actionsEl)
 
-    // 点击遮罩关闭（原生 dialog 的 ::backdrop 点击事件 target 即 dialog 自身）
-    dialog.addEventListener('click', (e) => {
-      const r = dialog.getBoundingClientRect()
-      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
-        dialog.close()
-      }
-    })
+    // 点击遮罩关闭（原生 dialog 的 ::backdrop 点击事件 target 即 dialog 自身）；
+    // 输入类弹窗传 dismissOnBackdrop:false 禁用，避免误触丢失已填内容
+    if (dismissOnBackdrop) {
+      dialog.addEventListener('click', (e) => {
+        const r = dialog.getBoundingClientRect()
+        if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+          dialog.close()
+        }
+      })
+    }
     dialog.addEventListener('close', () => {
       dialog.remove()
       // 关闭后焦点回到触发元素（已知坑 4）
@@ -399,6 +404,7 @@ export function promptDialog(title, fields) {
   return showDialog({
     title,
     body: bodyEl,
+    dismissOnBackdrop: false,
     actions: [
       { id: 'ok', label: '确定', variant: 'primary' },
       { id: 'cancel', label: '取消', variant: 'default' },
@@ -2277,6 +2283,7 @@ export function renderModelsView(container) {
     const r = await showDialog({
       title: '添加模型',
       body: bodyEl,
+      dismissOnBackdrop: false,
       actions: [
         { id: 'ok', label: '添加', variant: 'primary' },
         { id: 'cancel', label: '取消', variant: 'default' },
@@ -3851,12 +3858,6 @@ export function renderRoutesView(container) {
     actionsEl.append(btnSave, btnCancel)
 
     dialog.append(header, bodyEl, actionsEl)
-    dialog.addEventListener('click', (e) => {
-      const r = dialog.getBoundingClientRect()
-      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
-        dialog.close()
-      }
-    })
     dialog.addEventListener('close', () => {
       dialog.remove()
       if (prevActive && typeof prevActive.focus === 'function' && document.contains(prevActive)) {
