@@ -3531,7 +3531,7 @@ export function renderRoutesView(container) {
   injectRoutesStyles()
 
   container.innerHTML = `
-    <h2 class="view-title">动态路由<span id="routes-count" class="route-badge" style="margin-left:0.5rem;vertical-align:middle;" hidden></span></h2>
+    <h2 class="view-title">动态路由<span id="routes-count" class="route-badge" style="margin-left:0.5rem;vertical-align:middle;" hidden></span><span id="routes-sync-hint" class="route-badge" style="margin-left:0.5rem;vertical-align:middle;" hidden>云端同步中…</span></h2>
     <div class="table-wrap" id="routes-table-wrap">
       <table class="route-table">
         <thead><tr>
@@ -3555,6 +3555,7 @@ export function renderRoutesView(container) {
   const tableWrapEl = container.querySelector('#routes-table-wrap')
   const emptyEl = container.querySelector('#routes-empty')
   const countEl = document.getElementById('routes-count')
+  const syncHintEl = container.querySelector('#routes-sync-hint')
   // 刷新按钮在右侧提示栏下方（#routes-side-actions，index.html 静态定义，随视图显隐）；
   // Node 测试环境无该元素，静默跳过相关交互
   const btnRefresh = document.getElementById('rbtn-sync')
@@ -3566,6 +3567,9 @@ export function renderRoutesView(container) {
   let configRoutes = []
   let readonlyConfig = false
   let rawState = {} // 原始 model-states（编辑器「provider/模型」下拉建议的数据源）
+  // 云端存在性是否仍在后台拉取：拉取期间锁定本地编辑（保存/部署/删除/新增均禁用），
+  // 防止用户基于尚未合并的云端状态修改路由造成覆盖或冲突。
+  let cloudPending = false
 
   // 状态列徽章：本地修改 > 未部署 > 已部署 vN > 云端 only
   function statusBadgeHtml(row) {
@@ -3578,7 +3582,8 @@ export function renderRoutesView(container) {
 
   // 单行路由 HTML（escapeHtml 已在模块内定义，转义所有动态值）：
   // 五列 — 路由名称（附 modelId）/ fallback 级别 / 路由链内容 / 状态 / 操作
-  function routeRowHtml(row) {
+  // locked=true（云端同步进行中）时禁用全部操作按钮，保证期间不可修改本地路由。
+  function routeRowHtml(row, locked) {
     const removed = row.status === 'removed'
     const badge = removed
       ? '<span class="route-badge err">已移除</span>'
@@ -3601,12 +3606,12 @@ export function renderRoutesView(container) {
       : '<span class="route-chain-empty">暂无路由链信息</span>'
     const ro = readonlyConfig
     const editBtn = row.inLocal
-      ? `<button class="btn row-act-edit" data-route="${escapeHtml(row.name)}" type="button" title="编辑路由流程图（本地保存）">编辑</button>`
-      : `<button class="btn row-act-pull" data-route="${escapeHtml(row.name)}" type="button"${ro ? ' disabled' : ''} title="从云端拉取到本地后可编辑">拉取到本地</button>`
+      ? `<button class="btn row-act-edit" data-route="${escapeHtml(row.name)}" type="button"${locked ? ' disabled' : ''} title="编辑路由流程图（本地保存）">编辑</button>`
+      : `<button class="btn row-act-pull" data-route="${escapeHtml(row.name)}" type="button"${(ro || locked) ? ' disabled' : ''} title="从云端拉取到本地后可编辑">拉取到本地</button>`
     const deployBtn = row.inLocal
-      ? `<button class="btn row-act-deploy" data-route="${escapeHtml(row.name)}" type="button"${ro ? ' disabled' : ''} title="推送到 Cloudflare（提交版本并部署生效）">部署</button>`
+      ? `<button class="btn row-act-deploy" data-route="${escapeHtml(row.name)}" type="button"${(ro || locked) ? ' disabled' : ''} title="推送到 Cloudflare（提交版本并部署生效）">部署</button>`
       : ''
-    const deleteBtn = `<button class="btn row-act-delete" data-route="${escapeHtml(row.name)}" type="button" title="删除路由">✕</button>`
+    const deleteBtn = `<button class="btn row-act-delete" data-route="${escapeHtml(row.name)}" type="button"${locked ? ' disabled' : ''} title="删除路由">✕</button>`
     return `
       <tr class="route-row${removed ? ' row-removed' : ''}" data-route-name="${escapeHtml(row.name)}">
         <td>
@@ -3623,25 +3628,44 @@ export function renderRoutesView(container) {
 
   function renderTable() {
     const rows = mergeRouteRows(configRoutes, stateRoutes)
-    listEl.innerHTML = rows.map(routeRowHtml).join('')
+    listEl.innerHTML = rows.map((r) => routeRowHtml(r, cloudPending)).join('')
     tableWrapEl.hidden = rows.length === 0
     emptyEl.hidden = rows.length > 0
     countEl.hidden = rows.length === 0
     countEl.textContent = `${rows.length} 条路由`
+    // 同步中提示 + 锁定侧栏按钮（添加/拉取云端），保证期间不可修改本地路由
+    if (syncHintEl) syncHintEl.hidden = !cloudPending
+    if (btnAdd) btnAdd.disabled = cloudPending
+    if (btnRefresh) btnRefresh.disabled = cloudPending
   }
 
   async function load() {
     try {
+      // 阶段 1：本地路由配置 + model-states（均不触网，立即渲染）
+      // cloudPending=true 期间锁定全部编辑操作，防止基于未合并的云端状态修改
       const [s, cfg] = await Promise.all([
         api('/api/state').catch(() => null),
-        api('/api/routes/config'),
+        api('/api/routes/config?local=1'),
       ])
       stateRoutes = s ? collectDynamicRoutes((s && s.state) || {}) : []
       rawState = (s && s.state) || {}
       configRoutes = (cfg && cfg.routes) || []
       readonlyConfig = Boolean(cfg && cfg.readonly)
+      cloudPending = Boolean(cfg && cfg.cloudPending)
+      renderTable()
+      // 阶段 2：后台拉取云端存在性（readonly=无管理 Token 时云端本就为空，跳过）
+      if (!readonlyConfig) {
+        try {
+          const cfg2 = await api('/api/routes/config')
+          configRoutes = (cfg2 && cfg2.routes) || []
+        } catch {
+          // 云端拉取失败不影响本地展示与编辑，错误已在阶段 1 渲染
+        }
+      }
+      cloudPending = false
       renderTable()
     } catch (err) {
+      cloudPending = false
       emptyEl.hidden = false
       emptyEl.textContent = `路由数据加载失败：${err.message}`
       listEl.innerHTML = ''

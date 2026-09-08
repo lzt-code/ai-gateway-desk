@@ -119,6 +119,36 @@ try {
     const body = await res.json()
     check(body.cloudRoutes === null && /net down/.test(body.cloudError), '云端拉取失败 → cloudError 透出，不 500')
   }
+  // ?local=1：跳过云端拉取，仅返回本地条目（cloudExists=null，cloudPending=true）
+  {
+    let cloudCalled = 0
+    const store = makeRoutesStore({
+      routes: { support: { name: 'support', elements: ELEMENTS, cloudId: 'u1', deployedVersion: 3 } },
+    })
+    const app = makeApp({
+      routesStore: store,
+      deps: { listDynamicRoutes: async () => { cloudCalled++; return [{ id: 'u1', name: 'support' }] } },
+    })
+    const res = await app.request('/api/routes/config?local=1')
+    const body = await res.json()
+    check(res.status === 200 && body.ok, '?local=1 → 200 + ok')
+    check(cloudCalled === 0, '?local=1 不触网（listDynamicRoutes 未调用）')
+    check(body.cloudRoutes === null, '?local=1 → cloudRoutes=null')
+    check(body.cloudPending === true, '?local=1 → cloudPending=true（提示前端仍有待同步云端数据）')
+    const support = body.routes[0]
+    check(support.cloudExists === null, '?local=1 → 本地条目 cloudExists=null（未知，非 false）')
+    check(support.deployedVersion === 3, '?local=1 → 本地跟踪字段仍透出（deployedVersion）')
+  }
+  // ?local=1 但无管理 Token：cloudPending=false（无云端可同步），readonly=true
+  {
+    const app = makeApp({
+      routesStore: makeRoutesStore(),
+      deps: { readManagementToken: () => null },
+    })
+    const res = await app.request('/api/routes/config?local=1')
+    const body = await res.json()
+    check(body.cloudPending === false && body.readonly === true, '?local=1 无 Token → cloudPending=false + readonly')
+  }
 
   // ── 2：POST /api/routes/save ────────────────────────────
   section('POST /api/routes/save')

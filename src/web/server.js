@@ -1632,13 +1632,17 @@ export function createApp({
   const isRouteName = (name) => typeof name === 'string' && /^[a-z0-9][a-z0-9-]{0,62}$/.test(name)
 
   // GET /api/routes/config — 本地路由条目 + 云端存在性（无管理 Token 时 cloudRoutes 为 null）
+  // ?local=1：跳过云端存在性拉取，仅返回本地条目（cloudExists=null），供前端先渲染
+  // 本地数据、后台再拉取云端完成合并——避免进入页面时空白等待服务端。
   app.get('/api/routes/config', async (c) => {
     const config = configStore.load()
     const gateway = config.gateway || {}
     const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    const hasCloud = !!(mgmtToken && gateway.accountId && gateway.gatewayId)
+    const localOnly = c.req.query('local') === '1'
     let cloudRoutes = null
     let cloudError = null
-    if (mgmtToken && gateway.accountId && gateway.gatewayId) {
+    if (!localOnly && hasCloud) {
       try {
         const list = await depsAll.listDynamicRoutes(mgmtToken, gateway.accountId, gateway.gatewayId)
         cloudRoutes = (Array.isArray(list) ? list : [])
@@ -1660,14 +1664,16 @@ export function createApp({
         dirty: entry.dirty === true,
         lastDeployedAt: entry.lastDeployedAt || null,
         lastSyncedAt: entry.lastSyncedAt || null,
-        cloudExists: cloudByName.has(entry.name),
+        cloudExists: localOnly ? null : cloudByName.has(entry.name),
       }))
     return c.json({
       ok: true,
       routes,
       cloudRoutes,
+      // localOnly 且云端可用 → 提示前端仍有待同步的云端数据
+      cloudPending: localOnly && hasCloud,
       ...(cloudError ? { cloudError } : {}),
-      readonly: !(mgmtToken && gateway.accountId && gateway.gatewayId),
+      readonly: !hasCloud,
     })
   })
 
