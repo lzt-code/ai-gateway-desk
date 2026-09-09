@@ -87,7 +87,7 @@ export function diffMetadata(oldMeta, newMeta) {
 }
 
 /**
- * 基于同步前后的 state 与 summary 构建「调试模式同步变更明细」
+ * 基于同步前后的 state 与 summary 构建「同步变更明细」
  * 供 sync-flow 与 server 下发给前端表格展示：
  *   added: 本次新增模型（modelId/provider/metadata/status）
  *   removed: 本次删除模型（来源为旧 state）

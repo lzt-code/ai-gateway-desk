@@ -50,7 +50,7 @@ import { enrichModel as enrichModelImpl } from '../pipeline/enrich.js'
  *   // metadata 的模型。name 补救检查（provider 不返回 name 但 metadata 已有 name）
  *   // 触发的 re-enrich 候选若无实际变化不计入，避免每次同步都误报→不必要的 KV 部署。
  *   details: { added: Array, removed: Array, updated: Array<{ modelId, provider, changes: Array<{ field, oldValue, newValue }> }> }
- *   // 调试模式同步变更明细（表格展示）：哪些模型新增/删除/字段变化；details 为空表即无变更
+ *   // 同步变更明细（表格展示，与调试开关无关）：哪些模型新增/删除/字段变化；details 为空表即无变更
  *   providerSync: { ok: boolean, skipped?: boolean, message?: string }
  * }>}
  */

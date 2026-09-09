@@ -894,7 +894,7 @@ function _globalLogSyncEvent(evtName, data) {
     if ((s.removedModels || []).length) parts.push(`移除 ${s.removedModels.length}`)
     logActivity(`同步完成：${parts.join(' / ') || '无变化'}`, 'ok')
     if (data.details && hasSyncDiff(data.details)) {
-      logActivity(`变更明细：新增 ${data.details.added.length} · 更新 ${data.details.updated.length} · 删除 ${data.details.removed.length}（调试模式表格见模型页）`, 'info')
+      logActivity(`变更明细：新增 ${data.details.added.length} · 更新 ${data.details.updated.length} · 删除 ${data.details.removed.length}（表格见模型页）`, 'info')
     }
   } else if (evtName === 'error') {
     logActivity(`同步失败：${data.message || '未知错误'}`, 'err')
@@ -960,7 +960,7 @@ export function runGlobalModelSync({ providerFilter } = {}) {
     let doneData = null
     try { doneData = JSON.parse(e.data) } catch {}
     collect('done')(e)
-    // 调试模式：记录并尝试渲染同步变更明细（若模型视图已就绪则直接展示，否则缓存待进入视图时展示）
+    // 记录并尝试渲染同步变更明细（若模型视图已就绪则直接展示，否则缓存待进入视图时展示）
     if (doneData && doneData.details) {
       try { appState().set('lastSyncDetails', doneData.details) } catch {}
       if (hasSyncDiff(doneData.details)) renderSyncDiffToPanel(doneData.details)
@@ -1125,15 +1125,10 @@ function initActivityLog() {
           paintDebug(res.enabled === true)
           logActivity(
             res.enabled
-              ? '已开启调试日志：下次同步将在本栏输出每个 Provider /models 的请求/响应（脱敏+预览），并在模型页以表格展示同步变更明细（新增/删除/字段变化）'
+              ? '已开启调试日志：下次同步将在本栏输出每个 Provider /models 的请求/响应（脱敏+预览）'
               : '已关闭调试日志',
             res.enabled ? 'warn' : 'info'
           )
-          // 切换后按新状态重渲染同步明细（开启=高亮新旧对比，关闭=仅模型+字段）
-          if (typeof document !== 'undefined') {
-            const cached = typeof appState === 'function' ? appState().get('lastSyncDetails') : null
-            if (cached && hasSyncDiff(cached)) renderSyncDiffToPanel(cached)
-          }
         } else {
           logActivity(`切换调试日志失败：${(res && res.error) || '未知错误'}`, 'err')
         }
@@ -1212,9 +1207,11 @@ export function buildDebugLogLines(provider, d) {
   return lines
 }
 
-// ── 同步变更明细（调试模式表格，纯函数可单测）────────────────
+// ── 同步变更明细（表格，纯函数可单测）────────────────
 // details: { added: [{modelId,provider,metadata,status}], removed: [...], updated: [{modelId,provider,changes:[{field,oldValue,newValue}]}] }
 // added/removed: 单行摘要；updated: 按字段列出新旧值（metadata 差异已过滤 id/created，status/provider/manual 也纳入）
+// 对象值（如 pricing/pricings）经 expandFieldChanges 展开为子字段行（pricing.prompt 等），
+// 只展示实际变化的叶子字段，避免整段 JSON 塞进表格
 
 export function hasSyncDiff(details) {
   if (!details || typeof details !== 'object') return false
@@ -1232,12 +1229,41 @@ export function formatDiffValue(v) {
   try { return JSON.stringify(v) } catch { return String(v) }
 }
 
-// 是否开启调试（读取底部日志栏按钮状态 .active / dataset.on === '1'）
-export function isDebugEnabled() {
-  if (typeof document === 'undefined') return false
-  const btn = document.getElementById('btn-log-debug')
-  if (!btn) return false
-  return btn.classList.contains('active') || btn.dataset.on === '1'
+// 值是否为普通对象（非 null / 非数组）
+function isPlainObjectValue(v) {
+  return v !== null && typeof v === 'object' && !Array.isArray(v)
+}
+
+/**
+ * 将对象值的字段变化展开为子字段行（如 pricing → pricing.prompt / pricing.completion）
+ * 仅当两侧均为普通对象（或一侧 undefined 表示字段增删）时展开；数组、类型不匹配、
+ * 超过 maxDepth 时整体回退为原值行。子字段相同则跳过，只留下实际变化的叶子字段。
+ * @param {Array<{field:string, oldValue:any, newValue:any}>} changes
+ * @param {number} [maxDepth=3] - 子字段最大展开深度（pricing.a.b 一级深度为 3 层路径）
+ * @returns {Array<{field:string, oldValue:any, newValue:any}>}
+ */
+export function expandFieldChanges(changes, maxDepth = 3) {
+  const out = []
+  const walk = (field, ov, nv, depth) => {
+    const oObj = isPlainObjectValue(ov)
+    const nObj = isPlainObjectValue(nv)
+    const expandable = (oObj && nObj) || ((oObj || nObj) && (ov === undefined || nv === undefined))
+    if (!expandable || depth >= maxDepth) {
+      out.push({ field, oldValue: ov, newValue: nv })
+      return
+    }
+    const keys = [...new Set([...(oObj ? Object.keys(ov) : []), ...(nObj ? Object.keys(nv) : [])])]
+    for (const k of keys) {
+      const sov = oObj ? ov[k] : undefined
+      const snv = nObj ? nv[k] : undefined
+      if (JSON.stringify(sov) === JSON.stringify(snv)) continue
+      walk(`${field}.${k}`, sov, snv, depth + 1)
+    }
+  }
+  for (const c of Array.isArray(changes) ? changes : []) {
+    walk(String(c.field || ''), c.oldValue, c.newValue, 0)
+  }
+  return out
 }
 
 // 字符级差异高亮：为字符串旧值/新值中变化片段包裹 <mark>
@@ -1273,15 +1299,13 @@ function formatDiffCell(oldVal, newVal, detailed) {
   return { aHtml: escapeHtml(oldFmt), bHtml: escapeHtml(newFmt) }
 }
 
-// details → 表格 HTML
-// detailed: true=调试开启，展示模型+字段+新旧对比且高亮；false=调试关闭，仅模型+变更字段
-export function buildSyncDiffHtml(details, detailed = true) {
+// details → 表格 HTML（始终展示模型+字段+新旧值对比与高亮，与调试开关无关）
+export function buildSyncDiffHtml(details) {
   if (!hasSyncDiff(details)) return ''
   const esc = escapeHtml
   const lines = []
   lines.push('<div class="sync-diff">')
-  const modeText = detailed ? '（调试）' : '（简要）'
-  lines.push(`<div class="sync-diff-header"><div class="sync-diff-title">同步变更明细${modeText}</div><button type="button" class="sync-diff-close" aria-label="关闭同步变更明细">×</button></div>`)
+  lines.push(`<div class="sync-diff-header"><div class="sync-diff-title">同步变更明细</div><button type="button" class="sync-diff-close" aria-label="关闭同步变更明细">×</button></div>`)
   const added = Array.isArray(details.added) ? details.added : []
   const removed = Array.isArray(details.removed) ? details.removed : []
   const updated = Array.isArray(details.updated) ? details.updated : []
@@ -1307,32 +1331,21 @@ export function buildSyncDiffHtml(details, detailed = true) {
   }
   if (updated.length) {
     lines.push('<div class="sync-diff-section"><div class="sync-diff-section-title">字段变化</div>')
-    if (detailed) {
-      lines.push('<table class="sync-diff-table"><thead><tr><th>模型ID</th><th>字段</th><th>旧值</th><th>新值</th></tr></thead><tbody>')
-    } else {
-      lines.push('<table class="sync-diff-table"><thead><tr><th>模型ID</th><th>变更字段</th></tr></thead><tbody>')
-    }
+    lines.push('<table class="sync-diff-table"><thead><tr><th>模型ID</th><th>字段</th><th>旧值</th><th>新值</th></tr></thead><tbody>')
     for (const u of updated) {
       const mid = esc(u.modelId || '')
       const prov = esc(u.provider || '')
-      const changes = Array.isArray(u.changes) ? u.changes : []
+      // 对象值展开为子字段行（pricing.prompt 等），标量原样透传
+      const changes = expandFieldChanges(Array.isArray(u.changes) ? u.changes : [])
       if (!changes.length) continue
       for (let i = 0; i < changes.length; i++) {
         const c = changes[i]
         const field = esc(c.field || '')
-        if (!detailed) {
-          if (i === 0) {
-            lines.push(`<tr><td rowspan="${changes.length}">${mid}<div class="diff-provider">${prov}</div></td><td>${field}</td></tr>`)
-          } else {
-            lines.push(`<tr><td>${field}</td></tr>`)
-          }
+        const { aHtml, bHtml } = formatDiffCell(c.oldValue, c.newValue, true)
+        if (i === 0) {
+          lines.push(`<tr><td rowspan="${changes.length}">${mid}<div class="diff-provider">${prov}</div></td><td>${field}</td><td class="diff-old">${aHtml}</td><td class="diff-new">${bHtml}</td></tr>`)
         } else {
-          const { aHtml, bHtml } = formatDiffCell(c.oldValue, c.newValue, true)
-          if (i === 0) {
-            lines.push(`<tr><td rowspan="${changes.length}">${mid}<div class="diff-provider">${prov}</div></td><td>${field}</td><td class="diff-old">${aHtml}</td><td class="diff-new">${bHtml}</td></tr>`)
-          } else {
-            lines.push(`<tr><td>${field}</td><td class="diff-old">${aHtml}</td><td class="diff-new">${bHtml}</td></tr>`)
-          }
+          lines.push(`<tr><td>${field}</td><td class="diff-old">${aHtml}</td><td class="diff-new">${bHtml}</td></tr>`)
         }
       }
     }
@@ -1342,7 +1355,7 @@ export function buildSyncDiffHtml(details, detailed = true) {
   return lines.join('')
 }
 
-// 供调试开关与同步完成共用：有变更即展示，是否高亮由调试开关决定
+// 同步完成/模型页刷新共用：有变更即展示（模型+字段+新旧值对比与高亮）
 export function renderSyncDiffToPanel(details) {
   if (typeof document === 'undefined') return false
   const panel = document.getElementById('sync-diff-panel')
@@ -1352,8 +1365,7 @@ export function renderSyncDiffToPanel(details) {
     panel.innerHTML = ''
     return false
   }
-  const detailed = isDebugEnabled()
-  panel.innerHTML = buildSyncDiffHtml(details, detailed)
+  panel.innerHTML = buildSyncDiffHtml(details)
   panel.hidden = false
   const btn = panel.querySelector('.sync-diff-close')
   if (btn) {
@@ -2026,7 +2038,7 @@ function injectModelsStyles() {
     .p-warn { color: var(--warn); }
     .p-err { color: var(--err); }
     @media (max-width: 900px) { .models-layout { grid-template-columns: 1fr; } }
-    /* 同步变更明细（调试模式表格）：内容多时面板内部滚动，避免撑高页面无法查看完全 */
+    /* 同步变更明细表格：内容多时面板内部滚动，避免撑高页面无法查看完全 */
     #sync-diff-panel { margin-top: 1rem; border: 1px solid var(--border-strong); border-radius: var(--radius-md); background: var(--elevated); box-shadow: var(--shadow-2); padding: 0.75rem; max-height: 40vh; overflow-y: auto; }
     .sync-diff-header { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.35rem; position: sticky; top: -0.75rem; background: var(--elevated); z-index: 2; padding: 0.25rem 0; }
     .sync-diff-title { font-size: 0.85rem; font-weight: 600; color: var(--fg); }
@@ -2698,7 +2710,7 @@ export function renderModelsView(container) {
       state = s.state || {}
       providers = p.providers || []
       renderSidebar()
-      // 同步变更明细：有差异即展示，调试开关决定是否显示新旧对比及高亮
+      // 同步变更明细：有差异即展示（模型+字段+新旧值对比与高亮）
       const details = syncData && syncData.details ? syncData.details : null
       if (details) appState().set('lastSyncDetails', details)
       const shouldShowDiff = hasSyncDiff(details)
@@ -2722,8 +2734,7 @@ export function renderModelsView(container) {
       await applyFilter()
       flash('同步完成', 'ok')
       if (shouldShowDiff) {
-        const mode = isDebugEnabled() ? '（调试：含新旧对比高亮）' : '（简要：仅模型与字段）'
-        logActivity(`同步变更明细已在模型页表格中展示${mode}`, 'info')
+        logActivity('同步变更明细已在模型页表格中展示（含新旧对比）', 'info')
       }
     } catch (err) {
       flash(err.message, 'err')

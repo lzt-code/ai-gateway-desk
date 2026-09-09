@@ -370,6 +370,100 @@ check(JSON.stringify(normalizeSelectOptions(undefined)) === '[]', 'undefined →
 check(JSON.stringify(normalizeSelectOptions('byok')) === '[]', '非数组（字符串）→ []')
 check(JSON.stringify(normalizeSelectOptions(null)) === '[]', '非数组（null）→ []')
 
+// ── 22：同步变更明细：对象值展开为子字段行 ──────────────────
+section('同步变更明细（expandFieldChanges / buildSyncDiffHtml）')
+const { expandFieldChanges, buildSyncDiffHtml } = mod
+check(typeof expandFieldChanges === 'function', 'expandFieldChanges 已导出且为函数')
+
+{
+  // pricing 对象值：仅 prompt 变化 → 展开为 pricing.prompt 单行标量新旧值
+  const rows = expandFieldChanges([
+    { field: 'pricing', oldValue: { prompt: 0.000002, completion: 0.000004 }, newValue: { prompt: 0.000001, completion: 0.000004 } },
+  ])
+  check(
+    rows.length === 1 && rows[0].field === 'pricing.prompt' &&
+      rows[0].oldValue === 0.000002 && rows[0].newValue === 0.000001,
+    'pricing 仅 prompt 变化 → 单行 pricing.prompt（completion 相同被跳过）',
+  )
+}
+
+{
+  // 两层嵌套：pricings.agent.prompt / pricings.fast.*（agent.completion 未变被跳过）
+  const rows = expandFieldChanges([
+    {
+      field: 'pricings',
+      oldValue: { agent: { prompt: 2, completion: 4 } },
+      newValue: { agent: { prompt: 0.5, completion: 4 }, fast: { prompt: 1, completion: 2 } },
+    },
+  ])
+  const fields = rows.map((r) => r.field).sort()
+  check(
+    JSON.stringify(fields) === JSON.stringify(['pricings.agent.prompt', 'pricings.fast.completion', 'pricings.fast.prompt']),
+    '两层嵌套展开为点路径子字段（新增子对象也展开，相同子字段跳过）',
+  )
+  const row = rows.find((r) => r.field === 'pricings.agent.prompt')
+  check(row && row.oldValue === 2 && row.newValue === 0.5, '子字段保留标量新旧值（2 → 0.5）')
+}
+
+{
+  // 字段新增（旧值 undefined）：展开后旧值仍为 undefined
+  const rows = expandFieldChanges([{ field: 'pricing', oldValue: undefined, newValue: { prompt: 0.5, completion: 1 } }])
+  const fields = rows.map((r) => r.field).sort()
+  check(
+    JSON.stringify(fields) === JSON.stringify(['pricing.completion', 'pricing.prompt']),
+    '对象字段新增 → 子字段行（旧值 undefined）',
+  )
+  check(rows.every((r) => r.oldValue === undefined), '新增子字段旧行值为 undefined')
+}
+
+{
+  // 数组 / 类型不匹配：整体回退为原值行，不展开
+  const rows = expandFieldChanges([
+    { field: 'tags', oldValue: ['a', 'b'], newValue: ['a', 'c'] },
+    { field: 'note', oldValue: 'x', newValue: { a: 1 } },
+  ])
+  check(rows.length === 2 && rows.every((r) => !r.field.includes('.')), '数组/类型不匹配 → 原值行回退（不展开）')
+  check(JSON.stringify(rows[0].oldValue) === '["a","b"]', '数组值原样透传')
+}
+
+{
+  // 超深度：展开停止在 maxDepth 层，更深子对象以原值整体展示
+  const rows = expandFieldChanges([
+    { field: 'deep', oldValue: { a: { b: { c: 1 } } }, newValue: { a: { b: { c: 2 } } } },
+  ], 1)
+  check(
+    rows.length === 1 && rows[0].field === 'deep.a' &&
+      JSON.stringify(rows[0].oldValue) === '{"b":{"c":1}}',
+    '超深度 → 停止展开，剩余子对象整体作为旧/新值',
+  )
+}
+
+{
+  // 标量变化（status 等）原样透传
+  const rows = expandFieldChanges([{ field: 'status', oldValue: 'selected', newValue: 'hidden' }])
+  check(rows.length === 1 && rows[0].field === 'status' && rows[0].newValue === 'hidden', '标量变化原样透传')
+}
+
+{
+  // 表格 HTML：对象值渲染为子字段行，而非整段 JSON；与调试开关无关始终展示新旧值
+  const html = buildSyncDiffHtml({
+    added: [],
+    removed: [],
+    updated: [
+      {
+        modelId: 'openrouter/m1',
+        provider: 'openrouter',
+        changes: [{ field: 'pricing', oldValue: { prompt: 0.000002, completion: 0.000004 }, newValue: { prompt: 0.000001, completion: 0.000004 } }],
+      },
+    ],
+  })
+  check(html.includes('pricing.prompt'), '表格含子字段列 pricing.prompt')
+  check(html.includes('0.00000') && html.includes('>2</mark>') && html.includes('>1</mark>'), '表格含标量新旧值（字符级高亮拆分展示）')
+  check(!html.includes('completion'), '未变化的子字段不出现（无整段 JSON）')
+  check(html.includes('<th>旧值</th>') && html.includes('<th>新值</th>'), '字段变化表始终含旧值/新值列（与调试开关无关）')
+  check(!html.includes('（调试）') && !html.includes('（简要）'), '标题无调试/简要模式区分')
+}
+
 console.log(`\n${'='.repeat(56)}`)
 console.log(`通过 ${checks - failures}/${checks} 断言`)
 if (failures > 0) {
