@@ -123,5 +123,37 @@ const REAL_GRAPH = [
 ]
 check(ok(REAL_GRAPH), '云端实测流程图（START→fallback 链）通过校验')
 
+// ── 6：pathPrefix provider 防呆警告 ───────────────────────
+section('pathPrefix provider 防呆警告')
+{
+  const warnGraph = graphWith({ id: 'm', type: 'model', properties: { provider: 'custom-fang-zhou', model: 'glm-5.3' }, outputs: { success: { elementId: 'END' }, fallback: { elementId: 'END' } } })
+  // 不传 opts：无警告（向后兼容，ok 不受影响）
+  const plain = validateRouteElements(warnGraph)
+  check(plain.ok && Array.isArray(plain.warnings) && plain.warnings.length === 0,
+    '不传 opts → ok=true 且 warnings 为空')
+  // 传入数组
+  const withArr = validateRouteElements(warnGraph, { customPathProviders: ['custom-fang-zhou', 'custom-other'] })
+  check(withArr.ok === true && withArr.warnings.length === 1 && /custom-fang-zhou/.test(withArr.warnings[0]) && /404/.test(withArr.warnings[0]),
+    'provider 命中数组 → ok 仍 true + warnings 提示 404')
+  // 传入 Set（server 实际用法）
+  const withSet = validateRouteElements(warnGraph, { customPathProviders: new Set(['custom-fang-zhou']) })
+  check(withSet.ok === true && withSet.warnings.length === 1, 'provider 命中 Set → ok 仍 true + 1 条 warning')
+  // 不在集合中的 provider 不警告
+  const noHit = validateRouteElements(warnGraph, { customPathProviders: ['custom-shangtang'] })
+  check(noHit.ok === true && noHit.warnings.length === 0, 'provider 不在集合 → 无警告')
+  // opts 传 null / 畸形值不抛错
+  check(validateRouteElements(warnGraph, null).ok === true, 'opts=null → 兼容不抛错')
+  // 混合 provider：一个命中一个不命中
+  const mixed = [
+    { id: 'START', type: 'start', outputs: { next: { elementId: 'm1' } } },
+    { id: 'm1', type: 'model', properties: { provider: 'custom-shangtang', model: 'glm-5.2' }, outputs: { success: { elementId: 'END' }, fallback: { elementId: 'm2' } } },
+    { id: 'm2', type: 'model', properties: { provider: 'custom-fang-zhou', model: 'glm-5.3' }, outputs: { success: { elementId: 'END' }, fallback: { elementId: 'END' } } },
+    { id: 'END', type: 'end', outputs: {} },
+  ]
+  const mixedRes = validateRouteElements(mixed, { customPathProviders: new Set(['custom-fang-zhou']) })
+  check(mixedRes.ok === true && mixedRes.warnings.length === 1 && /m2/.test(mixedRes.warnings[0]),
+    'fallback 链中命中 provider → 按节点 id 精确警告（不误伤其他级）')
+}
+
 console.log(`\n通过 ${checks - failures}/${checks}`)
 process.exit(failures ? 1 : 0)

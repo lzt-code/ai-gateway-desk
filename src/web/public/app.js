@@ -4084,10 +4084,17 @@ export function renderRoutesView(container) {
       }
       btnSave.disabled = true
       try {
-        await api('/api/routes/save', { method: 'POST', body: { name: isNew ? name : existing.name, elements } })
+        const res = await api('/api/routes/save', { method: 'POST', body: { name: isNew ? name : existing.name, elements } })
         dialog.close('saved')
-        flash(isNew ? `路由 ${name} 已保存（本地）` : `路由 ${existing.name} 已保存（本地）`, 'ok')
-        logActivity(`动态路由已保存：${isNew ? name : existing.name}（本地，需部署生效）`, 'ok')
+        // 防呆警告：pathPrefix provider 无法参与动态路由 fallback（必 404），与成功文案合并展示
+        const warns = (res && Array.isArray(res.warnings)) ? res.warnings.filter(Boolean) : []
+        if (warns.length) {
+          flash(`路由已保存（本地），但存在以下问题：\n${warns.join('\n')}`, 'warn')
+          logActivity(`动态路由警告：${warns.join('；')}`, 'warn')
+        } else {
+          flash(isNew ? `路由 ${name} 已保存（本地）` : `路由 ${existing.name} 已保存（本地）`, 'ok')
+          logActivity(`动态路由已保存：${isNew ? name : existing.name}（本地，需部署生效）`, 'ok')
+        }
         await load()
       } catch (err) {
         const detail = err.body && Array.isArray(err.body.errors) && err.body.errors.length
@@ -4158,8 +4165,15 @@ export function renderRoutesView(container) {
         const res = await api('/api/routes/deploy', { method: 'POST', body: { name } })
         const r = res && res.results && res.results[0]
         if (r && r.ok) {
-          flash(`路由 ${name} 已部署（v${r.version}）`, 'ok')
-          logActivity(`动态路由部署成功：${name} → v${r.version}`, 'ok')
+          // 防呆警告：pathPrefix provider 无法参与动态路由 fallback（必 404）
+          const warns = Array.isArray(r.warnings) ? r.warnings.filter(Boolean) : []
+          if (warns.length) {
+            flash(`路由 ${name} 已部署（v${r.version}），但存在以下问题：\n${warns.join('\n')}`, 'warn')
+          } else {
+            flash(`路由 ${name} 已部署（v${r.version}）`, 'ok')
+          }
+          if (warns.length) logActivity(`动态路由警告：${warns.join('；')}`, 'warn')
+          else logActivity(`动态路由部署成功：${name} → v${r.version}`, 'ok')
         } else {
           const msg = (r && r.error) || '部署失败'
           flash(`部署失败：${msg}`, 'err')

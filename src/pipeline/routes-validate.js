@@ -23,13 +23,24 @@ const KNOWN_OUTPUTS = {
 
 /**
  * 校验单条路由的 elements 图
+ *
  * @param {Array<object>} elements - 流程图节点数组
- * @returns {{ ok: boolean, errors: string[] }} errors 为中文可读错误列表（空数组 = 通过）
+ * @param {object} [opts]
+ * @param {Set<string>|Array<string>} [opts.customPathProviders] - 配置了非标准路径
+ *   （pathPrefix，如火山方舟 /api/plan/v3）的 provider 网关 slug 集合（如 "custom-fang-zhou"）。
+ *   CF 平台限制（2026-09-09 实测）：动态路由 fallback 经 Unified API 对 custom provider
+ *   固定请求 {base_url}/v1/chat/completions，无法携带自定义路径前缀 → 该级必然 404。
+ *   命中时记入 warnings（仅提示，不阻断保存/部署）。
+ * @returns {{ ok: boolean, errors: string[], warnings: string[] }}
+ *   errors 为中文可读错误列表（空数组 = 通过）；warnings 为提示列表（不影响 ok）
  */
-export function validateRouteElements(elements) {
+export function validateRouteElements(elements, opts) {
   const errors = []
+  const warnings = []
+  const rawSet = opts?.customPathProviders
+  const customPathProviders = rawSet instanceof Set ? rawSet : new Set(Array.isArray(rawSet) ? rawSet : [])
   if (!Array.isArray(elements) || elements.length === 0) {
-    return { ok: false, errors: ['elements 必须是非空数组'] }
+    return { ok: false, errors: ['elements 必须是非空数组'], warnings }
   }
 
   // ── 基础结构：id / type / 唯一性 ──
@@ -120,6 +131,11 @@ export function validateRouteElements(elements) {
       if (!mOutputs.fallback || typeof mOutputs.fallback.elementId !== 'string' || !mOutputs.fallback.elementId.trim()) {
         errors.push(`节点 ${id}：model 节点缺少 outputs.fallback（cloud 7001，末级也需 fallback→END）`)
       }
+      // 防呆：非标准路径 provider 无法参与动态路由（Unified API 固定请求
+      // {base_url}/v1/chat/completions，不带 pathPrefix），fallback 到该级必 404
+      if (typeof p.provider === 'string' && customPathProviders.has(p.provider)) {
+        warnings.push(`节点 ${id}：provider "${p.provider}" 配置了非标准路径（pathPrefix），动态路由无法携带该路径前缀（Unified API 固定请求 {base_url}/v1/chat/completions），fallback 到此级将返回 404，建议改用其他 provider`)
+      }
     }
 
     if (type === 'rate') {
@@ -168,5 +184,5 @@ export function validateRouteElements(elements) {
     }
   }
 
-  return { ok: errors.length === 0, errors }
+  return { ok: errors.length === 0, errors, warnings }
 }

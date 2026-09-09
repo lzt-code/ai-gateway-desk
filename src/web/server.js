@@ -114,6 +114,21 @@ const HIDDEN_MODELS_KV_KEY = 'hidden-models'
 // 跨 PC 同步手工添加模型（modelId → entry）的 KV 键名
 const MANUAL_MODELS_KV_KEY = 'manual-models'
 
+/**
+ * 提取配置了非标准路径（pathPrefix）的 provider 网关 slug 集合（如 "custom-fang-zhou"）。
+ * 动态路由防呆：CF Unified API 对 custom provider 固定请求 {base_url}/v1/chat/completions，
+ * 无法携带 pathPrefix → 路由链命中这些 provider 时提示 warnings（不阻断保存/部署）。
+ * @param {object} config - loadConfig() 返回的配置对象
+ * @returns {Set<string>}
+ */
+function customPathProviderSlugs(config) {
+  const set = new Set()
+  for (const p of config?.providers || []) {
+    if (p && typeof p.pathPrefix === 'string' && p.pathPrefix.trim()) set.add(gatewaySlug(p))
+  }
+  return set
+}
+
 // 缺省 stateStore：绑定真实 data/model-states.json（测试注入内存 mock 隔离）
 const DEFAULT_STATE_STORE = { load: loadState, save: saveState }
 
@@ -1684,7 +1699,12 @@ export function createApp({
     if (!isRouteName(body.name)) {
       return c.json({ error: 'name must be a lowercase slug (letters, digits, hyphens)' }, 400)
     }
-    const validation = depsAll.validateRouteElements(body.elements)
+    // 防呆警告数据源：pathPrefix provider 集合（配置读取失败时降级为空，不阻断保存）
+    let customPathProviders = new Set()
+    try {
+      customPathProviders = customPathProviderSlugs(configStore.load())
+    } catch { /* 无配置 / 配置损坏 → 跳过警告 */ }
+    const validation = depsAll.validateRouteElements(body.elements, { customPathProviders })
     if (!validation.ok) {
       return c.json({ error: 'elements 校验失败', errors: validation.errors }, 400)
     }
@@ -1693,7 +1713,7 @@ export function createApp({
       dirty: true,
     })
     routesStore.save(routesState)
-    return c.json({ ok: true, name: body.name, entry: routesState.routes[body.name] })
+    return c.json({ ok: true, name: body.name, entry: routesState.routes[body.name], warnings: validation.warnings })
   })
 
   // POST /api/routes/deploy — 部署（body.name 可选；缺省部署全部 dirty 条目）。
@@ -1716,11 +1736,14 @@ export function createApp({
     if (body && typeof body.name === 'string' && body.name && targets.length === 0) {
       return c.json({ error: `route '${body.name}' not found` }, 404)
     }
+    const customPathProviders = customPathProviderSlugs(config)
     const results = []
     for (const entry of targets) {
       const r = await depsAll.deployRouteConfig(
         mgmtToken, gateway.accountId, gateway.gatewayId, entry
       )
+      // 防呆警告：pathPrefix provider 无法参与动态路由 fallback（必 404），随部署结果透出
+      const warnings = depsAll.validateRouteElements(entry.elements, { customPathProviders }).warnings
       if (r.ok) {
         routesState.routes[entry.name] = {
           ...entry,
@@ -1729,9 +1752,9 @@ export function createApp({
           dirty: false,
           lastDeployedAt: new Date().toISOString(),
         }
-        results.push({ name: entry.name, ok: true, version: r.version, created: r.created === true })
+        results.push({ name: entry.name, ok: true, version: r.version, created: r.created === true, warnings })
       } else {
-        results.push({ name: entry.name, ok: false, error: r.error })
+        results.push({ name: entry.name, ok: false, error: r.error, warnings })
       }
     }
     routesStore.save(routesState)

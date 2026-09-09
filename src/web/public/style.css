@@ -810,6 +810,7 @@ dialog::backdrop {
   box-shadow: var(--shadow-2);
   font-size: 0.9rem;
   overflow: hidden;
+  white-space: pre-line; /* 多行警告（如动态路由 pathPrefix 提示）正常换行 */
   animation: flash-in 0.2s var(--ease-out);
 }
 /* 左侧 3px 语义色条（纯 CSS，不动 DOM） */

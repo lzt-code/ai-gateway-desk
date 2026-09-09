@@ -62,9 +62,9 @@ const baseDeps = {
   removeRoute,
 }
 
-function makeApp({ routesStore, deps }) {
+function makeApp({ routesStore, deps, config }) {
   return createApp({
-    configStore: { load: () => structuredClone(CONFIG) },
+    configStore: { load: () => structuredClone(config || CONFIG) },
     stateStore: { load: () => ({}), save: () => {} },
     routesStore,
     deps: { ...baseDeps, ...deps },
@@ -178,6 +178,45 @@ try {
     check(res3.status === 400 && Array.isArray(body3.errors) && body3.errors.length > 0,
       'elements 校验失败 → 400 带 errors 明细')
   }
+  // 防呆警告：路由链命中 pathPrefix provider（如火山方舟）→ 200 + warnings，不阻断保存
+  {
+    const store = makeRoutesStore()
+    const cfg = {
+      ...CONFIG,
+      providers: [
+        { id: 'fang-zhou', type: 'custom-provider', pathPrefix: '/api/plan/v3', enabled: true },
+        { id: 'shangtang', type: 'custom-provider', enabled: true },
+      ],
+    }
+    const app = makeApp({ routesStore: store, config: cfg })
+    const elements = [
+      { id: 'START', type: 'start', outputs: { next: { elementId: 'm1' } } },
+      { id: 'm1', type: 'model', properties: { provider: 'custom-shangtang', model: 'glm-5.2' }, outputs: { success: { elementId: 'END' }, fallback: { elementId: 'm2' } } },
+      { id: 'm2', type: 'model', properties: { provider: 'custom-fang-zhou', model: 'glm-5.3' }, outputs: { success: { elementId: 'END' }, fallback: { elementId: 'END' } } },
+      { id: 'END', type: 'end', outputs: {} },
+    ]
+    const res = await app.request('/api/routes/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'glm', elements }),
+    })
+    const body = await res.json()
+    check(res.status === 200 && body.ok, '含 pathPrefix provider 的路由 → 仍保存成功（不阻断）')
+    check(Array.isArray(body.warnings) && body.warnings.length === 1 && /custom-fang-zhou/.test(body.warnings[0]) && /404/.test(body.warnings[0]),
+      'save 响应 warnings 提示该级将 404（含 provider 名）')
+  }
+  // 无 pathPrefix provider → warnings 为空（旧语义不变）
+  {
+    const app = makeApp({ routesStore: makeRoutesStore() })
+    const res = await app.request('/api/routes/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'plain', elements: ELEMENTS }),
+    })
+    const body = await res.json()
+    check(res.status === 200 && Array.isArray(body.warnings) && body.warnings.length === 0,
+      '无 pathPrefix provider → warnings 为空数组')
+  }
 
   // ── 3：POST /api/routes/deploy ──────────────────────────
   section('POST /api/routes/deploy')
@@ -245,6 +284,33 @@ try {
     })
     const res = await app.request('/api/routes/deploy', { method: 'POST' })
     check(res.status === 400, '缺管理 Token → 400')
+  }
+  // 防呆警告：部署命中 pathPrefix provider 的路由 → result 带 warnings（仍部署成功）
+  {
+    const cfg = {
+      ...CONFIG,
+      providers: [{ id: 'fang-zhou', type: 'custom-provider', pathPrefix: '/api/plan/v3', enabled: true }],
+    }
+    const elements = [
+      { id: 'START', type: 'start', outputs: { next: { elementId: 'm1' } } },
+      { id: 'm1', type: 'model', properties: { provider: 'custom-fang-zhou', model: 'glm-5.3' }, outputs: { success: { elementId: 'END' }, fallback: { elementId: 'END' } } },
+      { id: 'END', type: 'end', outputs: {} },
+    ]
+    const store = makeRoutesStore({ routes: { ark: { name: 'ark', elements, dirty: true } } })
+    const app = makeApp({
+      routesStore: store,
+      config: cfg,
+      deps: { deployRouteConfig: async () => ({ ok: true, cloudId: 'u', version: 5 }) },
+    })
+    const res = await app.request('/api/routes/deploy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'ark' }),
+    })
+    const body = await res.json()
+    check(body.ok === true && body.results[0].ok === true, 'pathPrefix provider 路由部署仍成功（不阻断）')
+    check(Array.isArray(body.results[0].warnings) && body.results[0].warnings.length === 1 && /404/.test(body.results[0].warnings[0]),
+      '部署 result.warnings 提示该级将 404')
   }
 
   // ── 4：POST /api/routes/delete ──────────────────────────
