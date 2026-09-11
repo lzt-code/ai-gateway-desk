@@ -1881,19 +1881,16 @@ function injectModelsStyles() {
       background: var(--accent); border-radius: 0 2px 2px 0;
       box-shadow: 0 0 8px var(--led-accent);
     }
-    /* 动态路由侧栏项：accent 浅底 + 描述小字 */
-    .sidebar-item-dynamic {
-      border-color: var(--accent-border);
-      background: var(--accent-soft);
+    /* 侧栏项问号小图标（Cloudflare 风格：描边小圆 + ?，hover 展示说明） */
+    .sidebar-hint-icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 0.85rem; height: 0.85rem; margin-left: 0.35rem;
+      border: 1px solid var(--border-strong); border-radius: 50%;
+      color: var(--muted); font-size: 0.6rem; line-height: 1;
+      vertical-align: middle; flex-shrink: 0; cursor: help;
+      transition: color 0.15s var(--ease-out), border-color 0.15s var(--ease-out);
     }
-    .sidebar-item-dynamic.active {
-      background: var(--seg-active-bg);
-    }
-    .sidebar-dynamic-label { display: block; }
-    .sidebar-dynamic-desc {
-      display: block; font-size: 0.68rem; color: var(--muted);
-      font-weight: 400; margin-top: 0.1rem;
-    }
+    .sidebar-hint-icon:hover { color: var(--accent); border-color: var(--accent-border); }
     .models-main { min-width: 0; display: flex; flex-direction: column; }
     /* 筛选按钮组：分段控件化（凹陷轨道 + 浮起激活块，与页头选项卡同语言） */
     .filter-bar { margin-bottom: 0.6rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
@@ -2154,20 +2151,16 @@ export function renderModelsView(container) {
       const btn = document.createElement('button')
       btn.type = 'button'
       btn.className = 'sidebar-item' + (provider === pid ? ' active' : '')
-      if (pid === 'dynamic') btn.className += ' sidebar-item-dynamic'
       btn.dataset.provider = pid
       const displayName = typeof p === 'string' ? p : (p.name && p.name !== 'default' ? p.name : pid)
+      btn.textContent = displayName
+      // 动态路由：名称后追加问号小图标，hover 展示描述（样式随 .sidebar-item，无特殊底色）
       if (pid === 'dynamic') {
-        const label = document.createElement('span')
-        label.className = 'sidebar-dynamic-label'
-        label.textContent = displayName
-        btn.appendChild(label)
-        const desc = document.createElement('span')
-        desc.className = 'sidebar-dynamic-desc'
-        desc.textContent = '网关路由规则'
-        btn.appendChild(desc)
-      } else {
-        btn.textContent = displayName
+        const hint = document.createElement('span')
+        hint.className = 'sidebar-hint-icon'
+        hint.textContent = '?'
+        hint.title = 'Cloudflare 网关的动态路由：按预设的 fallback 链转发请求，主模型失败时自动降级到备选模型。此处将路由作为虚拟 Provider，集中展示其包含的模型。'
+        btn.appendChild(hint)
       }
       sidebar.appendChild(btn)
     }
