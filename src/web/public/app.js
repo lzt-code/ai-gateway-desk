@@ -911,6 +911,8 @@ function _globalFinishSync() {
   } else {
     setModelPageButtonsDisabled(false)
   }
+  // 按钮还原 prevDisabled 会覆盖 done 事件里按新明细点亮的「查看变更明细」，恢复后重算
+  updateShowDiffButton()
 }
 
 export function runGlobalModelSync({ providerFilter } = {}) {
@@ -1369,12 +1371,36 @@ export function renderSyncDiffToPanel(details) {
   panel.hidden = false
   const btn = panel.querySelector('.sync-diff-close')
   if (btn) {
+    // 关闭仅隐藏面板：明细保留在 lastSyncDetails，可随时经侧栏「查看变更明细」重开
     btn.addEventListener('click', () => {
-      clearSyncDiffPanel()
-      try { appState().set('lastSyncDetails', null) } catch {}
+      hideSyncDiffPanel()
     })
   }
+  updateShowDiffButton()
   return true
+}
+
+// 隐藏明细面板但保留数据（区别于 clearSyncDiffPanel 的彻底清空），供「查看变更明细」重开
+export function hideSyncDiffPanel() {
+  if (typeof document === 'undefined') return
+  const panel = document.getElementById('sync-diff-panel')
+  if (panel) {
+    panel.hidden = true
+    panel.innerHTML = ''
+  }
+  updateShowDiffButton()
+}
+
+// 「查看变更明细」按钮态：有缓存的同步明细才可点
+export function updateShowDiffButton() {
+  if (typeof document === 'undefined') return
+  const btn = document.getElementById('mbtn-show-diff')
+  if (!btn) return
+  let cached = null
+  try { cached = appState().get('lastSyncDetails') } catch {}
+  const has = hasSyncDiff(cached)
+  btn.disabled = !has
+  btn.title = has ? '查看最近一次同步的变更明细' : '暂无变更明细（更新模型列表后生成）'
 }
 
 export function clearSyncDiffPanel() {
@@ -1384,6 +1410,7 @@ export function clearSyncDiffPanel() {
   panel.hidden = true
   panel.innerHTML = ''
   try { appState().set('lastSyncDetails', null) } catch {}
+  updateShowDiffButton()
 }
 
 // ── 渲染分派 + 切换 ────────────────────────────────────────
@@ -2130,6 +2157,7 @@ export function renderModelsView(container) {
   const dirtyMark = container.querySelector('.dirty-mark')
   const btnSync = document.getElementById('mbtn-sync')
   const btnSyncOne = document.getElementById('mbtn-sync-one')
+  const btnShowDiff = document.getElementById('mbtn-show-diff')
   const btnSaveDeploy = document.getElementById('mbtn-save-deploy')
   const btnSave = document.getElementById('mbtn-save')
   const btnBatchToggle = document.getElementById('mbtn-batch-toggle')
@@ -2502,11 +2530,8 @@ export function renderModelsView(container) {
       updateDirty()
       logActivity(deploy ? '已保存并提交部署' : '已保存', 'ok')
       flash(deploy ? '已保存并提交部署' : '已保存', 'ok')
-      // 保存后若调试面板有变更明细且已落盘，则清空（非空即未保存的直观体现）
-      if (hasSyncDiff(appState().get('lastSyncDetails'))) {
-        clearSyncDiffPanel()
-        appState().set('lastSyncDetails', null)
-      }
+      // 保存后隐藏明细面板（非空面板是未保存的直观体现）；数据保留，可经「查看变更明细」重开
+      hideSyncDiffPanel()
       // save-deploy 额外写 hidden-models / manual-models 到 KV，失败时提示重试
       if (deploy && res && res.kvError) {
         logActivity(`hidden/manual 模型 KV 同步失败：${res.kvError}（可重试部署）`, 'warn')
@@ -2694,6 +2719,7 @@ export function renderModelsView(container) {
     // 放开会按原禁用态还原，需按当前 provider 选择 / 批量删除点亮条件修正
     updateSyncOneButton()
     updateBatchRemoveButton()
+    updateShowDiffButton()
   }
 
   async function refreshAfterSync(syncData) {
@@ -2985,6 +3011,21 @@ export function renderModelsView(container) {
       return
     }
     startSync({ providerFilter: provider })
+  })
+  // 重开最近一次同步的变更明细（关闭明细面板不丢数据，随时可再看）
+  btnShowDiff.addEventListener('click', () => {
+    let cached = null
+    try { cached = appState().get('lastSyncDetails') } catch {}
+    if (!hasSyncDiff(cached)) {
+      updateShowDiffButton()
+      flash('暂无变更明细', 'warn')
+      return
+    }
+    renderSyncDiffToPanel(cached)
+    const panel = document.getElementById('sync-diff-panel')
+    if (panel && typeof panel.scrollIntoView === 'function') {
+      panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    }
   })
   btnSaveDeploy.addEventListener('click', () => saveModels(true))
   btnSave.addEventListener('click', () => saveModels(false))

@@ -464,6 +464,34 @@ check(typeof expandFieldChanges === 'function', 'expandFieldChanges 已导出且
   check(!html.includes('（调试）') && !html.includes('（简要）'), '标题无调试/简要模式区分')
 }
 
+// ── 23：变更明细重开（查看变更明细按钮）────────────────────
+section('变更明细重开（mbtn-show-diff / hideSyncDiffPanel）')
+check(
+  html.includes('id="mbtn-show-diff"') && html.includes('查看变更明细'),
+  'index.html 模型侧栏含「查看变更明细」按钮（mbtn-show-diff）',
+)
+{
+  const { hideSyncDiffPanel, updateShowDiffButton } = mod
+  check(typeof hideSyncDiffPanel === 'function' && typeof updateShowDiffButton === 'function', 'hideSyncDiffPanel / updateShowDiffButton 已导出')
+  const appjs = await readFile(path.join(ROOT, 'src', 'web', 'public', 'app.js'), 'utf8')
+  check(appjs.includes('btnShowDiff.addEventListener'), '模型视图绑定「查看变更明细」点击重开')
+  // × 关闭不再清空 lastSyncDetails（数据保留供重开），清空仅发生在 clearSyncDiffPanel
+  const renderSrc = appjs.slice(appjs.indexOf('export function renderSyncDiffToPanel'), appjs.indexOf('export function hideSyncDiffPanel'))
+  check(renderSrc.includes('hideSyncDiffPanel()'), '明细面板 × 关闭仅隐藏（hideSyncDiffPanel，保留数据）')
+  check(!renderSrc.includes("set('lastSyncDetails', null)"), '× 关闭不再清空 lastSyncDetails')
+  // 最小 DOM mock：无缓存明细 → 按钮禁用 + 提示文案；面板元素缺失时安全跳过
+  const btn = { disabled: false, title: '' }
+  globalThis.document = { getElementById: (id) => (id === 'mbtn-show-diff' ? btn : null) }
+  try {
+    updateShowDiffButton()
+    check(btn.disabled === true && btn.title.includes('暂无变更明细'), '无缓存明细 → 按钮禁用并提示「暂无变更明细」')
+    hideSyncDiffPanel()
+    check(btn.disabled === true, 'hideSyncDiffPanel 无面板元素时安全跳过（仅刷新按钮态）')
+  } finally {
+    delete globalThis.document
+  }
+}
+
 console.log(`\n${'='.repeat(56)}`)
 console.log(`通过 ${checks - failures}/${checks} 断言`)
 if (failures > 0) {
