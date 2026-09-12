@@ -126,7 +126,8 @@ export function buildSyncDetails(oldState, newState, summary) {
  * 将发现结果与现有 state 合并（策略 A：provider 覆盖）
  *
  * 消失的模型（provider 不再返回）直接从 state 物理删除，不保留 removed 中间态；
- * 手工添加的模型（entry.manual）豁免。hidden 状态跨同步保持不变.
+ * 手工添加的模型（entry.manual）豁免。hidden/pending 状态跨同步保持不变
+ * （同步只覆盖 metadata；状态流转见 server.js applySelectedModels / applyHiddenModels）。
  *
  * @param {object} state - model-states.json 的内容
  *   { modelId: { status: string, provider: string, metadata: object } }
@@ -208,9 +209,13 @@ export function mergeDiscovery(state, discoveryResults) {
         }
       } else {
         // ---- 新模型 ----
-        // 上游别名先归一化：即使外部富化源匹配失败，网关自带字段也能直接显示
+        // 上游别名先归一化：即使外部富化源匹配失败，网关自带字段也能直接显示。
+        // 新模型默认 pending（待审）：不写入 models.json、不触发 KV 自动部署，
+        // 用户在「待审」筛选中审核后采用（→ selected）或忽略（→ hidden）。
+        // 跨 PC 收敛：审核结果经 KV 传播（selected → models 键 / hidden → hidden-models 键），
+        // 同步时 applySelectedModels / applyHiddenModels 应用到本地 pending 条目。
         newState[modelId] = {
-          status: 'selected',
+          status: 'pending',
           provider,
           metadata: normalizeMetadataAliases({ ...model }),
         }

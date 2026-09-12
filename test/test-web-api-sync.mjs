@@ -73,6 +73,7 @@ function makeDeps({
   syncErrors = [],
   kvHiddenModels = null,
   kvManualModels = null,
+  kvModels = null,
   deployToKVResult = { success: true },
 } = {}) {
   const calls = []
@@ -139,13 +140,17 @@ function makeDeps({
   const readToken = () => readTokenVal
   const readManagementToken = () => 'fake-mgmt-token'
   let saveAndDeployArgs = null
-  // KV mock：readKvHiddenModels / readKvManualModels 返回注入值（null = 不注入 → 用 DEFAULT_DEPS 真实实现）
+  // KV mock：readKvHiddenModels / readKvManualModels / readKvModels 返回注入值
+  // （null = 不注入 → 抛错，server 按读取失败静默降级处理）
   const readKvHiddenModels = kvHiddenModels !== null
     ? async () => kvHiddenModels
     : async () => { throw new Error('KV not mocked') }
   const readKvManualModels = kvManualModels !== null
     ? async () => kvManualModels
     : async () => { throw new Error('KV not mocked') }
+  const readKvModels = kvModels !== null
+    ? async () => kvModels
+    : async () => { throw new Error('KV models not mocked') }
   const writeKvHiddenModels = async (_t, _a, _n, map) => {
     kvWrites.push({ key: 'hidden-models', map })
   }
@@ -174,6 +179,7 @@ function makeDeps({
     readManagementToken,
     readKvHiddenModels,
     readKvManualModels,
+    readKvModels,
     writeKvHiddenModels,
     writeKvManualModels,
     deployToKV,
@@ -838,15 +844,36 @@ section('测试 23: sync 重建 KV manual-models（跨 PC 手工模型同步）'
 }
 
 // ── 测试 24：sync 自动部署到 KV（models + hidden-models + manual-models）──
+// 场景：新模型 pending + KV models 已含该模型（另一台 PC 已采用并部署）→ 提升为
+// selected → 触发自动部署（纯新增 pending 不再触发部署，见测试 41）
 section('测试 24: sync 自动部署到 KV')
 {
   const restoreEnv = withCleanEnv()
   try {
-    const { app, deps } = makeApp(
-      {},
-      { kvHiddenModels: {}, kvManualModels: {}, deployToKVResult: { success: true } },
-      fakeConfigWithKv,
+    const deps = makeDeps(
+      {
+        kvHiddenModels: {},
+        kvManualModels: {},
+        kvModels: [{ id: 'custom-agnes/agnes', object: 'model', name: 'Agnes' }],
+        deployToKVResult: { success: true },
+      },
     )
+    // merge mock：新模型 pending（与真实 merge.js 一致）
+    deps.mergeDiscovery = (state, _d) => ({
+      state: {
+        ...structuredClone(state),
+        'custom-agnes/agnes': { status: 'pending', provider: 'custom-agnes', metadata: {} },
+      },
+      newModels: ['custom-agnes/agnes'],
+      updatedModels: [],
+      removedModels: [],
+    })
+    const store = makeStore({})
+    const app = createApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfigWithKv },
+      deps,
+    })
     const res = await app.request('/api/sync', { method: 'POST' })
     check(res.status === 200, 'HTTP 200')
     const body = await res.json()
@@ -854,11 +881,15 @@ section('测试 24: sync 自动部署到 KV')
     check(body.autoDeployed === null, 'autoDeployed === null（后台部署中）')
     check(deps.calls.includes('write-models-json'), '调用了 writeModelsJson')
     check(deps.calls.includes('deployToKV'), '调用了 deployToKV')
-    // 验证 hidden-models 和 manual-models 被写入 KV
+    // 后台部署完成后验证 hidden-models 和 manual-models 被写入 KV
+    await new Promise((r) => setTimeout(r, 0))
     const hiddenWrite = deps.kvWrites.find((w) => w.key === 'hidden-models')
     const manualWrite = deps.kvWrites.find((w) => w.key === 'manual-models')
     check(!!hiddenWrite, '写入了 hidden-models 到 KV')
     check(!!manualWrite, '写入了 manual-models 到 KV')
+    const stateRes = await app.request('/api/state')
+    const stateBody = await stateRes.json()
+    check(stateBody.state['custom-agnes/agnes']?.status === 'selected', 'pending 被 KV models 提升为 selected')
   } finally {
     restoreEnv()
   }
@@ -869,15 +900,29 @@ section('测试 25: sync 自动部署失败不中断')
 {
   const restoreEnv = withCleanEnv()
   try {
-    const { app, deps } = makeApp(
-      {},
+    const deps = makeDeps(
       {
         kvHiddenModels: {},
         kvManualModels: {},
+        kvModels: [{ id: 'custom-agnes/agnes' }],
         deployToKVResult: { success: false, output: 'wrangler 错误' },
       },
-      fakeConfigWithKv,
     )
+    deps.mergeDiscovery = (state, _d) => ({
+      state: {
+        ...structuredClone(state),
+        'custom-agnes/agnes': { status: 'pending', provider: 'custom-agnes', metadata: {} },
+      },
+      newModels: ['custom-agnes/agnes'],
+      updatedModels: [],
+      removedModels: [],
+    })
+    const store = makeStore({})
+    const app = createApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfigWithKv },
+      deps,
+    })
     const res = await app.request('/api/sync', { method: 'POST' })
     check(res.status === 200, 'HTTP 200（同步仍成功）')
     const body = await res.json()
@@ -1459,6 +1504,201 @@ section('测试 40: pricing 改写+还原不触发 KV 部署')
   } finally {
     restoreEnv()
   }
+}
+
+// ── 测试 41：纯新增待审模型 → 不触发 KV 自动部署（核心行为变更）──
+section('测试 41: 纯新增 pending 不触发自动部署')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const deps = makeDeps({
+      kvHiddenModels: {},
+      kvManualModels: {},
+      kvModels: [],
+      deployToKVResult: { success: true },
+    })
+    // merge mock：新模型 pending（与真实 merge.js 一致：新模型默认待审）
+    deps.mergeDiscovery = (state, _d) => ({
+      state: {
+        ...structuredClone(state),
+        'custom-agnes/agnes': { status: 'pending', provider: 'custom-agnes', metadata: {} },
+      },
+      newModels: ['custom-agnes/agnes'],
+      updatedModels: [],
+      removedModels: [],
+    })
+    const store = makeStore({})
+    const app = createApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfigWithKv },
+      deps,
+    })
+    const res = await app.request('/api/sync', { method: 'POST' })
+    const body = await res.json()
+    check(res.status === 200 && body.ok === true, 'HTTP 200 ok')
+    check(body.autoDeployed === true, 'autoDeployed === true（待审不进任何 KV 键，无需部署）')
+    check(!deps.calls.includes('deployToKV'), '未调用 deployToKV')
+    check(!deps.calls.includes('write-models-json'), '未调用 writeModelsJson')
+    check(store.saves.length === 1, 'state 仍落盘（待审集合持久化）')
+    check(store.saves[0]['custom-agnes/agnes']?.status === 'pending', '新模型保持 pending')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 42：取消隐藏跨 PC 归位（本地 hidden + KV 隐藏集合已无 + KV models 有）──
+section('测试 42: 取消隐藏跨 PC 归位')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    // 本地两个隐藏模型：agnes 已被远端取消隐藏并部署；keep-hidden 仍在 KV 隐藏集合
+    const initial = {
+      'custom-agnes/agnes': { status: 'hidden', provider: 'custom-agnes', metadata: {} },
+      'custom-agnes/keep-hidden': { status: 'hidden', provider: 'custom-agnes', metadata: {} },
+    }
+    const deps = makeDeps({
+      kvHiddenModels: { 'custom-agnes/keep-hidden': { status: 'hidden', provider: 'custom-agnes', metadata: {} } },
+      kvManualModels: {},
+      kvModels: [{ id: 'custom-agnes/agnes' }],
+      deployToKVResult: { success: true },
+    })
+    deps.mergeDiscovery = (state, _d) => ({
+      state: structuredClone(state),
+      newModels: [],
+      updatedModels: [],
+      removedModels: [],
+    })
+    const store = makeStore(initial)
+    const app = createApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfigWithKv },
+      deps,
+    })
+    const res = await app.request('/api/sync', { method: 'POST' })
+    check(res.status === 200, 'HTTP 200')
+    const stateRes = await app.request('/api/state')
+    const st = (await stateRes.json()).state
+    check(st['custom-agnes/agnes']?.status === 'selected', '远端取消隐藏 → 本地归位 selected')
+    check(st['custom-agnes/keep-hidden']?.status === 'hidden', 'KV 隐藏集合中的模型保持 hidden（不误伤）')
+    check(store.saves.length === 1, '归位变化落盘')
+    check(deps.calls.includes('deployToKV'), '归位触发自动部署（models.json 需更新）')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 43：KV hidden 读取失败 → 保守不归位 ──
+section('测试 43: KV hidden 读取失败不归位')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const initial = { 'custom-agnes/agnes': { status: 'hidden', provider: 'custom-agnes', metadata: {} } }
+    const deps = makeDeps({
+      kvManualModels: {},
+      kvModels: [{ id: 'custom-agnes/agnes' }],
+    })
+    // KV hidden 读取失败（抛错）→ 无法确认远端是否已取消隐藏
+    deps.readKvHiddenModels = async () => { throw new Error('KV down') }
+    // enrich no-op：避免 backfill（缺 context_length 的存量模型）改写 metadata
+    // 导致误判「有变更需落盘」，干扰归位断言
+    deps.enrichModel = async (_id, meta) => ({ ...meta })
+    deps.mergeDiscovery = (state, _d) => ({
+      state: structuredClone(state),
+      newModels: [],
+      updatedModels: [],
+      removedModels: [],
+    })
+    const store = makeStore(initial)
+    const app = createApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfigWithKv },
+      deps,
+    })
+    const res = await app.request('/api/sync', { method: 'POST' })
+    check(res.status === 200, 'HTTP 200')
+    const stateRes = await app.request('/api/state')
+    const st = (await stateRes.json()).state
+    check(st['custom-agnes/agnes']?.status === 'hidden', 'KV hidden 读取失败 → 保持本地 hidden（保守不归位）')
+    check(store.saves.length === 0, '无变更不落盘')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 44：set-status 端点（待审采用/忽略）+ 即时写 hidden-models KV ──
+section('测试 44: set-status 端点 + toggle 即时写 KV')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const initial = {
+      'custom-agnes/pending-m': { status: 'pending', provider: 'custom-agnes', metadata: {} },
+      'custom-agnes/sel-m': { status: 'selected', provider: 'custom-agnes', metadata: {} },
+    }
+    const { app, deps } = makeApp(initial, { kvHiddenModels: {}, kvManualModels: {} }, fakeConfigWithKv)
+    // 即时写为后台串行队列（不阻塞响应）：断言前 flush 一轮宏任务
+    const flushKvQueue = () => new Promise((r) => setTimeout(r, 0))
+    // 忽略待审模型：pending → hidden + hidden-models 即时上云
+    const res = await app.request('/api/models/set-status', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ modelId: 'custom-agnes/pending-m', status: 'hidden' }),
+    })
+    const body = await res.json()
+    check(res.status === 200 && body.ok === true, 'set-status 忽略 → 200 ok')
+    check(body.entry.status === 'hidden', '待审模型 → hidden')
+    check(body.changed === true, 'changed === true')
+    await flushKvQueue()
+    const hiddenWrite = deps.kvWrites.find((w) => w.key === 'hidden-models')
+    check(!!hiddenWrite && 'custom-agnes/pending-m' in hiddenWrite.map, '忽略后即时写 hidden-models KV（防同步归位误伤）')
+
+    // 改回 selected（采用）：即时写移除该模型
+    await app.request('/api/models/set-status', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ modelId: 'custom-agnes/pending-m', status: 'selected' }),
+    })
+    await flushKvQueue()
+    const writes2 = deps.kvWrites.filter((w) => w.key === 'hidden-models')
+    check(writes2.length === 2 && !('custom-agnes/pending-m' in writes2[1].map), '采用后 hidden-models 即时移除该模型')
+
+    // 非法 status → 400（待审仅由同步产生，人工不可设回）
+    const resBad = await app.request('/api/models/set-status', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ modelId: 'custom-agnes/pending-m', status: 'pending' }),
+    })
+    check(resBad.status === 400, 'status=pending → 400')
+
+    // toggle 隐藏同样即时写 KV
+    await app.request('/api/models/toggle', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ modelId: 'custom-agnes/sel-m' }),
+    })
+    await flushKvQueue()
+    const writes3 = deps.kvWrites.filter((w) => w.key === 'hidden-models')
+    check(writes3.length === 3 && 'custom-agnes/sel-m' in writes3[2].map, 'toggle 隐藏后即时写 hidden-models KV')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 45：toggle 待审 → 采用（pending → selected）──
+section('测试 45: toggle 待审采用')
+{
+  const initial = {
+    'custom-agnes/pending-m': { status: 'pending', provider: 'custom-agnes', metadata: {} },
+  }
+  const { app } = makeApp(initial)
+  const res = await app.request('/api/models/toggle', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ modelId: 'custom-agnes/pending-m' }),
+  })
+  const body = await res.json()
+  check(res.status === 200 && body.ok === true, 'toggle 待审 → 200 ok')
+  check(body.entry.status === 'selected', 'pending → selected（一键采用）')
+  check(body.changed === true, 'changed === true')
 }
 
 console.log(`\n${'='.repeat(56)}`)

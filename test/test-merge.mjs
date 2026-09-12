@@ -27,13 +27,22 @@ function section(name) {
 
 const results = (providers) => ({ results: providers.map(([provider, models]) => ({ provider, models })), errors: [] })
 
-// ── 测试 1：新增模型 → selected ──
+// ── 测试 1：新增模型 → pending（待审，不进 models.json / 不触发部署）──
 section('新增模型')
 {
   const r = mergeDiscovery({}, results([['openrouter', [{ id: 'openrouter/m1', name: 'M1' }]]]))
-  check(r.state['openrouter/m1']?.status === 'selected', '新模型默认 selected')
+  check(r.state['openrouter/m1']?.status === 'pending', '新模型默认 pending（待审）')
   check(JSON.stringify(r.newModels) === JSON.stringify(['openrouter/m1']), '计入 newModels')
   check(r.removedModels.length === 0 && r.updatedModels.length === 0, '无移除/更新')
+}
+
+// ── 测试 1b：pending 状态跨同步保持（同步只覆盖 metadata）──
+section('pending 跨同步保持')
+{
+  const state = { 'openrouter/m1': { status: 'pending', provider: 'openrouter', metadata: { name: 'M1' } } }
+  const r = mergeDiscovery(state, results([['openrouter', [{ id: 'openrouter/m1', name: 'M1' }]]]))
+  check(r.state['openrouter/m1'].status === 'pending', '待审模型重新发现 → 保持 pending')
+  check(r.newModels.length === 0, '已有模型不计入 newModels')
 }
 
 // ── 测试 2：已存在模型 metadata 覆盖 ──
@@ -52,11 +61,13 @@ section('未发现 → 物理删除')
   const state = {
     'openrouter/gone': { status: 'selected', provider: 'openrouter', metadata: {} },
     'openrouter/gone-hidden': { status: 'hidden', provider: 'openrouter', metadata: {} },
+    'openrouter/gone-pending': { status: 'pending', provider: 'openrouter', metadata: {} },
   }
   const r = mergeDiscovery(state, results([['openrouter', []]]))
   check(!('openrouter/gone' in r.state), 'selected 消失 → 条目直接删除（无 removed 中间态）')
   check(!('openrouter/gone-hidden' in r.state), 'hidden 消失 → 条目直接删除')
-  check(JSON.stringify(r.removedModels.sort()) === JSON.stringify(['openrouter/gone', 'openrouter/gone-hidden']),
+  check(!('openrouter/gone-pending' in r.state), 'pending 消失 → 条目直接删除')
+  check(JSON.stringify(r.removedModels.sort()) === JSON.stringify(['openrouter/gone', 'openrouter/gone-hidden', 'openrouter/gone-pending']),
     '删除计入 removedModels')
   // 原 state 不被修改
   check('openrouter/gone' in state && 'openrouter/gone-hidden' in state, '入参 state 不被修改（深拷贝）')

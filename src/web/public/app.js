@@ -1619,8 +1619,8 @@ export const PROVIDER_SORT_GETTERS = {
   visibility: (p) => (p && p.enabled === false ? 1 : 0),
 }
 
-// 模型状态排序位次（与 TUI 分组一致：selected > hidden）
-const MODEL_STATUS_RANK = { selected: 0, hidden: 1 }
+// 模型状态排序位次（与 TUI 分组一致：selected > pending > hidden）
+const MODEL_STATUS_RANK = { selected: 0, pending: 1, hidden: 2 }
 
 // 模型列取值器（th[data-sort] 键 → 排序值）；context 先按上下文再按输出长度
 export const MODEL_SORT_GETTERS = {
@@ -1638,9 +1638,10 @@ export const MODEL_SORT_GETTERS = {
 // 数据流（交付包 §2 决策）：进入视图拉一次 /api/state + /api/providers/list 到内存；
 // 变更操作走 POST 端点并用响应更新内存态，再重新 applyFilter（不整页刷新）。
 
-// 状态图标：selected→◉(ok) / hidden→○(warn)
+// 状态图标：selected→◉(ok) / pending→◐(accent) / hidden→○(warn)
 const STATUS_MAP = {
   selected: { icon: '◉', text: '选中', cls: 'ok' },
+  pending: { icon: '◐', text: '待审', cls: 'pending' },
   hidden: { icon: '○', text: '隐藏', cls: 'warn' },
 }
 
@@ -1713,13 +1714,19 @@ export function buildModelTableRows(items, newModelIds) {
         ? `<button class="model-delete" data-delete-model="${escapeHtml(modelId)}" title="删除模型" type="button">✕</button>`
         : '') +
       `</td>`
+    // 待审行状态列：双操作（✓ 采用 → selected / ✕ 忽略 → hidden），替代单一状态徽章——
+    // 待审是「等待决策」态，直接暴露决策按钮比展示状态更可用；空格键仍走采用
+    const statusCellHtml = statusKey === 'pending'
+      ? `<button class="status-toggle" data-model-id="${escapeHtml(modelId)}" title="采用：加入选中列表（写入 models.json）" type="button"><span class="status-ok">✓ 采用</span></button>` +
+        `<button class="model-ignore" data-ignore-model="${escapeHtml(modelId)}" title="忽略：转入隐藏（不再进入网关）" type="button"><span class="status-warn">✕ 忽略</span></button>`
+      : `<button class="status-toggle" data-model-id="${escapeHtml(modelId)}" title="切换状态" type="button"><span class="status-${st.cls}">${st.icon} ${st.text}</span></button>`
     const html =
       `<tr data-model-id="${escapeHtml(modelId)}" class="${rowCls}">` +
       `<td>${badge}<span class="model-name-text" title="${escapeHtml(modelName)}">${escapeHtml(modelName)}</span></td>` +
       `<td><span class="model-id-text">${escapeHtml(modelId)}</span>` +
       `<button class="model-copy" data-copy-model="${escapeHtml(modelId)}" title="复制完整模型名称（含 Provider）" type="button">⧉</button></td>` +
       `<td>${contextText}</td>` +
-      `<td><button class="status-toggle" data-model-id="${escapeHtml(modelId)}" title="切换状态" type="button"><span class="status-${st.cls}">${st.icon} ${st.text}</span></button></td>` +
+      `<td class="status-cell">${statusCellHtml}</td>` +
       actionsHtml +
       `</tr>`
     rows.push({ modelId, html })
@@ -1832,6 +1839,8 @@ function deepEqual(a, b) {
 //   - models.json：selected 条目的 metadata（generate.js 剥离 status/provider + STRIP_FROM_KV）
 //   - hidden-models：hidden 条目的完整 entry（buildHiddenModelsMap）
 //   - manual-models：manual 条目的完整 entry（buildManualModelsMap）
+// pending 条目本身不进任何 KV 键，但其状态流转（采用 → selected / 忽略 → hidden）
+// 改变投影 → 计入对比；同步结束 snapshot 重置，纯待审累积不误报未保存。
 // metadata 中 id/created 为易变/冗余字段（与 merge.js VOLATILE_METADATA_FIELDS 对齐），
 // benchmarks/architecture/top_provider 等展示型大字段变化不影响 KV（见 merge.js/generate.js，pricing 除外），
 // 均不参与对比。
@@ -1847,7 +1856,7 @@ function stripForDirty(state) {
   const out = {}
   for (const [k, v] of Object.entries(state)) {
     if (!v || typeof v !== 'object') continue
-    if (v.status !== 'selected' && v.status !== 'hidden' && v.manual !== true) continue
+    if (v.status !== 'selected' && v.status !== 'hidden' && v.status !== 'pending' && v.manual !== true) continue
     const projection = { status: v.status, provider: v.provider }
     if (v.manual === true) projection.manual = true
     if (v.metadata && typeof v.metadata === 'object') {
@@ -2010,9 +2019,23 @@ function injectModelsStyles() {
     .status-ok { color: var(--ok); }
     .status-warn { color: var(--warn); }
     .status-err { color: var(--err); }
+    .status-pending { color: var(--accent); }
+    /* 待审行「✕ 忽略」按钮：与状态 pill 同款视觉（warn 色系） */
+    .model-ignore {
+      background: transparent; color: inherit; border: 1px solid var(--border);
+      border-radius: 999px; padding: 0.15rem 0.6rem; cursor: pointer; font-size: 0.75rem;
+      letter-spacing: 0.01em; margin-left: 0.3rem;
+      transition: background 0.15s var(--ease-out), border-color 0.15s var(--ease-out),
+        box-shadow 0.15s var(--ease-out);
+    }
+    .model-ignore:hover { border-color: var(--border-strong); }
+    .model-ignore:has(.status-warn) {
+      background: var(--warn-soft); border-color: var(--warn-border);
+    }
+    .model-ignore:has(.status-warn):hover { box-shadow: 0 0 10px var(--led-warn); }
     /* 状态列 pill 徽章：语义色浅底 + 半透明描边 + 同色文字。
-       用 :has(.status-ok/warn/err) 给按钮本体上色；
-       不支持 :has 的浏览器忽略本规则，回退为纯文字样式，功能无损。 */
+        用 :has(.status-ok/warn/err) 给按钮本体上色；
+        不支持 :has 的浏览器忽略本规则，回退为纯文字样式，功能无损。 */
     .status-toggle {
       background: transparent; color: inherit; border: 1px solid var(--border);
       border-radius: 999px; padding: 0.15rem 0.6rem; cursor: pointer; font-size: 0.75rem;
@@ -2025,6 +2048,10 @@ function injectModelsStyles() {
       background: var(--ok-soft); border-color: var(--ok-border);
     }
     .status-toggle:has(.status-ok):hover { box-shadow: 0 0 10px var(--led-ok); }
+    .status-toggle:has(.status-pending) {
+      background: var(--accent-soft); border-color: var(--accent-border);
+    }
+    .status-toggle:has(.status-pending):hover { box-shadow: 0 0 8px var(--led-accent); }
     .status-toggle:has(.status-warn) {
       background: var(--warn-soft); border-color: var(--warn-border);
     }
@@ -2100,7 +2127,7 @@ export function renderModelsView(container) {
   let snapshot = {}           // 进入视图时的初始快照（dirty 基准）
   let provider = null         // 侧栏筛选（null = 全部）
   let keyword = ''            // 关键字筛选（仅筛选条件，不标 dirty，已知坑 6）
-  let status = null           // 状态筛选（null = 全部，selected/hidden）
+  let status = null           // 状态筛选（null = 全部，selected/pending/hidden）
   let sortKey = null          // 列排序（th[data-sort]，null = 后端默认顺序）
   let sortDir = 'asc'         // 排序方向（asc/desc，sortKey=null 时无意义）
   let items = []              // 当前筛选结果
@@ -2126,6 +2153,7 @@ export function renderModelsView(container) {
           <div class="filter-status-group">
             <button class="filter-status-btn active" data-status="">全部</button>
             <button class="filter-status-btn" data-status="selected">✓ 选中</button>
+            <button class="filter-status-btn" data-status="pending">◐ 待审</button>
             <button class="filter-status-btn" data-status="hidden">○ 隐藏</button>
           </div>
           <input id="model-keyword" type="search" placeholder="关键字筛选（模型ID / 名称）…">
@@ -2261,6 +2289,8 @@ export function renderModelsView(container) {
   }
 
   // ── 变更操作（响应驱动更新内存态，再重新 applyFilter）────
+  const STATUS_TEXT = { selected: '选中', pending: '待审', hidden: '隐藏' }
+
   async function toggleModel(modelId) {
     if (guardInitBlocked('切换模型状态')) return
     if (syncing) return
@@ -2270,10 +2300,26 @@ export function renderModelsView(container) {
       updateDirty()
       await applyFilter()
       const st = res.entry && res.entry.status
-      logActivity(`模型切换：${modelId} → ${st === 'selected' ? '选中' : st === 'hidden' ? '隐藏' : st || '未知'}`, 'info')
+      logActivity(`模型切换：${modelId} → ${STATUS_TEXT[st] || st || '未知'}`, 'info')
     } catch (err) {
       flash(err.message, 'err')
       logActivity(`模型切换失败：${modelId}（${err.message}）`, 'err')
+    }
+  }
+
+  // 待审行「忽略」按钮：直接设置目标状态（hidden），区别于 toggle 的采用语义
+  async function setModelStatus(modelId, target) {
+    if (guardInitBlocked('设置模型状态')) return
+    if (syncing) return
+    try {
+      const res = await withBusy('正在更新模型状态…', api('/api/models/set-status', { method: 'POST', body: { modelId, status: target } }))
+      if (state[modelId]) state[modelId] = { ...state[modelId], ...(res.entry || {}) }
+      updateDirty()
+      await applyFilter()
+      logActivity(`模型状态：${modelId} → ${STATUS_TEXT[target] || target}`, 'info')
+    } catch (err) {
+      flash(err.message, 'err')
+      logActivity(`设置模型状态失败：${modelId}（${err.message}）`, 'err')
     }
   }
 
@@ -2971,9 +3017,16 @@ export function renderModelsView(container) {
       })
       return
     }
+    // 待审行「忽略」按钮：pending → hidden（采用走 status-toggle / 空格）
+    const ignoreBtn = e.target.closest('.model-ignore')
+    if (ignoreBtn) {
+      const modelId = ignoreBtn.dataset.ignoreModel
+      if (modelId) setModelStatus(modelId, 'hidden')
+      return
+    }
     const statusBtn = e.target.closest('.status-toggle')
     if (statusBtn) {
-      // 状态按钮：selected ↔ hidden 切换
+      // 状态按钮：selected ↔ hidden 切换；pending（待审）→ 采用
       const modelId = statusBtn.dataset.modelId
       if (modelId) toggleModel(modelId)
       return

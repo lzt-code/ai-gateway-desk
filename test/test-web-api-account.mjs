@@ -97,6 +97,15 @@ function makeDeps(overrides = {}, spawnResult = {}) {
     loadModelsJsonState: () => ({ exists: true, count: 12 }),
     readToken: () => 'cfut-local',
     readManagementToken: () => 'mgt-local',
+    // KV REST 读写 no-op：模型 toggle（即时写 hidden-models）与 provider 可见性读取
+    // 走 DEFAULT_DEPS 会拿 mock token 发真实网络请求，注入 no-op 杜绝触网
+    readKvVisibility: async () => ({}),
+    writeKvVisibility: async () => {},
+    readKvHiddenModels: async () => ({}),
+    writeKvHiddenModels: async () => {},
+    readKvManualModels: async () => ({}),
+    writeKvManualModels: async () => {},
+    readKvModels: async () => [],
     fetchCloudProviders: async () => ({ providers: [], errors: [] }),
     spawnFn: (cmd, args, opts) => {
       const child = makeFakeChild(spawnResult)

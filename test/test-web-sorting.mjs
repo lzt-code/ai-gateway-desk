@@ -126,10 +126,19 @@ section('测试 4: MODEL_SORT_GETTERS')
   check(sortViewItems(ctxTie, MODEL_SORT_GETTERS.context)[0].modelId === 'p/b',
     '上下文相同时按输出长度升序')
 
-  // status：selected(0) < hidden(1)
+  // status：selected(0) < pending(1) < hidden(2)
   const byStatus = sortViewItems(modelItems, MODEL_SORT_GETTERS.status)
   check(byStatus.map((i) => i.entry.status).join(',') === 'selected,hidden,hidden',
     '状态排序：selected → hidden')
+  const statusMixed = [
+    { modelId: 'p/h', entry: { status: 'hidden', metadata: {} } },
+    { modelId: 'p/p', entry: { status: 'pending', metadata: {} } },
+    { modelId: 'p/s', entry: { status: 'selected', metadata: {} } },
+  ]
+  check(
+    sortViewItems(statusMixed, MODEL_SORT_GETTERS.status).map((i) => i.entry.status).join(',') === 'selected,pending,hidden',
+    '状态排序：selected → pending → hidden'
+  )
 }
 
 // ── 测试 5：PROVIDER_SORT_GETTERS ──

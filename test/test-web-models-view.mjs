@@ -145,6 +145,26 @@ section('buildModelTableRows')
     check(rows[0].html.includes(`<td>${expected}</td>`), `${JSON.stringify(meta)} → "${expected}"（1000 进制）`)
   }
 }
+{
+  // 待审行：状态列为双操作按钮（✓ 采用 / ✕ 忽略），非单一状态徽章
+  const rows = buildModelTableRows([
+    { modelId: 'p/new-m', entry: { status: 'pending', metadata: {} } },
+    { modelId: 'p/sel-m', entry: { status: 'selected', metadata: {} } },
+  ])
+  check(
+    rows[0].html.includes('class="status-ok">✓ 采用</span>') && rows[0].html.includes('title="采用'),
+    '待审行 → 「✓ 采用」按钮（走 toggle：pending → selected）'
+  )
+  check(
+    rows[0].html.includes('class="model-ignore"') && rows[0].html.includes('data-ignore-model="p/new-m"'),
+    '待审行 → 「✕ 忽略」按钮（data-ignore-model，走 set-status hidden）'
+  )
+  check(rows[0].html.includes('class="row-pending"'), '待审行 → row-pending 类')
+  check(
+    !rows[1].html.includes('model-ignore') && rows[1].html.includes('status-toggle'),
+    '非待审行 → 单一状态徽章（无忽略按钮）'
+  )
+}
 check(
   Array.isArray(buildModelTableRows([])) && buildModelTableRows([]).length === 0,
   '空数组 → 返回空数组（视图显示空状态文案）',
@@ -345,11 +365,22 @@ section('computeDirty')
     { 'b/2': { status: 'selected', manual: true, provider: 'b', metadata: { name: 'B2' } } },
   ) === true, 'manual metadata 变化 → true')
 
-  // 非 selected/hidden/manual 条目不算 dirty
+  // 非 selected/hidden/pending/manual 条目不算 dirty
   check(computeDirty(
     { 'a/1': { status: 'selected', metadata: { name: 'A' } } },
     { 'a/1': { status: 'selected', metadata: { name: 'A' } }, 'c/3': { status: 'removed', metadata: {} } },
   ) === false, 'removed 条目不影响 dirty')
+
+  // pending 条目参与投影：采用（pending → selected）/ 忽略（pending → hidden）→ true
+  const snapPending = { 'a/1': { status: 'pending', metadata: { name: 'A' } } }
+  check(computeDirty(snapPending, { 'a/1': { status: 'pending', metadata: { name: 'A' } } }) === false,
+    'pending 无变化 → false（纯待审累积不误报未保存）')
+  check(computeDirty(snapPending, { 'a/1': { status: 'selected', metadata: { name: 'A' } } }) === true,
+    'pending → selected（采用）→ true（进入 models.json 投影）')
+  check(computeDirty(snapPending, { 'a/1': { status: 'hidden', metadata: { name: 'A' } } }) === true,
+    'pending → hidden（忽略）→ true（进入 hidden-models 投影）')
+  check(computeDirty(snapPending, {}) === true,
+    'pending 条目被删除（上游消失）→ true')
 }
 
 // ── 18-19：导出存在性 + 任务 30 回归 ─────────────────────

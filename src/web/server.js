@@ -114,6 +114,9 @@ const HIDDEN_MODELS_KV_KEY = 'hidden-models'
 // 跨 PC 同步手工添加模型（modelId → entry）的 KV 键名
 const MANUAL_MODELS_KV_KEY = 'manual-models'
 
+// 已部署模型列表（models.json）的 KV 键名（可被 config.kv.key 覆盖，默认 models）
+const MODELS_KV_KEY = 'models'
+
 /**
  * 提取配置了非标准路径（pathPrefix）的 provider 网关 slug 集合（如 "custom-fang-zhou"）。
  * 动态路由防呆：CF Unified API 对 custom provider 固定请求 {base_url}/v1/chat/completions，
@@ -168,10 +171,13 @@ const DEFAULT_DEPS = {
     readKvJson(apiToken, accountId, namespaceId, MANUAL_MODELS_KV_KEY, {}),
   writeKvManualModels: async (apiToken, accountId, namespaceId, map) =>
     writeKvJson(apiToken, accountId, namespaceId, MANUAL_MODELS_KV_KEY, map),
+  readKvModels: async (apiToken, accountId, namespaceId, key = MODELS_KV_KEY) =>
+    readKvJson(apiToken, accountId, namespaceId, key, []),
   buildHiddenModelsMap,
   buildManualModelsMap,
   applyHiddenModels,
   applyManualModels,
+  applySelectedModels,
   // 任务 29：Worker + 账户管理 API
   summarizeTokenStatus,
   summarizeGatewayInfo,
@@ -318,6 +324,49 @@ function applyManualModels(state, manualMap) {
 }
 
 /**
+ * 将 KV 已部署模型列表（models 键）应用到 state：KV 中已采用（selected）的模型，
+ * 本地状态向 selected 对齐（单向提升，绝不降级）：
+ *   a. 本地 pending（待审）→ selected：另一台 PC 已审核采用，本地无需再审
+ *   b. 本地 hidden → selected（取消隐藏归位）：仅当「KV 隐藏集合已不含该模型」——
+ *      远端取消隐藏并部署后（hidden-models 移除 + models 列表加入），本地同步归位，
+ *      修复「取消隐藏不跨 PC 传播、且会被下一次部署回滚」的既有缺陷。
+ *      kvHiddenMap 为 null（读取失败 / 未配置）时跳过归位（无法确认远端已取消）。
+ * 不在 state 中的条目跳过（等待 discover / manual 重建）。
+ * 返回 { state, changed } 供调用方判定是否需要落盘 / 部署。
+ * @param {object} state - merge 后的 state
+ * @param {Array<object>|null} kvModels - KV models 键内容（数组，null = 读取失败跳过）
+ * @param {object|null} kvHiddenMap - KV hidden-models 键内容（null = 读取失败）
+ * @returns {{ state: object, changed: boolean }}
+ */
+function applySelectedModels(state, kvModels, kvHiddenMap) {
+  if (!Array.isArray(kvModels)) return { state, changed: false }
+  const approved = new Set(
+    kvModels
+      .filter((m) => m && typeof m === 'object' && typeof m.id === 'string' && m.id)
+      .map((m) => m.id)
+  )
+  if (approved.size === 0) return { state, changed: false }
+  const hiddenIds = kvHiddenMap && typeof kvHiddenMap === 'object'
+    ? new Set(Object.keys(kvHiddenMap))
+    : null
+  const next = { ...state }
+  let changed = false
+  for (const id of approved) {
+    const entry = next[id]
+    if (!entry) continue
+    if (entry.status === 'pending') {
+      next[id] = { ...entry, status: 'selected' }
+      changed = true
+    } else if (entry.status === 'hidden' && hiddenIds && !hiddenIds.has(id)) {
+      // 取消隐藏归位：远端已取消隐藏并部署（不在 KV 隐藏集合 + 在已部署列表）
+      next[id] = { ...entry, status: 'selected' }
+      changed = true
+    }
+  }
+  return { state: next, changed }
+}
+
+/**
  * 解析 JSON 请求体；body 缺失 / 非法 JSON → 返回 null（调用方统一回 400）。
  * @param {import('hono').Context} c
  * @returns {Promise<object|null>}
@@ -346,8 +395,8 @@ async function readJsonBody(c) {
  *        fetchCloudProviders / mergeProviderViews / updateProviderCloud /
  *        createProviderCloud / deleteProviderCloud / writeProvidersConfigFile /
  *        readKvVisibility / writeKvVisibility / readKvHiddenModels / writeKvHiddenModels /
- *        readKvManualModels / writeKvManualModels / buildHiddenModelsMap / buildManualModelsMap /
- *        applyHiddenModels / applyManualModels / summarizeTokenStatus /
+ *        readKvManualModels / writeKvManualModels / readKvModels / buildHiddenModelsMap /
+ *        buildManualModelsMap / applyHiddenModels / applyManualModels / applySelectedModels / summarizeTokenStatus /
  *        summarizeGatewayInfo / updateToken / clearSlotToken / buildWorkersStatus /
  *        checkKVKey / loadModelsJsonState / spawnFn（部署/向导子进程；
  *        部署超时可用 deps.deployTimeoutMs 覆盖，默认 120s）
@@ -449,6 +498,33 @@ export function createApp({
     }
   }
 
+  /**
+   * 状态变更（toggle / set-status / batch-toggle）后即时重写 hidden-models KV（REST API）。
+   * 目的：让「本地隐藏但尚未部署」的决策即时上云，同步时的取消隐藏归位
+   * （applySelectedModels）据 KV 隐藏集合判断，不会误伤本地未部署的隐藏。
+   * 附带收益：隐藏决策跨 PC 即时生效（无需等部署）。
+   * 后台串行队列执行，不阻塞端点响应（网络慢/离线时本地操作不受影响）；
+   * 串行化防快速连续操作乱序覆盖（整 map 写入，后写含最新全量）。
+   * KV 不可用或写入失败 → 静默降级（本地已生效，下次部署/同步全量收敛）。
+   */
+  let hiddenModelsKvQueue = Promise.resolve()
+  const queueHiddenModelsKvWrite = () => {
+    const config = configStore.load()
+    const gateway = config.gateway || {}
+    const namespaceId = config.kv?.namespaceId || ''
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    if (!mgmtToken || !gateway.accountId || !namespaceId) return
+    hiddenModelsKvQueue = hiddenModelsKvQueue.then(async () => {
+      try {
+        await depsAll.writeKvHiddenModels(
+          mgmtToken, gateway.accountId, namespaceId, depsAll.buildHiddenModelsMap(state),
+        )
+      } catch {
+        // 静默降级
+      }
+    })
+  }
+
   // 未捕获异常统一 500 + { error }
   app.onError((err, c) => {
     console.error('[aigd] API 错误:', err)
@@ -478,7 +554,8 @@ export function createApp({
     return c.json({ ok: true, state: filterVisibleState(state, hidden) })
   })
 
-  // POST /api/models/toggle — 切换 selected ↔ hidden
+  // POST /api/models/toggle — 切换状态：selected ↔ hidden；pending → selected（采用）
+  // 变更后后台即时重写 hidden-models KV（防同步归位误伤本地未部署的隐藏）
   app.post('/api/models/toggle', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
@@ -487,7 +564,33 @@ export function createApp({
     }
     if (!state[body.modelId]) return c.json({ error: 'model not found' }, 404)
     const changed = toggleStatus(state, body.modelId)
-    if (changed) stateStore.save(state)
+    if (changed) {
+      stateStore.save(state)
+      queueHiddenModelsKvWrite()
+    }
+    return c.json({ ok: true, changed, entry: state[body.modelId] })
+  })
+
+  // POST /api/models/set-status — 设置模型状态（selected|hidden），供「待审」审核：
+  // 采用（pending → selected）/ 忽略（pending → hidden）。拒绝设回 pending
+  // （待审只由同步发现产生，人工决策不回退；误操作可再切换 selected ↔ hidden）。
+  // 变更后后台即时重写 hidden-models KV（同 toggle）。
+  app.post('/api/models/set-status', async (c) => {
+    const body = await readJsonBody(c)
+    if (body === null) return c.json({ error: 'invalid json body' }, 400)
+    if (typeof body.modelId !== 'string' || !body.modelId) {
+      return c.json({ error: 'modelId is required' }, 400)
+    }
+    if (body.status !== 'selected' && body.status !== 'hidden') {
+      return c.json({ error: 'status 必须为 selected 或 hidden' }, 400)
+    }
+    if (!state[body.modelId]) return c.json({ error: 'model not found' }, 404)
+    const changed = state[body.modelId].status !== body.status
+    if (changed) {
+      state[body.modelId].status = body.status
+      stateStore.save(state)
+      queueHiddenModelsKvWrite()
+    }
     return c.json({ ok: true, changed, entry: state[body.modelId] })
   })
 
@@ -521,7 +624,10 @@ export function createApp({
     const currentSelected = targets.filter((id) => state[id].status === 'selected').length
     const targetStatus = currentSelected > 0 ? 'hidden' : 'selected'
     const changed = toggleAllStatus(state, body.modelIds)
-    if (changed) stateStore.save(state)
+    if (changed) {
+      stateStore.save(state)
+      queueHiddenModelsKvWrite()
+    }
     return c.json({ ok: true, changed, status: targetStatus, count: targets.length })
   })
 
@@ -733,6 +839,7 @@ export function createApp({
       let visibilityMap = null
       let hiddenModelsMap = null
       let manualModelsMap = null
+      let kvModelsList = null
       if (kvReady) {
         try {
           visibilityMap = await depsAll.readKvVisibility(mgmtToken, gateway.accountId, namespaceId)
@@ -748,6 +855,14 @@ export function createApp({
           manualModelsMap = await depsAll.readKvManualModels(mgmtToken, gateway.accountId, namespaceId)
         } catch {
           manualModelsMap = null
+        }
+        try {
+          // 已部署模型列表（跨 PC 采用真相）：pending 提升与取消隐藏归位的依据
+          kvModelsList = await depsAll.readKvModels(
+            mgmtToken, gateway.accountId, namespaceId, config.kv?.key || MODELS_KV_KEY
+          )
+        } catch {
+          kvModelsList = null
         }
       }
       const result = await runSyncFlow({
@@ -768,33 +883,39 @@ export function createApp({
         }
       }
       // 应用 KV 手工模型（重建跨 PC 添加的手工模型）+ 隐藏模型（KV 隐藏态优先）
+      // + 已部署列表（pending → selected 提升 + 取消隐藏归位）
       const manualResult = depsAll.applyManualModels(result.state, manualModelsMap)
       const hiddenResult = depsAll.applyHiddenModels(manualResult.state, hiddenModelsMap)
-      result.state = hiddenResult.state
+      const selectedResult = depsAll.applySelectedModels(hiddenResult.state, kvModelsList, hiddenModelsMap)
+      result.state = selectedResult.state
       // 同步完成后统一写盘一次（不逐模型写，与 TUI「合并后统一 dirty」一致）
-      // 有变更（同步 discover + KV 手工/隐藏应用）才落盘
+      // 有变更（同步 discover + KV 手工/隐藏/采用应用）才落盘
       const hasChanges =
         (result.summary.newModels && result.summary.newModels.length > 0) ||
         (result.summary.updatedModels && result.summary.updatedModels.length > 0) ||
         (result.summary.removedModels && result.summary.removedModels.length > 0) ||
         manualResult.changed ||
-        hiddenResult.changed
-      // 部署触发条件：排除「前后均为 hidden 的纯 metadata 变化」。
-      // 隐藏模型不写入 models.json（generate 只取 status==='selected'），其参数变化
-      // 不影响对外暴露的数据；本地 state 仍已落盘，取消隐藏时即可见最新参数。
+        hiddenResult.changed ||
+        selectedResult.changed
+      // 部署触发条件：只看「KV 部署投影」是否变化（models / hidden-models / manual-models 三键）：
+      //   - 纯新增 pending 模型：不进任何 KV 键（generate 只取 selected），不再触发部署
+      //   - 排除「前后均为 hidden 的纯 metadata 变化」：隐藏模型不写入 models.json，
+      //     其参数变化不影响对外暴露的数据；本地 state 仍已落盘，取消隐藏时即可见最新参数
+      //   - 排除 pending 模型的 metadata 变化：同理不进任何 KV 键
       // 注意：此时 state 仍为同步前旧对象（下一行才赋值），result.state 为合并后新对象。
       const hasDeployChanges =
-        (result.summary.newModels && result.summary.newModels.length > 0) ||
         (result.summary.removedModels && result.summary.removedModels.length > 0) ||
         manualResult.changed ||
         hiddenResult.changed ||
+        selectedResult.changed ||
         (result.summary.updatedModels || []).some((modelId) => {
           const newEntry = result.state[modelId]
           const oldEntry = state[modelId]
           const hiddenBeforeAndAfter =
             newEntry && newEntry.status === 'hidden' &&
             oldEntry && oldEntry.status === 'hidden'
-          return !hiddenBeforeAndAfter
+          const pendingAfter = newEntry && newEntry.status === 'pending'
+          return !hiddenBeforeAndAfter && !pendingAfter
         })
       state = result.state
       if (hasChanges) stateStore.save(state)

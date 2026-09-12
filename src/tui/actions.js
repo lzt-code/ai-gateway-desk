@@ -14,7 +14,7 @@ import { syncProviders } from '../cloudflare/providers-sync.js'
 import { gatewaySlug } from '../cloudflare/discover.js'
 
 /**
- * space：切换 selected ↔ hidden
+ * space：状态切换。selected ↔ hidden；pending（待审）→ selected（一键采用）
  * @param {object} state
  * @param {string} modelId
  * @returns {boolean} 是否发生变更
@@ -26,6 +26,8 @@ export function toggleStatus(state, modelId) {
   if (entry.status === 'selected') {
     entry.status = 'hidden'
   } else if (entry.status === 'hidden') {
+    entry.status = 'selected'
+  } else if (entry.status === 'pending') {
     entry.status = 'selected'
   } else {
     return false
@@ -46,7 +48,8 @@ export function deleteModel(state, modelId) {
 }
 
 /**
- * F2：批量切换（有选中 → 全部隐藏；无选中 → 全部选中）
+ * F2：批量切换（有选中 → 全部隐藏；无选中 → 全部选中）。
+ * pending（待审）按「未选中」参与判定：范围内仅待审/隐藏 → 全部选中。
  * @param {object} state
  * @param {string[]} [modelIds] - 仅切换这些模型（筛选结果）；缺省 = 全部模型。
  * @returns {boolean} 是否发生变更

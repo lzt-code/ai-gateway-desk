@@ -108,7 +108,7 @@ Hono 应用，`createApp` 支持依赖注入（测试可 mock stateStore / confi
 Vanilla JS 单页（`app.js` / `index.html` / `style.css`），五个视图 tab：
 
 - **Provider**：云端+本地合并列表，编辑/隐藏/删除，同步刷新
-- **模型**：模型表格 + Provider 侧栏 + 关键字筛选，状态切换（selected/hidden）、编辑、手动添加、批量删除
+- **模型**：模型表格 + Provider 侧栏 + 关键字筛选，状态切换（selected/pending/hidden）、编辑、手动添加、批量删除
 - **动态路由**：路由表格（fallback 链 / 状态 / 操作），表单化编辑（模板 + 「provider/模型」下拉建议）→ 一键部署（REST），「拉取云端路由」同步展示层
 - **Worker**：部署状态面板（KV / models.json / KV key 三态），一键部署
 - **账户**：双 token 槽位管理 + gateway 信息 + 初始化向导入口
@@ -189,30 +189,37 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 ### 5.2 `data/model-states.json`（真相源，gitignore）
 
 ```json
-{ "modelId": { "status": "selected|hidden", "provider": "...", "metadata": { ... } } }
+{ "modelId": { "status": "selected|pending|hidden", "provider": "...", "metadata": { ... } } }
 ```
 
 状态机：
 
 ```
           发现新模型
-              │
-              ▼
-   selected ──隐藏──► hidden ──取消隐藏──► selected
-      │                ▲                      │
-      │  provider 不再返回                     │
-      ▼                │                      │
-   从 state 删除 ◄──────┘（同步时直接物理删除，
-                          manual 条目豁免；也可手工删除）
+               │
+               ▼
+            pending ──采用──► selected ──隐藏──► hidden ──取消隐藏──► selected
+               │                  │                ▲                      │
+               │ 忽略              │ provider 不再返回 │                      │
+               ▼                  ▼                │                      │
+            hidden          从 state 删除 ◄─────────┘（同步时直接物理删除，
+                              │     manual 条目豁免；也可手工删除）
+                              │
+                       （pending/hidden 消失亦同理物理删除）
 ```
 
 - `selected`：写入 models.json，出现在 `/v1/models`
+- `pending`（待审）：新发现模型默认态。不进 models.json、不进任何 KV 键，
+  不触发同步后的自动部署。用户在「待审」筛选中采用（→ selected）或忽略（→ hidden）。
+  跨 PC 收敛：每台 PC 独立发现新模型即标 pending，无需传播；采用/忽略经 KV
+  （selected → models 键 / hidden → hidden-models 键）跨 PC 同步
+  （applySelectedModels 提升 + 取消隐藏归位）
 - `hidden`：跨更新保持隐藏，不入列表；同步不会删除
 - 删除：无中间态，provider 不再返回时同步直接物理删除（手工模型需手工删除）
 
 ### 5.3 `data/models.json`（生成产物，gitignore）
 
-由 generate 过滤 selected + 隐藏 provider 后输出数组，直接部署到 KV。
+由 generate 过滤 **selected**（pending/hidden 不入）+ 隐藏 provider 后输出数组，直接部署到 KV。
 
 ### 5.4 `data/routes.json`（私有，gitignore）
 

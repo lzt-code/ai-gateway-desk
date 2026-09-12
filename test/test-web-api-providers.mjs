@@ -97,6 +97,13 @@ function makeDeps({
     visibilityMap = { ...map }
     kvWrites.push(map)
   }
+  // 模型状态 KV 读写 no-op：toggle（即时写 hidden-models）走 DEFAULT_DEPS 会发真实
+  // 网络请求（mock token 也能过 guard），注入 no-op 杜绝触网
+  const readKvHiddenModels = async () => ({})
+  const writeKvHiddenModels = async () => {}
+  const readKvManualModels = async () => ({})
+  const writeKvManualModels = async () => {}
+  const readKvModels = async () => []
   return {
     calls,
     kvWrites,
@@ -107,6 +114,11 @@ function makeDeps({
     readManagementToken,
     readKvVisibility,
     writeKvVisibility,
+    readKvHiddenModels,
+    writeKvHiddenModels,
+    readKvManualModels,
+    writeKvManualModels,
+    readKvModels,
   }
 }
 

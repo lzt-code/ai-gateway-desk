@@ -77,6 +77,22 @@ section('测试 2: 场景 A — 表格行格式')
   const hidden = items.find((i) => i.modelId === 'openrouter/gpt-4o')
   check(hidden && hidden.text.includes('隐藏'), 'hidden 行含「隐藏」状态文字')
   check(hidden && hidden.text.includes('{yellow-fg}○{/yellow-fg}'), 'hidden 行含黄色 ○ 图标')
+
+  // 待审行：cyan ◐ 图标 + 「待审」文字
+  const pendingItems = buildListItems({ 'openrouter/new-m': { status: 'pending', metadata: { provider: 'openrouter', name: 'New M' } } }, 60)
+  check(pendingItems[0] && pendingItems[0].text.includes('待审'), 'pending 行含「待审」状态文字')
+  check(pendingItems[0] && pendingItems[0].text.includes('{cyan-fg}◐{/cyan-fg}'), 'pending 行含 cyan ◐ 图标')
+
+  // 排序：selected > pending > hidden
+  const mixed = buildListItems({
+    'z/hidden': { status: 'hidden', metadata: {} },
+    'z/selected': { status: 'selected', metadata: {} },
+    'z/pending': { status: 'pending', metadata: {} },
+  }, 60)
+  check(
+    mixed.map((i) => i.modelId).join(',') === 'z/selected,z/pending,z/hidden',
+    '状态分组排序 selected > pending > hidden'
+  )
 }
 
 // ── 测试 3：场景 B — 长 id 截断（显示宽度安全）──
@@ -159,6 +175,15 @@ section('测试 6: 场景 E — toggleAllStatus 按范围切换 / deleteModel')
   check(toggleAllStatus(st5, ['a']) === true, '单模型范围正常切换')
   const st6 = { a: { status: 'selected' } }
   check(toggleAllStatus(st6, ['ghost']) === false, '范围全是缺失 id → 返回 false')
+
+  // pending 按「未选中」参与批量判定：范围内仅待审 → 全部选中（批量采用）
+  const st8 = { a: { status: 'pending' }, b: { status: 'pending' } }
+  check(toggleAllStatus(st8, ['a', 'b']) === true, '范围内有待审模型 → 返回 true')
+  check(st8.a.status === 'selected' && st8.b.status === 'selected', '范围内仅待审 → 全部选中')
+  // 范围内 selected + pending 混合 → 全部隐藏
+  const st9 = { a: { status: 'selected' }, b: { status: 'pending' } }
+  toggleAllStatus(st9, ['a', 'b'])
+  check(st9.a.status === 'hidden' && st9.b.status === 'hidden', 'selected + pending 混合 → 全部隐藏')
 
   // deleteModel：物理删除 + 幂等
   const st7 = { a: { status: 'selected' }, b: { status: 'hidden' } }

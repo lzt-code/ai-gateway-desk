@@ -75,10 +75,23 @@ const defaultMockConfigStore = {
   }),
 }
 
+// no-op KV deps：状态变更后即时写 hidden-models KV（queueHiddenModelsKvWrite）与
+// 删除后清理（cleanupModelKvAfterDeletion）会触发 KV REST 调用，注入 no-op mock
+// 杜绝测试触网（真实 DEFAULT_DEPS 会拿本机管理 Token 发真实请求）
+const noNetworkKvDeps = {
+  readKvVisibility: async () => ({}),
+  writeKvVisibility: async () => {},
+  readKvHiddenModels: async () => ({}),
+  writeKvHiddenModels: async () => {},
+  readKvManualModels: async () => ({}),
+  writeKvManualModels: async () => {},
+  readKvModels: async () => [],
+}
+
 // 快捷：注入内存 store 的 app + req helper
 function makeApp(initial = sampleState, configStore = defaultMockConfigStore) {
   const store = makeStore(initial)
-  const app = createApp({ stateStore: store, configStore })
+  const app = createApp({ stateStore: store, configStore, deps: noNetworkKvDeps })
   const req = (method, p, body) =>
     app.request(p, {
       method,

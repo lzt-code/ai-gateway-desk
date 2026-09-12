@@ -99,7 +99,7 @@ function padLeft(text, width) {
 /**
  * 将 state 转为表格行数组，每项包含显示文本和模型 id
  *
- * 表格列：模型ID（弹性，截断）| Provider | 上下文（右对齐）| 输出（右对齐）| 状态（◉ 选中 / ○ 隐藏）
+ * 表格列：模型ID（弹性，截断）| Provider | 上下文（右对齐）| 输出（右对齐）| 状态（◉ 选中 / ◐ 待审 / ○ 隐藏）
  *
  * @param {object} state
  * @param {number} [width=60] - 表格可用显示宽度
@@ -108,9 +108,9 @@ function padLeft(text, width) {
 export function buildListItems(state, width = 60) {
   const { idW, providerW, ctxW, outW, statusW } = tableColumns(width)
   const items = []
-  // 按状态分组：selected > hidden，组内按 id 排序
+  // 按状态分组：selected > pending > hidden，组内按 id 排序
   const sorted = Object.entries(state).sort((a, b) => {
-    const order = { selected: 0, hidden: 1 }
+    const order = { selected: 0, pending: 1, hidden: 2 }
     const oa = order[a[1].status] ?? 99
     const ob = order[b[1].status] ?? 99
     if (oa !== ob) return oa - ob
@@ -121,7 +121,9 @@ export function buildListItems(state, width = 60) {
     const meta = entry.metadata || {}
     const statusText = entry.status === 'selected'
       ? '{green-fg}◉{/green-fg} 选中'
-      : '{yellow-fg}○{/yellow-fg} 隐藏'
+      : entry.status === 'pending'
+        ? '{cyan-fg}◐{/cyan-fg} 待审'
+        : '{yellow-fg}○{/yellow-fg} 隐藏'
 
     const ctx = meta.context_length ? formatNumber(meta.context_length) : ''
     const out = meta.max_output_length ? formatNumber(meta.max_output_length) : ''
