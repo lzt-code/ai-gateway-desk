@@ -297,6 +297,34 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 | 策略 A（provider 永远覆盖） | provider 更新（如上下文窗口扩大）是正常现象，手动覆盖被覆盖可接受 |
 | wrangler.toml 占位符 + 部署时注入 | 真实值唯一存放于 gitignore 的 providers.json，git 永远干净 |
 | 纯函数 + 依赖注入（web server / sync-flow） | 全部业务逻辑可单测，测试不触网不落盘 |
+| 价格展示按数据源区分单位/币种 | 扁平 pricing 无元数据（量级启发式 + USD 假设），结构化 pricings 读显式 unit/currency，详见 §8.1 |
+
+### 8.1 价格字段：单位与币种
+
+metadata 中的价格有两种形态，单位与币种不统一：
+
+| 形态 | 来源 | 元数据 |
+|------|------|--------|
+| 扁平 `pricing`：`{prompt, completion}` 等数字/字符串 | provider 自报回写（sync-flow）或 OR/MD 富化 | **无** unit/currency；实测 per-token 与 per-M 混存（如 `5e-6` 与 `5` 同为 $5/M） |
+| 结构化 `pricings`：`{prompt: [{value, unit, currency}]}` 数组 | provider 自报 | **显式** `unit`（perMTokens/perCount/perSecond）与 `currency`（实测全为 USD） |
+
+**展示层换算（已实现**，`src/web/public/app.js` 的 `formatPriceDisplay`，用于同步变更明细表格**）**：
+
+- 结构化数组：读显式 `unit`/`currency` —— perMTokens 值原样展示（不 ×1e6），perSecond/perCount 等按原单位；币种 USD→`$`、CNY/RMB→`¥`、未知用代码前缀、缺失按 USD 假设；多档价合并为 `$0.66 / $1.32 /M tokens`
+- 扁平数值：无元数据，按 USD 假设 + 量级启发式 —— `≥0.005` 判 per-M（provider 原样），否则判 per-token ×1e6（OR/MD 富化语义）。阈值依据实测分布：per-token 最大 1e-5（$10/M）、per-M 最小 0.05（$0.05/M），0.005 居中留双侧数量级余量
+- 非 token 计价子字段（`pricing.audio`/`image`/`web_search` 等按次/按秒计价）：不做换算，原样展示
+
+已知盲区（扁平形态无元数据，不可根除）：真·per-token ≥0.005（≥$5000/M）或真·per-M <0.005 的极端价格会被误判；扁平价格币种完全依赖 USD 假设。
+
+**币种交叉验证（诊断方案，未实现为代码）**：provider 无币种元数据时，可将其价格与 OpenRouter / models.dev 参考价（均 USD，同步管线内 enrich 阶段已在场）做比率比对：
+
+- prompt/completion 双侧比率一致且 ≈1 → 判 USD
+- 双侧比率一致且落在汇率带（6–8.5x）→ 疑似 CNY
+- 配套「provider 内币种一致」假设（计价币种是 provider 账单级属性，非模型属性）传播锚点：provider 内已验证模型可覆盖同 provider 未命中参照的模型
+
+2026-09 临时脚本实测（未入库，按上述方法可重写）：238 个可对比模型、5 个 provider（opencode/zenmux/qwen-tp/mo-da/bai）中位比率均为 1.00，**零 CNY 嫌疑**；离群点均为渠道加价/折扣（0.6–3.5x，双侧比率一致）。注意事项：魔搭类 provider 模型名为驼峰（`Qwen/Qwen3-14B`），与 OR 小写 id 比对需大小写归一；模型不在 OR/MD 上的 provider（自研模型）无外部参照，只能靠量级判断。
+
+**若未来出现 CNY provider**：推荐在 `providers.json` 增加 provider 级 `priceCurrency` 显式配置（确定性判定），优于把统计推断做成运行时逻辑——比较窗口仅在同步瞬间（provider 回写覆盖富化参考价，metadata 最终只留一份），判定结果需新增字段存储，且「统一加价 ≡ 汇率换算」在数值上不可区分。
 
 ## 9. 测试策略
 

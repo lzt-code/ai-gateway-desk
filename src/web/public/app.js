@@ -1231,6 +1231,73 @@ export function formatDiffValue(v) {
   try { return JSON.stringify(v) } catch { return String(v) }
 }
 
+// 扁平 pricing 中的 token 计价子字段；audio/image/web_search 等按次/按秒计价的子字段不换算
+const TOKEN_PRICE_KEYS = new Set(['prompt', 'completion', 'input', 'output', 'input_cache_read', 'input_cache_write'])
+
+// 扁平价格量级启发式阈值：实测存量 per-token 最大 1e-5（$10/M）、per-M 最小 0.05（$0.05/M），
+// 阈值取 0.005 居中：≥0.005 视为 provider 原样 per-M 计价（不再 ×1e6），否则视为 per-token
+const FLAT_PRICE_PER_M_THRESHOLD = 0.005
+
+// 价格字段路径：pricing.* 限 token 计价子字段；pricings.*（结构化数组，含显式 unit/currency）不限
+function isPriceField(field) {
+  if (field.startsWith('pricings.')) return true
+  if (field.startsWith('pricing.')) return TOKEN_PRICE_KEYS.has(field.split('.').pop())
+  return false
+}
+
+// 数值 → 6 位有效数字展示（吸收浮点噪声，如 6.538e-8 × 1e6 的尾差）
+function trimPriceDigits(n) {
+  return String(Number(n.toPrecision(6)))
+}
+
+// 币种代码 → 货币符号（未知币种用代码前缀，无币种信息则不加前缀）
+function currencySymbol(code) {
+  if (code === 'USD') return '$'
+  if (code === 'CNY' || code === 'RMB') return '¥'
+  return code ? `${code} ` : ''
+}
+
+// 结构化价格数组 [{value, unit, currency}]（pricings 子字段）→ 展示串；含非法项/空数组返回 null。
+// 缺 currency 时与扁平路径一致按 USD 假设；同币种同单位的多档价合并展示（$a / $b <unit>），
+// 避免单位后缀重复
+function formatStructuredPriceItems(arr) {
+  const items = []
+  for (const it of arr) {
+    if (!it || typeof it !== 'object' || typeof it.value !== 'number' || !Number.isFinite(it.value)) return null
+    const sym = currencySymbol(typeof it.currency === 'string' && it.currency ? it.currency : 'USD')
+    const unit = typeof it.unit === 'string' ? it.unit : ''
+    items.push({ sym, unit, val: trimPriceDigits(it.value) })
+  }
+  if (items.length === 0) return null
+  const priceText = (sym, val, unit) =>
+    `${sym}${val}${unit === 'perMTokens' ? ' /M tokens' : unit ? ` ${unit}` : ''}`
+  const sameShape = items.every((it) => it.sym === items[0].sym && it.unit === items[0].unit)
+  if (sameShape) {
+    const { sym, unit } = items[0]
+    return `${items.map((it) => `${sym}${it.val}`).join(' / ')}${unit === 'perMTokens' ? ' /M tokens' : unit ? ` ${unit}` : ''}`
+  }
+  return items.map((it) => priceText(it.sym, it.val, it.unit)).join(' / ')
+}
+
+/**
+ * 价格值 → 展示串。按数据源区分单位与币种：
+ *  - 结构化数组（pricings 子字段）：读显式 unit/currency——perMTokens 直接展示，
+ *    perSecond/perCount 等非 token 计价按原单位展示（币种符号跟随 currency 字段）；
+ *  - 扁平数值（pricing 子字段）：无元数据，按 USD 假设 + 量级启发式——≥0.005 视为
+ *    per-M（provider 原样），否则视为 per-token ×1e6（OR/models.dev 富化语义）。
+ * 仅接受 ≥0 的有限数值（数字或纯数字串，兼容 provider 字符串价格）；
+ * 其余（"-1" 变量计价、非数值串、null/undefined、对象）返回 null 由调用方原样展示。
+ * @param {number|string|Array} v
+ * @returns {string|null}
+ */
+export function formatPriceDisplay(v) {
+  if (Array.isArray(v)) return formatStructuredPriceItems(v)
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN
+  if (!Number.isFinite(n) || n < 0) return null
+  const perM = n >= FLAT_PRICE_PER_M_THRESHOLD ? n : n * 1e6
+  return `$${trimPriceDigits(perM)} /M tokens`
+}
+
 // 值是否为普通对象（非 null / 非数组）
 function isPlainObjectValue(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v)
@@ -1285,8 +1352,21 @@ function highlightStringDiff(oldStr, newStr) {
   return { aHtml: aHtml || '—', bHtml: bHtml || '—' }
 }
 
-function formatDiffCell(oldVal, newVal, detailed) {
+function formatDiffCell(oldVal, newVal, detailed, isPrice) {
   if (!detailed) return { oldHtml: '', newHtml: '' }
+  if (isPrice) {
+    const of = formatPriceDisplay(oldVal)
+    const nf = formatPriceDisplay(newVal)
+    // 双侧可换算 → 换算后做字符级高亮；单侧可换算（字段增删/类型变化）→ 可换算侧展示
+    // 换算值，另一侧原样；双侧均不可换算（如 "-1" 变量计价）→ 落入通用格式化
+    if (of !== null && nf !== null) return highlightStringDiff(of, nf)
+    if (of !== null || nf !== null) {
+      return {
+        aHtml: escapeHtml(of !== null ? of : formatDiffValue(oldVal)),
+        bHtml: escapeHtml(nf !== null ? nf : formatDiffValue(newVal)),
+      }
+    }
+  }
   const bothString = typeof oldVal === 'string' && typeof newVal === 'string'
   if (bothString) {
     return highlightStringDiff(oldVal, newVal)
@@ -1343,7 +1423,8 @@ export function buildSyncDiffHtml(details) {
       for (let i = 0; i < changes.length; i++) {
         const c = changes[i]
         const field = esc(c.field || '')
-        const { aHtml, bHtml } = formatDiffCell(c.oldValue, c.newValue, true)
+        // 价格字段按数据源区分单位/币种展示（pricings 读 unit/currency，扁平量级启发式）
+        const { aHtml, bHtml } = formatDiffCell(c.oldValue, c.newValue, true, isPriceField(c.field))
         if (i === 0) {
           lines.push(`<tr><td rowspan="${changes.length}">${mid}<div class="diff-provider">${prov}</div></td><td>${field}</td><td class="diff-old">${aHtml}</td><td class="diff-new">${bHtml}</td></tr>`)
         } else {

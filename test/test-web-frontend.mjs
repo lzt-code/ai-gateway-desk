@@ -372,7 +372,7 @@ check(JSON.stringify(normalizeSelectOptions(null)) === '[]', '非数组（null�
 
 // ── 22：同步变更明细：对象值展开为子字段行 ──────────────────
 section('同步变更明细（expandFieldChanges / buildSyncDiffHtml）')
-const { expandFieldChanges, buildSyncDiffHtml } = mod
+const { expandFieldChanges, buildSyncDiffHtml, formatPriceDisplay } = mod
 check(typeof expandFieldChanges === 'function', 'expandFieldChanges 已导出且为函数')
 
 {
@@ -458,10 +458,129 @@ check(typeof expandFieldChanges === 'function', 'expandFieldChanges 已导出且
     ],
   })
   check(html.includes('pricing.prompt'), '表格含子字段列 pricing.prompt')
-  check(html.includes('0.00000') && html.includes('>2</mark>') && html.includes('>1</mark>'), '表格含标量新旧值（字符级高亮拆分展示）')
+  check(
+    html.includes('>2</mark> /M tokens') && html.includes('>1</mark> /M tokens'),
+    '价格数值换算为 $/M tokens 展示（$2 → $1，字符级高亮拆分）',
+  )
+  check(!html.includes('0.000002') && !html.includes('0.000001'), '价格不再展示原始科学计数法/长小数形式')
   check(!html.includes('completion'), '未变化的子字段不出现（无整段 JSON）')
   check(html.includes('<th>旧值</th>') && html.includes('<th>新值</th>'), '字段变化表始终含旧值/新值列（与调试开关无关）')
   check(!html.includes('（调试）') && !html.includes('（简要）'), '标题无调试/简要模式区分')
+}
+
+{
+  // 价格换算纯函数：扁平 per-token / per-M 量级启发式 + 结构化 unit/currency
+  check(formatPriceDisplay(6.538e-8) === '$0.06538 /M tokens', '6.538e-8（per-token）→ $0.06538 /M tokens（科学计数法换算）')
+  check(formatPriceDisplay(1.3076e-7) === '$0.13076 /M tokens', '1.3076e-7（per-token）→ $0.13076 /M tokens')
+  check(formatPriceDisplay('0.000000049') === '$0.049 /M tokens', '字符串价格 "0.000000049"（per-token）→ $0.049 /M tokens')
+  check(formatPriceDisplay(0.00001) === '$10 /M tokens', '1e-5（per-token 实测上限）→ ×1e6 → $10 /M tokens')
+  check(formatPriceDisplay(0.005) === '$0.005 /M tokens', '0.005（阈值边界）→ per-M 原样 → $0.005 /M tokens')
+  check(formatPriceDisplay(0.05) === '$0.05 /M tokens', '0.05（per-M 实测下限）→ $0.05 /M tokens（不再 ×1e6）')
+  check(formatPriceDisplay(5) === '$5 /M tokens', '5（opus-4-x per-M 存量）→ $5 /M tokens（原样展示）')
+  check(formatPriceDisplay(0.45) === '$0.45 /M tokens', '0.45（per-M）→ $0.45 /M tokens')
+  check(formatPriceDisplay(0) === '$0 /M tokens', '0 → $0 /M tokens（免费模型，两种单位下同为 0）')
+  check(formatPriceDisplay(-1) === null, '"-1" 变量计价 → null（不换算，原样展示）')
+  check(formatPriceDisplay('free') === null, '非数值串 → null')
+  check(formatPriceDisplay(undefined) === null && formatPriceDisplay(null) === null, 'undefined/null → null（字段增删侧原样展示）')
+
+  // 结构化价格（pricings 子字段数组）：读显式 unit / currency
+  check(
+    formatPriceDisplay([{ value: 2.5, unit: 'perMTokens', currency: 'USD' }]) === '$2.5 /M tokens',
+    '结构化 perMTokens USD → $2.5 /M tokens（值已是 per-M，不 ×1e6）',
+  )
+  check(
+    formatPriceDisplay([{ value: 0.66, unit: 'perMTokens', currency: 'USD' }, { value: 1.32, unit: 'perMTokens', currency: 'USD' }]) === '$0.66 / $1.32 /M tokens',
+    '多档价格数组 → 各档以 / 连接展示',
+  )
+  check(
+    formatPriceDisplay([{ value: 0.03, unit: 'perSecond', currency: 'CNY' }]) === '¥0.03 perSecond',
+    '非 token 计价（perSecond CNY）→ ¥ 符号 + 原单位展示',
+  )
+  check(formatPriceDisplay([{ value: 0.5 }]) === '$0.5', '结构化缺 currency → 与扁平一致按 USD 假设')
+  check(formatPriceDisplay([{}]) === null && formatPriceDisplay([]) === null, '结构化数组含非法项/为空 → null（原样回退）')
+
+  // 表格：per-M 扁平存量价格不再 ×1e6（opus-4-x 实测形态）
+  const html4 = buildSyncDiffHtml({
+    added: [],
+    removed: [],
+    updated: [
+      {
+        modelId: 'custom-opencode/claude-opus-4-8',
+        provider: 'custom-opencode',
+        changes: [{ field: 'pricing', oldValue: { prompt: 5, completion: 25 }, newValue: { prompt: 6, completion: 25 } }],
+      },
+    ],
+  })
+  check(
+    html4.includes('>5</mark> /M tokens') && html4.includes('>6</mark> /M tokens'),
+    'per-M 存量价格展示为 $5 → $6 /M tokens（不 ×1e6）',
+  )
+  check(!html4.includes('5000000'), '不再出现 $5000000 量级的错误换算')
+
+  // 表格：结构化 pricings（数组值，读 unit/currency）
+  const html5 = buildSyncDiffHtml({
+    added: [],
+    removed: [],
+    updated: [
+      {
+        modelId: 'custom-zenmux/google/gemini-3.7-flash',
+        provider: 'custom-zenmux',
+        changes: [{ field: 'pricings', oldValue: { prompt: [{ value: 0.15, unit: 'perMTokens', currency: 'USD' }] }, newValue: { prompt: [{ value: 0.1, unit: 'perMTokens', currency: 'USD' }] } }],
+      },
+    ],
+  })
+  check(
+    html5.includes('pricings.prompt') && html5.includes('$0.1') && html5.includes('>5</mark> /M tokens'),
+    '结构化 pricings 数组 → 按显式 unit 展示 $0.15 → $0.1 /M tokens（5 高亮）',
+  )
+
+  // 表格：audio 等按次/按秒计价子字段不套 $/M tokens
+  const html6 = buildSyncDiffHtml({
+    added: [],
+    removed: [],
+    updated: [
+      {
+        modelId: 'prov/m1',
+        provider: 'prov',
+        changes: [{ field: 'pricing', oldValue: { audio: 5 }, newValue: { audio: 6 } }],
+      },
+    ],
+  })
+  check(
+    html6.includes('pricing.audio') && html6.includes('>5</mark>') && html6.includes('>6</mark>') && !html6.includes('/M tokens'),
+    '非 token 计价子字段（audio）原样展示（不套 $/M tokens）',
+  )
+
+  // 表格：字段增删（单侧 undefined）时价格侧换算、缺失侧展示 —
+  const html2 = buildSyncDiffHtml({
+    added: [],
+    removed: [],
+    updated: [
+      {
+        modelId: 'custom-opencode/deepseek-v4-flash',
+        provider: 'custom-opencode',
+        changes: [
+          { field: 'pricing', oldValue: undefined, newValue: { prompt: 4.9e-8, completion: 9.8e-8 } },
+        ],
+      },
+    ],
+  })
+  check(html2.includes('$0.049 /M tokens') && html2.includes('$0.098 /M tokens'), '字段新增：新值侧换算为 $/M tokens')
+  check(html2.includes('—'), '缺失旧值侧展示 —（原样回退）')
+
+  // 非价格字段不受换算影响
+  const html3 = buildSyncDiffHtml({
+    added: [],
+    removed: [],
+    updated: [
+      {
+        modelId: 'prov/m1',
+        provider: 'prov',
+        changes: [{ field: 'context_length', oldValue: 64000, newValue: 128000 }],
+      },
+    ],
+  })
+  check(html3.includes('>64</mark>000') && html3.includes('>128</mark>000') && !html3.includes('/M tokens'), '非价格字段数值原样展示（不换算）')
 }
 
 // ── 23：变更明细重开（查看变更明细按钮）────────────────────
