@@ -200,7 +200,7 @@ export function buildWorkersStatus({ namespaceId = '', modelsJson = {}, kvKey = 
 
 // ─── KV key 存在性检查（wrangler kv:key get）──────────────
 
-/** 解析 wrangler 命令（Windows .cmd 经 cmd /c），与 deploy.js 同模式 */
+/** 解析 wrangler 命令（Windows .cmd 经 cmd /c） */
 function resolveWranglerCommand() {
   const localWrangler = path.resolve(__dirname, '..', '..', 'node_modules', '.bin', 'wrangler.cmd')
   const isWin = process.platform === 'win32'

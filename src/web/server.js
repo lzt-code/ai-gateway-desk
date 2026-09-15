@@ -982,7 +982,7 @@ export function createApp({
   // POST /api/save-deploy — 保存并提交（saveState → writeModelsJson → deployToKV → 写 hidden/manual KV）
   // 业务编排失败用 HTTP 200 + { ok:false, step, error }（非 HTTP 错误，前端按 body.ok 分支）
   // 成功后额外写 hidden-models 和 manual-models 到 KV（REST API），实现跨 PC 同步。
-  // KV 写入失败不回滚已部署的 models（wrangler 已成功），由前端提示重试。
+  // KV 写入失败不回滚已部署的 models（models 键已部署成功），由前端提示重试。
   app.post('/api/save-deploy', async (c) => {
     const start = Date.now()
     const op = 'save-deploy'

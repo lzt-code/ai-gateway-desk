@@ -232,7 +232,7 @@ export function applyModelFilters(state, filter = {}) {
  * @param {object} options.config - loadConfig() 返回的配置（部署需要 kv.namespaceId）
  * @param {Function} [options.saveStateFn] - 第 1 步：写 data/model-states.json
  * @param {Function} [options.writeModelsJsonFn] - 第 2 步：生成 data/models.json
- * @param {Function} [options.deployToKVFn] - 第 3 步：wrangler 部署到 KV
+  * @param {Function} [options.deployToKVFn] - 第 3 步：REST 部署到 KV
  * @returns {Promise<{ ok: true } | { ok: false, step: 1|2|3, error: Error }>}
  */
 export async function saveAndDeploy({

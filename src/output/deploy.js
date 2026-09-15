@@ -1,10 +1,10 @@
-import { execFile } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { gatewaySlug } from '../cloudflare/discover.js'
+import { writeKvValue } from '../cloudflare/kv.js'
 import { readManagementToken } from '../core/token-store.js'
-import { logRequest, logResponse, logResult } from '../core/io-logger.js'
+import { logRequest, logResult } from '../core/io-logger.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -13,87 +13,12 @@ const MODELS_JSON_PATH = path.resolve(__dirname, '..', '..', 'data', 'models.jso
 const PROVIDER_ROUTES_KV_KEY = 'provider-routes'
 
 /**
- * 构建子进程环境变量，注入 CLOUDFLARE_API_TOKEN。
- * wrangler 在非交互环境（execFile spawn）下无法走 OAuth 刷新，
- * 必须通过环境变量提供 Token；否则报 400 Bad Request 后要求交互登录。
- * 优先级：process.env.CLOUDFLARE_API_TOKEN > 本地安全存储的管理 Token。
- * @returns {NodeJS.ProcessEnv}
+ * 解析管理 Token。优先级与原 wrangler 子进程方案一致：
+ * process.env.CLOUDFLARE_API_TOKEN > 本地安全存储的管理 Token。
+ * @returns {string} 未配置时返回空串
  */
-function buildChildEnv() {
-  const token = process.env.CLOUDFLARE_API_TOKEN || readManagementToken()
-  if (!token) return process.env
-  return { ...process.env, CLOUDFLARE_API_TOKEN: token }
-}
-
-/**
- * 解析 wrangler 命令路径和 exec 参数。
- * Windows 上 .cmd 文件需通过 cmd /c 运行，非 Windows 可直接执行。
- * @returns {{ command: string, args: string[], useShell: boolean }}
- */
-function resolveWranglerCommand() {
-  // 从 src/output/ 上两级到项目根，找根 node_modules/.bin/wrangler
-  const localWrangler = path.resolve(__dirname, '..', '..', 'node_modules', '.bin', 'wrangler.cmd')
-  const isWin = process.platform === 'win32'
-
-  if (isWin) {
-    // Windows：通过 cmd /c 运行 .cmd 文件
-    const cmdPath = existsSync(localWrangler) ? localWrangler : 'wrangler.cmd'
-    return {
-      command: 'cmd.exe',
-      args: ['/d', '/c', cmdPath],
-      useShell: false,
-    }
-  }
-
-  // Unix：直接执行 wrangler
-  const cmdPath = existsSync(localWrangler.replace('.cmd', ''))
-    ? localWrangler.replace('.cmd', '')
-    : 'wrangler'
-  return {
-    command: cmdPath,
-    args: [],
-    useShell: false,
-  }
-}
-
-/**
- * 执行一次 wrangler kv:key put 命令
- * @param {string} namespaceId - KV namespace ID
- * @param {string} key - KV key 名称
- * @param {string} value - 值（直接传入，非文件路径）
- * @returns {Promise<{ success: boolean, output: string }>}
- */
-function runKvPut(namespaceId, key, value) {
-  const { command, args: cmdArgs } = resolveWranglerCommand()
-  const op = `wrangler:kv:put ${key}`
-  const wranglerArgs = [...cmdArgs, 'kv:key', 'put', '--namespace-id', namespaceId, key, value]
-  const start = Date.now()
-  logRequest(op, { command, args: wranglerArgs, namespaceId, key, meta: { bytes: Buffer.byteLength(value, 'utf8') } })
-  return new Promise((resolve) => {
-    const child = execFile(
-      command,
-      wranglerArgs,
-      {
-        timeout: 15_000,
-        maxBuffer: 10 * 1024 * 1024,
-        env: buildChildEnv(),
-      },
-      (error, stdout, stderr) => {
-        const elapsed = Date.now() - start
-        if (error) {
-          const message = stderr || error.message || String(error)
-          logResponse(op, { status: 1, output: message, elapsedMs: elapsed })
-          logResult(op, { ok: false, message, elapsedMs: elapsed })
-          resolve({ success: false, output: message })
-          return
-        }
-        const output = (stdout || '').trim()
-        logResponse(op, { status: 0, output, elapsedMs: elapsed })
-        logResult(op, { ok: true, message: output || 'ok', elapsedMs: elapsed })
-        resolve({ success: true, output })
-      }
-    )
-  })
+function resolveMgmtToken() {
+  return process.env.CLOUDFLARE_API_TOKEN || readManagementToken() || ''
 }
 
 /**
@@ -118,7 +43,7 @@ export function buildProviderRoutesJson(providers) {
 }
 
 /**
- * 仅将 provider 路由映射（provider-routes 键）写入 Cloudflare KV。
+ * 仅将 provider 路由映射（provider-routes 键）写入 Cloudflare KV（REST API）。
  *
  * provider 的 pathPrefix 变更后由 Web 管理端即时调用，保证 worker 路由
  * 与本地配置一致；不写 models 键，与模型列表部署解耦。
@@ -133,14 +58,26 @@ export function buildProviderRoutesJson(providers) {
 export async function deployProviderRoutesToKV(config) {
   const namespaceId = config?.kv?.namespaceId
   if (!namespaceId) return { success: true, skipped: true }
+  const accountId = config?.gateway?.accountId || ''
+  if (!accountId) return { success: false, output: '缺少 gateway.accountId 配置' }
+  const token = resolveMgmtToken()
+  if (!token) return { success: false, output: '缺少管理 Token（CLOUDFLARE_API_TOKEN 或本地安全存储）' }
   const routesJson = buildProviderRoutesJson(config.providers)
-  return runKvPut(namespaceId, PROVIDER_ROUTES_KV_KEY, routesJson)
+  try {
+    await writeKvValue(token, accountId, namespaceId, PROVIDER_ROUTES_KV_KEY, routesJson)
+    return { success: true }
+  } catch (err) {
+    return { success: false, output: err instanceof Error ? err.message : String(err) }
+  }
 }
 
 /**
- * 将 data/models.json 部署到 Cloudflare KV。
+ * 将 data/models.json 部署到 Cloudflare KV（REST API）。
  * 同时写入 provider-routes 键（provider 路由映射）。
- * 使用 wrangler kv:key put 命令。
+ *
+ * 2026-09 起由 wrangler kv:key put 子进程改为 REST 写入（cloudflare/kv.js）：
+ * models.json 全量 JSON 作为请求体直传，无命令行长度限制，无子进程秒级开销，
+ * 与 hidden-models / manual-models / provider-visibility 的写入路径统一。
  *
  * @param {object} config - loadConfig() 返回的配置对象
  * @param {object} config.kv - KV 配置
@@ -163,47 +100,48 @@ export async function deployToKV(config) {
     }
   }
 
-  const { namespaceId, key } = config.kv
+  const { namespaceId, key } = config.kv || {}
 
   if (!namespaceId) {
     const msg = '缺少 kv.namespaceId 配置'
     logResult(op, { ok: false, message: msg, elapsedMs: Date.now() - start })
-    return { success: false, output: msg }
+    return {
+      success: false,
+      output: msg,
+    }
   }
 
-  const { command, args: cmdArgs } = resolveWranglerCommand()
+  const accountId = config?.gateway?.accountId || ''
+  if (!accountId) {
+    const msg = '缺少 gateway.accountId 配置'
+    logResult(op, { ok: false, message: msg, elapsedMs: Date.now() - start })
+    return {
+      success: false,
+      output: msg,
+    }
+  }
 
-  // ─── 写入模型列表（用 --path 读文件） ───
-  const modelsOp = `wrangler:kv:put:${key}`
-  const modelsArgs = [...cmdArgs, 'kv:key', 'put', '--namespace-id', namespaceId, key, '--path', MODELS_JSON_PATH]
-  logRequest(modelsOp, { command, args: modelsArgs, namespaceId, key, meta: { file: MODELS_JSON_PATH } })
-  const modelsStart = Date.now()
-  const modelsResult = await new Promise((resolve) => {
-    const child = execFile(
-      command,
-      modelsArgs,
-      {
-        timeout: 30_000,
-        maxBuffer: 10 * 1024 * 1024, // 10MB
-        env: buildChildEnv(),
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          const message = stderr || error.message || String(error)
-          resolve({ success: false, output: message })
-          return
-        }
-        resolve({ success: true, output: (stdout || '').trim() })
-      }
-    )
-  })
-  const modelsElapsed = Date.now() - modelsStart
-  logResponse(modelsOp, { status: modelsResult.success ? 0 : 1, output: modelsResult.output, elapsedMs: modelsElapsed })
-  logResult(modelsOp, { ok: modelsResult.success, message: modelsResult.output || (modelsResult.success ? 'ok' : 'failed'), elapsedMs: modelsElapsed })
+  const token = resolveMgmtToken()
+  if (!token) {
+    const msg = '缺少管理 Token（CLOUDFLARE_API_TOKEN 或本地安全存储）'
+    logResult(op, { ok: false, message: msg, elapsedMs: Date.now() - start })
+    return {
+      success: false,
+      output: msg,
+    }
+  }
 
-  if (!modelsResult.success) {
-    logResult(op, { ok: false, message: modelsResult.output, elapsedMs: Date.now() - start })
-    return modelsResult
+  // ─── 写入模型列表（REST，全量 JSON 文本作为请求体） ───
+  const modelsJson = readFileSync(MODELS_JSON_PATH, 'utf8')
+  try {
+    await writeKvValue(token, accountId, namespaceId, key, modelsJson)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    logResult(op, { ok: false, message: msg, elapsedMs: Date.now() - start })
+    return {
+      success: false,
+      output: msg,
+    }
   }
 
   // ─── 写入 provider 路由映射 ───
@@ -218,6 +156,6 @@ export async function deployToKV(config) {
     }
   }
 
-  logResult(op, { ok: true, message: modelsResult.output || 'ok', elapsedMs: Date.now() - start })
-  return { success: true, output: modelsResult.output }
+  logResult(op, { ok: true, message: 'ok', elapsedMs: Date.now() - start })
+  return { success: true, output: 'ok' }
 }

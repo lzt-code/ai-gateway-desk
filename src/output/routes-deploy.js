@@ -8,7 +8,7 @@ import {
 /**
  * 动态路由部署编排：确保路由存在 → 提交版本 → 部署版本生效。
  *
- * 与 KV 部署（deploy.js）同为 output 层；差异在于走管理 REST API 而非 wrangler。
+ * 与 KV 部署（deploy.js）同为 output 层，均走管理 REST API（deploy.js 经 kv.js 写 KV，本模块编排动态路由）。
  * API 函数全部可注入（默认绑定 api.js），测试 mock 即可覆盖编排逻辑。
  *
  * @module ai-gateway-desk/src/output/routes-deploy

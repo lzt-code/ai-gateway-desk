@@ -2,11 +2,11 @@
  * Cloudflare KV REST API 封装（管理 Token）
  * @module ai-gateway-desk/src/cloudflare/kv
  *
- * 用途：在管理端直接读写 KV 单个键（无需 spawn wrangler），用于跨 PC 同步
- * provider 可见性（provider-visibility 键）等小型配置。
+ * 用途：在管理端直接读写 KV 单个键（无需 spawn wrangler）：跨 PC 同步用的
+ * provider-visibility / hidden-models / manual-models，以及 models.json /
+ * provider-routes 的全量部署（见 output/deploy.js）。
  *
  * 凭证：apiToken 为账户级管理 Token（需 KV 读写权限，创建 namespace 的同一 Token 即满足）。
- * 大块数据（models.json）仍走 wrangler kv:key put --path（见 output/deploy.js）。
  */
 
 import { logRequest, logResponse, logResult } from '../core/io-logger.js'

@@ -35,7 +35,7 @@
                                    │  model-states.json 真相源 │
                                    │  models.json     生成产物 │
                                    └───────────┬──────────────┘
-                                               │ wrangler kv:key put（deploy.mjs 动态注入）
+                                               │ KV REST 写入（output/deploy.js）
                                                ▼
                                    ┌──────────────────────┐   /v1/chat/completions  ┌──────────────┐
                                    │  Cloudflare KV       │ ◄────────────────────── │  各 PC Agent  │
@@ -125,7 +125,7 @@ Vanilla JS 单页（`app.js` / `index.html` / `style.css`），五个视图 tab�
 - `enrich.js`：OpenRouter + models.dev 双源富化（模块级缓存，仅补缺失字段；pricing 例外——覆盖以跟随上游改价，失败静默）
 - `merge.js`：**策略 A：provider 永远覆盖**；仅对成功查询的 provider 执行「未发现 → 直接删除」（manual 条目豁免）
 - `generate.js`：过滤 selected + 隐藏 provider（`enabled===false`）的模型 → 写 `data/models.json`
-- `deploy.js`：`wrangler kv:key put` 部署 models + `provider-routes` 路由映射（slug → pathPrefix）
+- `deploy.js`：REST 写入部署 models + `provider-routes` 路由映射（slug → pathPrefix），无 wrangler 子进程开销
 
 ### 4.7 数据与凭证 — `src/core/`
 
