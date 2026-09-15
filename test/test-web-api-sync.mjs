@@ -157,6 +157,9 @@ function makeDeps({
   const writeKvManualModels = async (_t, _a, _n, map) => {
     kvWrites.push({ key: 'manual-models', map })
   }
+  // 隔离真实 data/models.json：/api/state 会读它作部署基线（仅读不写，
+  // 但本机数据会随环境变化），统一 mock 为空基线保证测试确定性
+  const loadModelsJsonBaseline = () => ({})
   const deployToKV = async () => {
     calls.push('deployToKV')
     return deployToKVResult
@@ -182,6 +185,7 @@ function makeDeps({
     readKvModels,
     writeKvHiddenModels,
     writeKvManualModels,
+    loadModelsJsonBaseline,
     deployToKV,
   }
 }

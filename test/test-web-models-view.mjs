@@ -329,58 +329,54 @@ check(filterQuery({ provider: 'custom-agnes' }) === 'provider=custom-agnes', '�
   check(q === 'status=hidden', '仅 status → 单条件')
 }
 
-// ── 16-17：computeDirty（KV 投影比较）─────────────────────
+// ── 16-17：computeDirty（当前 selected 投影 vs models.json 部署基线）──
 section('computeDirty')
 {
-  const snapshot = { 'a/1': { status: 'selected', metadata: { name: 'A' } } }
-  check(computeDirty(snapshot, { 'a/1': { status: 'selected', metadata: { name: 'A' } } }) === false, '无变化 → false')
-  check(computeDirty(snapshot, { 'a/1': { status: 'hidden', metadata: { name: 'A' } } }) === true, 'selected → hidden（KV 产物变化）→ true')
-  // hidden 条目增删影响 hidden-models KV → true
-  check(computeDirty(snapshot, {
-    'a/1': { status: 'selected', metadata: { name: 'A' } },
-    'b/2': { status: 'hidden', metadata: { name: 'B' } },
-  }) === true, '新增 hidden 条目 → true（入 hidden-models KV）')
-  check(computeDirty(snapshot, {}) === true, 'selected 条目被删除 → true')
-  // selected 条目 metadata 变化 → true
-  check(computeDirty(snapshot, { 'a/1': { status: 'selected', metadata: { name: 'A2' } } }) === true, 'selected metadata 变化 → true')
-  const reordered = { 'a/1': { metadata: { name: 'A' }, status: 'selected' } }
-  check(computeDirty(snapshot, reordered) === false, '键序不同内容相同 → false（键序无关深比较）')
+  const baseline = { 'a/1': { name: 'A' } }
+  check(computeDirty(baseline, { 'a/1': { status: 'selected', metadata: { name: 'A' } } }) === false, '基线与投影一致 → false')
+  check(computeDirty(baseline, { 'a/1': { status: 'selected', metadata: { name: 'A2' } } }) === true, 'selected metadata 变化 → true（models.json 待重写）')
+  check(computeDirty(baseline, { 'a/1': { status: 'hidden', metadata: { name: 'A' } } }) === true, 'selected → hidden → true（models.json 需移除）')
+  check(computeDirty(baseline, {}) === true, 'selected 条目被删除 → true（models.json 需移除）')
+  check(computeDirty({}, { 'a/1': { status: 'selected', metadata: { name: 'A' } } }) === true, '基线缺失（已采用未保存）→ true（存量差异不随刷新丢失）')
+  // 新增 selected 条目 → true（需写入 models.json）
+  check(computeDirty(baseline, { 'a/1': { status: 'selected', metadata: { name: 'A' } }, 'b/2': { status: 'selected', metadata: { name: 'B' } } }) === true, '新增 selected → true')
 
-  // id/created 为易变字段，变化不算 dirty（与 merge.js VOLATILE_METADATA_FIELDS 对齐）
+  // 键序不同内容相同 → false（键序无关深比较）
+  check(computeDirty(baseline, { 'a/1': { metadata: { name: 'A' }, status: 'selected' } }) === false, '键序不同内容相同 → false')
+
+  // id/created 为易变字段，基线/投影两侧均剥离，变化不算 dirty
   check(computeDirty(
-    { 'a/1': { status: 'selected', metadata: { name: 'A', id: 'a/1', created: 100 } } },
+    { 'a/1': { name: 'A', id: 'a/1', created: 100 } },
     { 'a/1': { status: 'selected', metadata: { name: 'A', id: 'a/1', created: 200 } } },
   ) === false, 'created 变化不算 dirty（易变字段）')
 
-  // manual 条目增删影响 manual-models KV → true
-  const snapManual = { 'a/1': { status: 'selected', metadata: { name: 'A' } } }
-  check(computeDirty(snapManual, {
-    'a/1': { status: 'selected', metadata: { name: 'A' } },
-    'b/2': { status: 'selected', manual: true, provider: 'b', metadata: { name: 'B' } },
-  }) === true, '新增 manual 条目 → true（入 manual-models KV）')
-
-  // manual 条目 metadata 变化 → true
+  // manual 条目 selected：基线缺失 → true（需保存进 models.json）
   check(computeDirty(
+    {},
     { 'b/2': { status: 'selected', manual: true, provider: 'b', metadata: { name: 'B' } } },
-    { 'b/2': { status: 'selected', manual: true, provider: 'b', metadata: { name: 'B2' } } },
-  ) === true, 'manual metadata 变化 → true')
+  ) === true, 'manual selected 未部署 → true')
 
-  // 非 selected/hidden/pending/manual 条目不算 dirty
+  // pending 条目不进投影：纯待审累积不误报；忽略（→ hidden）也不进 models.json
+  check(computeDirty({}, { 'a/1': { status: 'pending', metadata: { name: 'A' } } }) === false,
+    'pending 无基线 → false（纯待审不误报未保存）')
+  check(computeDirty({}, { 'a/1': { status: 'hidden', metadata: { name: 'A' } } }) === false,
+    'pending → hidden（忽略）→ false（hidden 不进 models.json，hidden KV 即时写）')
+
+  // 非 selected/hidden/pending 条目（如 removed）不进投影
   check(computeDirty(
-    { 'a/1': { status: 'selected', metadata: { name: 'A' } } },
+    { 'a/1': { name: 'A' } },
     { 'a/1': { status: 'selected', metadata: { name: 'A' } }, 'c/3': { status: 'removed', metadata: {} } },
   ) === false, 'removed 条目不影响 dirty')
 
-  // pending 条目参与投影：采用（pending → selected）/ 忽略（pending → hidden）→ true
-  const snapPending = { 'a/1': { status: 'pending', metadata: { name: 'A' } } }
-  check(computeDirty(snapPending, { 'a/1': { status: 'pending', metadata: { name: 'A' } } }) === false,
-    'pending 无变化 → false（纯待审累积不误报未保存）')
-  check(computeDirty(snapPending, { 'a/1': { status: 'selected', metadata: { name: 'A' } } }) === true,
-    'pending → selected（采用）→ true（进入 models.json 投影）')
-  check(computeDirty(snapPending, { 'a/1': { status: 'hidden', metadata: { name: 'A' } } }) === true,
-    'pending → hidden（忽略）→ true（进入 hidden-models 投影）')
-  check(computeDirty(snapPending, {}) === true,
-    'pending 条目被删除（上游消失）→ true')
+  // pricing 变化计入对比（generate.js 有意保留计费字段）
+  check(computeDirty(
+    { 'a/1': { name: 'A', pricing: { prompt: 1 } } },
+    { 'a/1': { status: 'selected', metadata: { name: 'A', pricing: { prompt: 2 } } } },
+  ) === true, 'pricing 变化 → true')
+
+  // 空基线 + 空投影 → false
+  check(computeDirty({}, {}) === false, '空基线 + 空 state → false')
+  check(computeDirty(null, {}) === false, 'null 基线安全 → false')
 }
 
 // ── 18-19：导出存在性 + 任务 30 回归 ─────────────────────

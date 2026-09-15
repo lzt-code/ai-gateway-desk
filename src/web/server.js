@@ -175,6 +175,7 @@ const DEFAULT_DEPS = {
     readKvJson(apiToken, accountId, namespaceId, key, []),
   buildHiddenModelsMap,
   buildManualModelsMap,
+  loadModelsJsonBaseline,
   applyHiddenModels,
   applyManualModels,
   applySelectedModels,
@@ -242,6 +243,28 @@ function loadModelsJsonState() {
     return { exists: count !== null, count }
   } catch {
     return { exists: false, count: null }
+  }
+}
+
+/**
+ * 读取 data/models.json → 部署基线（{ id: 条目 } 映射），随 /api/state 返回。
+ * 前端以「当前 selected 投影 vs 此基线」判定未保存：基线是持久化的部署产物，
+ * 页面刷新 / 服务器重启后仍能识别「已采用但未写 models.json」的存量差异。
+ * 文件缺失 / 解析失败按未部署过处理（空基线），不抛错。
+ */
+function loadModelsJsonBaseline() {
+  try {
+    const models = JSON.parse(
+      readFileSync(path.resolve(__dirname, '..', '..', 'data', 'models.json'), 'utf8')
+    )
+    if (!Array.isArray(models)) return {}
+    const baseline = {}
+    for (const m of models) {
+      if (m && typeof m === 'object' && typeof m.id === 'string' && m.id) baseline[m.id] = m
+    }
+    return baseline
+  } catch {
+    return {}
   }
 }
 
@@ -548,10 +571,16 @@ export function createApp({
   // ─── 任务 26：模型管理 API（注册在静态文件中间件之前）───
 
   // GET /api/state — 完整 model-states（隐藏 provider 下的模型不返回，仅 UI 过滤）
+  // 附带 baseline：data/models.json 的部署基线（id → 条目），前端据此判定
+  // 「当前 selected 投影 vs 已部署投影」的未保存差异（刷新/重启后不丢失标记）
   app.get('/api/state', (c) => {
     const config = configStore.load()
     const hidden = hiddenProviderSlugs(Array.isArray(config.providers) ? config.providers : [])
-    return c.json({ ok: true, state: filterVisibleState(state, hidden) })
+    return c.json({
+      ok: true,
+      state: filterVisibleState(state, hidden),
+      baseline: depsAll.loadModelsJsonBaseline(),
+    })
   })
 
   // POST /api/models/toggle — 切换状态：selected ↔ hidden；pending → selected（采用）

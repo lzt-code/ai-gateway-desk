@@ -1916,46 +1916,57 @@ function deepEqual(a, b) {
   return true
 }
 
-// dirty 判定：比较「KV 部署投影」是否变化，覆盖三个 KV 键：
-//   - models.json：selected 条目的 metadata（generate.js 剥离 status/provider + STRIP_FROM_KV）
-//   - hidden-models：hidden 条目的完整 entry（buildHiddenModelsMap）
-//   - manual-models：manual 条目的完整 entry（buildManualModelsMap）
-// pending 条目本身不进任何 KV 键，但其状态流转（采用 → selected / 忽略 → hidden）
-// 改变投影 → 计入对比；同步结束 snapshot 重置，纯待审累积不误报未保存。
-// metadata 中 id/created 为易变/冗余字段（与 merge.js VOLATILE_METADATA_FIELDS 对齐），
-// benchmarks/architecture/top_provider 等展示型大字段变化不影响 KV（见 merge.js/generate.js，pricing 除外），
-// 均不参与对比。
-function stripForDirty(state) {
-  const STRIP = new Set([
-    'id', 'created', 'status', 'provider',
-    'benchmarks', 'architecture', 'top_provider', 'per_request_limits',
-    'default_parameters', 'supported_parameters', 'supported_voices', 'links',
-    'canonical_slug', 'hugging_face_id', 'knowledge_cutoff', 'expiration_date',
-    'modalities', 'supported_specifications', 'supported_endpoint_types',
-  ])
-  if (!state || typeof state !== 'object') return state
+// 不参与 dirty 对比的字段（与 generate.js STRIP_FROM_KV + VOLATILE_METADATA_FIELDS 对齐）：
+// id/created 为易变/冗余字段；benchmarks/architecture/top_provider 等展示型大字段
+// 不写入 KV（pricing 除外），models.json 两侧投影均剥离后再比较。
+const DIRTY_STRIP_FIELDS = new Set([
+  'id', 'created', 'status', 'provider',
+  'benchmarks', 'architecture', 'top_provider', 'per_request_limits',
+  'default_parameters', 'supported_parameters', 'supported_voices', 'links',
+  'canonical_slug', 'hugging_face_id', 'knowledge_cutoff', 'expiration_date',
+  'modalities', 'supported_specifications', 'supported_endpoint_types',
+])
+
+function stripEntry(src) {
   const out = {}
-  for (const [k, v] of Object.entries(state)) {
-    if (!v || typeof v !== 'object') continue
-    if (v.status !== 'selected' && v.status !== 'hidden' && v.status !== 'pending' && v.manual !== true) continue
-    const projection = { status: v.status, provider: v.provider }
-    if (v.manual === true) projection.manual = true
-    if (v.metadata && typeof v.metadata === 'object') {
-      const mRest = {}
-      for (const [mk, mv] of Object.entries(v.metadata)) {
-        if (!STRIP.has(mk)) mRest[mk] = mv
-      }
-      projection.metadata = mRest
-    } else {
-      projection.metadata = v.metadata
-    }
-    out[k] = projection
+  for (const [k, v] of Object.entries(src || {})) {
+    if (!DIRTY_STRIP_FIELDS.has(k)) out[k] = v
   }
   return out
 }
 
-export function computeDirty(snapshot, current) {
-  return !deepEqual(stripForDirty(snapshot), stripForDirty(current))
+// dirty 判定：比较「当前 selected 投影」与「部署基线」（服务端 data/models.json 的
+// id → 条目映射，随 /api/state 返回）。语义 = models.json 是否待重写：
+//   - selected 条目（含 manual）→ metadata 投影（剥离 status/provider + DIRTY_STRIP，
+//     与 generate.js 写入 models.json 的产物一致）
+//   - pending 条目不进 models.json → 纯待审累积不误报未保存
+//   - hidden 决策由 toggle/set-status 即时写 hidden-models KV（跨 PC 即时生效），
+//     不计入 dirty；取消隐藏（hidden → selected）自然进入投影
+// 基线是持久化的部署产物：页面刷新 / 服务器重启后仍能识别「已采用但未写
+// models.json」的存量差异（此前的内存快照方案在刷新后丢失标记）。
+function stripForDirty(state) {
+  if (!state || typeof state !== 'object') return state
+  const out = {}
+  for (const [k, v] of Object.entries(state)) {
+    if (!v || typeof v !== 'object') continue
+    if (v.status !== 'selected') continue
+    out[k] = stripEntry(v.metadata)
+  }
+  return out
+}
+
+// 基线（models.json 的 id → 条目）→ 同构投影，与 stripForDirty 输出可比
+function projectBaseline(baseline) {
+  if (!baseline || typeof baseline !== 'object') return {}
+  const out = {}
+  for (const [k, v] of Object.entries(baseline)) {
+    out[k] = stripEntry(v)
+  }
+  return out
+}
+
+export function computeDirty(baseline, current) {
+  return !deepEqual(projectBaseline(baseline), stripForDirty(current))
 }
 
 // 视图局部样式（style.css 不在本任务改动范围内，随视图注入一次）
@@ -2205,7 +2216,7 @@ export function renderModelsView(container) {
   // ── 视图局部状态 ────────────────────────────────────────
   let state = {}              // 内存态（/api/state 全集，只读来源，决策 10）
   let providers = []          // provider 列表（/api/providers/list，直接用作筛选参数）
-  let snapshot = {}           // 进入视图时的初始快照（dirty 基准）
+  let baseline = {}           // 部署基线（/api/state 的 models.json 投影，dirty 基准）
   let provider = null         // 侧栏筛选（null = 全部）
   let keyword = ''            // 关键字筛选（仅筛选条件，不标 dirty，已知坑 6）
   let status = null           // 状态筛选（null = 全部，selected/pending/hidden）
@@ -2351,7 +2362,7 @@ export function renderModelsView(container) {
   }
 
   function updateDirty() {
-    const dirty = computeDirty(snapshot, state)
+    const dirty = computeDirty(baseline, state)
     dirtyMark.hidden = !dirty
     appState().set('modelsDirty', dirty)
   }
@@ -2653,7 +2664,15 @@ export function renderModelsView(container) {
         }
         return
       }
-      snapshot = structuredClone(state)
+      // 保存已写 models.json（save-deploy 还部署了 KV）→ 重拉服务端 state+baseline，
+      // 让 dirty 基准对齐最新部署产物（本地内存 state 可能与服务端有字段差异）
+      try {
+        const s2 = await api('/api/state')
+        state = s2.state || {}
+        baseline = s2.baseline || {}
+      } catch {
+        // 重拉失败保持旧基线（至多误标未保存，提示重存，不丢提示）
+      }
       updateDirty()
       logActivity(deploy ? '已保存并提交部署' : '已保存', 'ok')
       flash(deploy ? '已保存并提交部署' : '已保存', 'ok')
@@ -2854,6 +2873,7 @@ export function renderModelsView(container) {
       // 拉取完成已进入 KV 部署阶段，按钮已放开；此处仅刷新内存数据，无需再阻塞
       const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
       state = s.state || {}
+      baseline = s.baseline || {}
       providers = p.providers || []
       renderSidebar()
       // 同步变更明细：有差异即展示（模型+字段+新旧值对比与高亮）
@@ -2862,11 +2882,9 @@ export function renderModelsView(container) {
       const shouldShowDiff = hasSyncDiff(details)
       if (shouldShowDiff) renderSyncDiffToPanel(details)
       else clearSyncDiffPanel()
-      // 自动部署成功或后台部署中（autoDeployed: true | null）→ 重置 snapshot（无未保存标记）；
-      // 仅部署明确失败（false）或未触发 → 保留旧 snapshot（标未保存，提示用户手动部署）
-      if (syncData && syncData.autoDeployed !== false) {
-        snapshot = structuredClone(state)
-      }
+      // 自动部署成功或后台部署中（autoDeployed: true | null）→ models.json 已重写，
+      // baseline 即最新部署产物；部署明确失败（false）或未触发 → 保留旧 baseline
+      //（存量「selected 但未部署」差异会被 computeDirty 识别，持续标未保存提示手动部署）
       updateDirty()
       // 表格非空且自动部署明确失败时强制标未保存（触发自动/手工保存 kv）
       if (shouldShowDiff && syncData?.autoDeployed === false) {
@@ -3184,8 +3202,8 @@ export function renderModelsView(container) {
       const doLoad = async () => {
         const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
         state = s.state || {}
+        baseline = s.baseline || {}
         providers = p.providers || []
-        snapshot = structuredClone(state)
         renderSidebar()
         updateDirty()
         await applyFilter()

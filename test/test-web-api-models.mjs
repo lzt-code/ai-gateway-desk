@@ -86,6 +86,7 @@ const noNetworkKvDeps = {
   readKvManualModels: async () => ({}),
   writeKvManualModels: async () => {},
   readKvModels: async () => [],
+  loadModelsJsonBaseline: () => ({}),
 }
 
 // 快捷：注入内存 store 的 app + req helper
@@ -110,6 +111,30 @@ section('测试 1: GET /api/state')
   check(res.status === 200, '返回 200')
   check(body.ok === true, 'ok === true')
   check(JSON.stringify(body.state) === JSON.stringify(sampleState), 'state 深等于初始 state')
+  check(body.baseline !== undefined && typeof body.baseline === 'object', '返回 baseline（部署基线）')
+}
+
+// ── 测试 1b：GET /api/state 的 baseline 反映 models.json 部署产物 ──
+section('测试 1b: /api/state baseline（部署基线）')
+{
+  // 场景：state 中 a/1 已采用（selected）但 models.json 未含（未保存部署）→
+  // baseline 缺失该 id，前端 computeDirty 据此识别存量差异（刷新后不丢标记）
+  const deployedOnly = {
+    'a/1': { status: 'selected', metadata: { name: 'A' } },
+  }
+  const store = makeStore(deployedOnly)
+  const app = createApp({
+    stateStore: store,
+    configStore: defaultMockConfigStore,
+    deps: {
+      ...noNetworkKvDeps,
+      loadModelsJsonBaseline: () => ({ 'b/2': { id: 'b/2', name: 'B' } }),
+    },
+  })
+  const body = await (await app.request('/api/state')).json()
+  check(JSON.stringify(body.baseline) === JSON.stringify({ 'b/2': { id: 'b/2', name: 'B' } }),
+    'baseline 为 models.json 的 id → 条目映射')
+  check(!('a/1' in body.baseline), '已采用未部署的模型不在 baseline 中')
 }
 
 // ── 测试 2-5：POST /api/models/toggle ──
