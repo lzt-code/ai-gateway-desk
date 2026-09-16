@@ -522,10 +522,16 @@ export function createApp({
   }
 
   /**
-   * 状态变更（toggle / set-status / batch-toggle）后即时重写 hidden-models KV（REST API）。
+   * 隐藏集合发生增删后即时重写 hidden-models KV（REST API）。
    * 目的：让「本地隐藏但尚未部署」的决策即时上云，同步时的取消隐藏归位
    * （applySelectedModels）据 KV 隐藏集合判断，不会误伤本地未部署的隐藏。
    * 附带收益：隐藏决策跨 PC 即时生效（无需等部署）。
+   *
+   * 调用方必须先确认本次变更真的改动了隐藏集合（toggle / set-status 比对
+   * 变更前后单条状态，batch-toggle 由目标状态推导）：写入是「本地快照全量覆盖」，
+   * 隐藏集合未变时重写没有任何收益，却会把本机尚未同步到的远端隐藏决策抹掉
+   * （另一台 PC 的隐藏随之在下次同步时被取消隐藏归位回滚）。
+   *
    * 后台串行队列执行，不阻塞端点响应（网络慢/离线时本地操作不受影响）；
    * 串行化防快速连续操作乱序覆盖（整 map 写入，后写含最新全量）。
    * KV 不可用或写入失败 → 静默降级（本地已生效，下次部署/同步全量收敛）。
@@ -584,7 +590,8 @@ export function createApp({
   })
 
   // POST /api/models/toggle — 切换状态：selected ↔ hidden；pending → selected（采用）
-  // 变更后后台即时重写 hidden-models KV（防同步归位误伤本地未部署的隐藏）
+  // 隐藏集合变化时后台即时重写 hidden-models KV（防同步归位误伤本地未部署的隐藏）；
+  // 采用（pending → selected）不改隐藏集合，不写 KV
   app.post('/api/models/toggle', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
@@ -592,10 +599,12 @@ export function createApp({
       return c.json({ error: 'modelId is required' }, 400)
     }
     if (!state[body.modelId]) return c.json({ error: 'model not found' }, 404)
+    const wasHidden = state[body.modelId].status === 'hidden'
     const changed = toggleStatus(state, body.modelId)
     if (changed) {
       stateStore.save(state)
-      queueHiddenModelsKvWrite()
+      // 仅隐藏集合变化时才重写 KV（采用 pending → selected 不隐藏集合）
+      if (wasHidden !== (state[body.modelId].status === 'hidden')) queueHiddenModelsKvWrite()
     }
     return c.json({ ok: true, changed, entry: state[body.modelId] })
   })
@@ -603,7 +612,7 @@ export function createApp({
   // POST /api/models/set-status — 设置模型状态（selected|hidden），供「待审」审核：
   // 采用（pending → selected）/ 忽略（pending → hidden）。拒绝设回 pending
   // （待审只由同步发现产生，人工决策不回退；误操作可再切换 selected ↔ hidden）。
-  // 变更后后台即时重写 hidden-models KV（同 toggle）。
+  // 隐藏集合变化时后台即时重写 hidden-models KV（同 toggle：采用不改隐藏集合，不写）
   app.post('/api/models/set-status', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
@@ -614,11 +623,13 @@ export function createApp({
       return c.json({ error: 'status 必须为 selected 或 hidden' }, 400)
     }
     if (!state[body.modelId]) return c.json({ error: 'model not found' }, 404)
+    const wasHidden = state[body.modelId].status === 'hidden'
     const changed = state[body.modelId].status !== body.status
     if (changed) {
       state[body.modelId].status = body.status
       stateStore.save(state)
-      queueHiddenModelsKvWrite()
+      // 仅隐藏集合变化时才重写 KV（pending → selected 采用不改隐藏集合）
+      if (wasHidden !== (body.status === 'hidden')) queueHiddenModelsKvWrite()
     }
     return c.json({ ok: true, changed, entry: state[body.modelId] })
   })
@@ -641,21 +652,34 @@ export function createApp({
   })
 
   // POST /api/models/batch-toggle — 批量切换（modelIds 缺省 = 全部）
+  // 隐藏集合变化时后台即时重写 hidden-models KV（范围内仅待审 → 批量采用，不写）
   app.post('/api/models/batch-toggle', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
     if (body.modelIds !== undefined && !Array.isArray(body.modelIds)) {
       return c.json({ error: 'modelIds must be an array' }, 400)
     }
-    // 预计算目标状态与参与数量（与 toggleAllStatus 内部逻辑一致）
+    // 预计算目标状态与参与数量（与 toggleAllStatus 内部逻辑一致）；
+    // 同时记录范围内是否有隐藏项 / 非隐藏项，供「隐藏集合是否被改动」判定
     const ids = Array.isArray(body.modelIds) ? body.modelIds : Object.keys(state)
     const targets = ids.filter((id) => state[id])
-    const currentSelected = targets.filter((id) => state[id].status === 'selected').length
+    let currentSelected = 0
+    let anyHidden = false
+    let anyVisible = false
+    for (const id of targets) {
+      const status = state[id].status
+      if (status === 'selected') currentSelected++
+      if (status === 'hidden') anyHidden = true
+      else anyVisible = true
+    }
     const targetStatus = currentSelected > 0 ? 'hidden' : 'selected'
+    // 目标 hidden → 有非隐藏项加入隐藏集合；目标 selected → 有隐藏项移出隐藏集合
+    const hiddenChanged = targetStatus === 'hidden' ? anyVisible : anyHidden
     const changed = toggleAllStatus(state, body.modelIds)
     if (changed) {
       stateStore.save(state)
-      queueHiddenModelsKvWrite()
+      // 仅隐藏集合变化时才重写 KV（范围内只有待审模型时批量采用不改隐藏集合）
+      if (hiddenChanged) queueHiddenModelsKvWrite()
     }
     return c.json({ ok: true, changed, status: targetStatus, count: targets.length })
   })

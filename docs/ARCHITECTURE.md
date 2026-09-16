@@ -95,7 +95,7 @@ Hono 应用，`createApp` 支持依赖注入（测试可 mock stateStore / confi
 | 分组 | 端点 |
 |------|------|
 | 健康/心跳 | `GET /api/health`、`POST /api/heartbeat` |
-| 模型 | `GET /api/state`、`GET /api/models/filtered`、`POST /api/models/{toggle,remove,batch-toggle,batch-remove,edit,add}` |
+| 模型 | `GET /api/state`、`GET /api/models/filtered`、`POST /api/models/{toggle,set-status,remove,batch-toggle,batch-remove,edit,add}` |
 | Provider | `GET /api/providers`、`/api/providers/{list,refresh,update,create,delete}` |
 | 同步 | `GET /api/sync/progress`（SSE）、`POST /api/sync`、`POST /api/save`、`POST /api/save-deploy` |
 | 调试 | `GET /api/settings/debug`、`POST /api/settings/debug`（详细日志开关，持久化到 providers.json 顶层 `debug` 字段） |
@@ -215,6 +215,10 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
   （selected → models 键 / hidden → hidden-models 键）跨 PC 同步
   （applySelectedModels 提升 + 取消隐藏归位）
 - `hidden`：跨更新保持隐藏，不入列表；同步不会删除
+  隐藏集合发生增删时（toggle / set-status / batch-toggle 改了隐藏成员）即时重写
+  `hidden-models` KV，使「本地隐藏但尚未部署」的决策立刻上云，避免同步时的取消隐藏
+  归位误伤；隐藏成员未变的状态流转（如待审采用 pending → selected）不写该键——
+  写入是本地快照全量覆盖，无变化的重写只会抹掉本机尚未同步到的远端隐藏决策。
 - 删除：无中间态，provider 不再返回时同步直接物理删除（手工模型需手工删除）
 
 ### 5.3 `data/models.json`（生成产物，gitignore）
