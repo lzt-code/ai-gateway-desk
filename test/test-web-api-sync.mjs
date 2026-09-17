@@ -12,6 +12,9 @@
 
 import { createApp } from '../src/web/server.js'
 import { runSyncFlow } from '../src/web/sync-flow.js'
+
+// 测试默认禁用闲置自动部署防抖（避免定时器触发真实 saveAndDeploy / KV 写入）
+const createTestApp = (options = {}) => createApp(Object.assign({ autoDeployIdleMs: 0 }, options))
 import { setDebugFlag } from '../src/core/config.js'
 
 let failures = 0
@@ -194,7 +197,7 @@ function makeDeps({
 function makeApp(initial = {}, depsOpts = {}, config = fakeConfig) {
   const store = makeStore(initial)
   const deps = makeDeps(depsOpts)
-  const app = createApp({
+  const app = createTestApp({
     stateStore: store,
     configStore: { load: () => config },
     deps,
@@ -574,7 +577,7 @@ section('测试 16: runSyncFlow enrich 失败静默')
 section('测试 17a: GET/POST /api/settings/debug')
 {
   const setCalls = []
-  const app = createApp({
+  const app = createTestApp({
     stateStore: makeStore(),
     configStore: { load: () => ({ ...fakeConfig, debug: true }) },
     deps: { setDebugFlag: (v) => { setCalls.push(v); return { backupPath: null } } },
@@ -602,7 +605,7 @@ section('测试 17a: GET/POST /api/settings/debug')
   const resNonJson = await app.request('/api/settings/debug', { method: 'POST', body: 'not json' })
   check(resNonJson.status === 400, '非法 JSON 体 → 400')
 
-  const appFail = createApp({
+  const appFail = createTestApp({
     stateStore: makeStore(),
     configStore: { load: () => fakeConfig },
     deps: { setDebugFlag: () => { throw new Error('写盘失败') } },
@@ -615,7 +618,7 @@ section('测试 17a: GET/POST /api/settings/debug')
   const bodyFail = await resFail.json()
   check(resFail.status === 500 && (bodyFail.error || '').includes('写盘失败'), '写盘抛错 → 500 + error 透传')
 
-  const appOff = createApp({
+  const appOff = createTestApp({
     stateStore: makeStore(),
     configStore: { load: () => fakeConfig },
     deps: { setDebugFlag: () => ({ backupPath: null }) },
@@ -873,7 +876,7 @@ section('测试 24: sync 自动部署到 KV')
       removedModels: [],
     })
     const store = makeStore({})
-    const app = createApp({
+    const app = createTestApp({
       stateStore: store,
       configStore: { load: () => fakeConfigWithKv },
       deps,
@@ -922,7 +925,7 @@ section('测试 25: sync 自动部署失败不中断')
       removedModels: [],
     })
     const store = makeStore({})
-    const app = createApp({
+    const app = createTestApp({
       stateStore: store,
       configStore: { load: () => fakeConfigWithKv },
       deps,
@@ -1010,7 +1013,7 @@ section('测试 28: buildHiddenModelsMap / buildManualModelsMap 纯函数')
   }
   const store = makeStore(state)
   const deps = makeDeps({}, fakeConfigWithKv)
-  const app = createApp({
+  const app = createTestApp({
     stateStore: store,
     configStore: { load: () => fakeConfigWithKv },
     deps,
@@ -1039,7 +1042,7 @@ section('测试 29: applyHiddenModels / applyManualModels 纯函数')
       'a/m2': { status: 'selected', provider: 'a', manual: true, metadata: { name: 'M2' } },
     },
   }, fakeConfigWithKv)
-  const app = createApp({
+  const app = createTestApp({
     stateStore: store,
     configStore: { load: () => fakeConfigWithKv },
     deps,
@@ -1076,7 +1079,7 @@ section('测试 30: name 补救误报不触发 KV 部署')
     deps.enrichModel = async (_id, meta) => ({ ...meta })
 
     const store = makeStore(initial)
-    const app = createApp({
+    const app = createTestApp({
       stateStore: store,
       configStore: { load: () => fakeConfigWithKv },
       deps,
@@ -1113,7 +1116,7 @@ section('测试 31: enrich 实际改了 metadata → 触发 KV 部署')
     deps.enrichModel = async (_id, meta) => ({ ...meta, context_length: 8192 })
 
     const store = makeStore(initial)
-    const app = createApp({
+    const app = createTestApp({
       stateStore: store,
       configStore: { load: () => fakeConfigWithKv },
       deps,
@@ -1148,7 +1151,7 @@ section('测试 32: merge 改了 status → 计入真实更新')
     deps.enrichModel = async (_id, meta) => ({ ...meta })
 
     const store = makeStore(initial)
-    const app = createApp({
+    const app = createTestApp({
       stateStore: store,
       configStore: { load: () => fakeConfigWithKv },
       deps,
@@ -1493,7 +1496,7 @@ section('测试 40: pricing 改写+还原不触发 KV 部署')
     deps.enrichModel = async (_id, meta) => ({ ...meta, pricing: { prompt: 0.5, completion: 0.6 } })
 
     const store = makeStore(initial)
-    const app = createApp({
+    const app = createTestApp({
       stateStore: store,
       configStore: { load: () => fakeConfigWithKv },
       deps,
@@ -1532,7 +1535,7 @@ section('测试 41: 纯新增 pending 不触发自动部署')
       removedModels: [],
     })
     const store = makeStore({})
-    const app = createApp({
+    const app = createTestApp({
       stateStore: store,
       configStore: { load: () => fakeConfigWithKv },
       deps,
@@ -1573,7 +1576,7 @@ section('测试 42: 取消隐藏跨 PC 归位')
       removedModels: [],
     })
     const store = makeStore(initial)
-    const app = createApp({
+    const app = createTestApp({
       stateStore: store,
       configStore: { load: () => fakeConfigWithKv },
       deps,
@@ -1613,7 +1616,7 @@ section('测试 43: KV hidden 读取失败不归位')
       removedModels: [],
     })
     const store = makeStore(initial)
-    const app = createApp({
+    const app = createTestApp({
       stateStore: store,
       configStore: { load: () => fakeConfigWithKv },
       deps,
@@ -1629,8 +1632,12 @@ section('测试 43: KV hidden 读取失败不归位')
   }
 }
 
-// ── 测试 44：set-status 端点（待审采用/忽略）+ 即时写 hidden-models KV ──
-section('测试 44: set-status 端点 + toggle 即时写 KV')
+// ── 测试 44：set-status 端点（待审采用/忽略）— 防抖自动部署替代即时写 KV ──
+// 语义变更：toggle/set-status 不再即时写 hidden-models KV，统一进入闲置自动
+// 部署防抖（models + hidden/manual 一次部署）。本文件经 createTestApp 禁用防抖
+// 排期（autoDeployIdleMs: 0），故断言「不即时写 + autoDeployScheduled 为 false」；
+// 排期与部署行为由 test-web-api-auto-deploy.mjs 覆盖。
+section('测试 44: set-status 端点 + toggle（防抖自动部署，无即时写 KV）')
 {
   const restoreEnv = withCleanEnv()
   try {
@@ -1639,9 +1646,8 @@ section('测试 44: set-status 端点 + toggle 即时写 KV')
       'custom-agnes/sel-m': { status: 'selected', provider: 'custom-agnes', metadata: {} },
     }
     const { app, deps } = makeApp(initial, { kvHiddenModels: {}, kvManualModels: {} }, fakeConfigWithKv)
-    // 即时写为后台串行队列（不阻塞响应）：断言前 flush 一轮宏任务
     const flushKvQueue = () => new Promise((r) => setTimeout(r, 0))
-    // 忽略待审模型：pending → hidden + hidden-models 即时上云
+    // 忽略待审模型：pending → hidden（不即时写 hidden-models KV，等防抖部署）
     const res = await app.request('/api/models/set-status', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1651,19 +1657,21 @@ section('测试 44: set-status 端点 + toggle 即时写 KV')
     check(res.status === 200 && body.ok === true, 'set-status 忽略 → 200 ok')
     check(body.entry.status === 'hidden', '待审模型 → hidden')
     check(body.changed === true, 'changed === true')
+    check(body.autoDeployScheduled === false, 'autoDeployScheduled === false（测试环境禁用防抖排期）')
     await flushKvQueue()
-    const hiddenWrite = deps.kvWrites.find((w) => w.key === 'hidden-models')
-    check(!!hiddenWrite && 'custom-agnes/pending-m' in hiddenWrite.map, '忽略后即时写 hidden-models KV（防同步归位误伤）')
+    check(deps.kvWrites.filter((w) => w.key === 'hidden-models').length === 0,
+      '忽略后不即时写 hidden-models KV（防抖自动部署统一处理）')
 
-    // 改回 selected（采用）：即时写移除该模型
-    await app.request('/api/models/set-status', {
+    // 改回 selected（采用）：同样不即时写
+    const res2 = await app.request('/api/models/set-status', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ modelId: 'custom-agnes/pending-m', status: 'selected' }),
     })
+    check((await res2.json()).autoDeployScheduled === false, '采用响应 autoDeployScheduled === false')
     await flushKvQueue()
-    const writes2 = deps.kvWrites.filter((w) => w.key === 'hidden-models')
-    check(writes2.length === 2 && !('custom-agnes/pending-m' in writes2[1].map), '采用后 hidden-models 即时移除该模型')
+    check(deps.kvWrites.filter((w) => w.key === 'hidden-models').length === 0,
+      '采用后仍不写 hidden-models KV')
 
     // 非法 status → 400（待审仅由同步产生，人工不可设回）
     const resBad = await app.request('/api/models/set-status', {
@@ -1673,15 +1681,15 @@ section('测试 44: set-status 端点 + toggle 即时写 KV')
     })
     check(resBad.status === 400, 'status=pending → 400')
 
-    // toggle 隐藏同样即时写 KV
+    // toggle 隐藏同样不即时写 KV
     await app.request('/api/models/toggle', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ modelId: 'custom-agnes/sel-m' }),
     })
     await flushKvQueue()
-    const writes3 = deps.kvWrites.filter((w) => w.key === 'hidden-models')
-    check(writes3.length === 3 && 'custom-agnes/sel-m' in writes3[2].map, 'toggle 隐藏后即时写 hidden-models KV')
+    check(deps.kvWrites.filter((w) => w.key === 'hidden-models').length === 0,
+      'toggle 隐藏后不即时写 hidden-models KV')
   } finally {
     restoreEnv()
   }
@@ -1703,21 +1711,22 @@ section('测试 45: toggle 待审采用')
   check(res.status === 200 && body.ok === true, 'toggle 待审 → 200 ok')
   check(body.entry.status === 'selected', 'pending → selected（一键采用）')
   check(body.changed === true, 'changed === true')
-  // 采用不改动隐藏集合 → 不重写 hidden-models KV（写入是本地快照全量覆盖，
-  // 隐藏集合未变时重写只会抹掉本机尚未同步到的远端隐藏决策）
+  // 防抖自动部署语义：任何变更都不即时写 hidden-models KV（统一闲置后一次部署）
   await new Promise((r) => setTimeout(r, 0))
   check(deps.kvWrites.filter((w) => w.key === 'hidden-models').length === 0,
-    '采用不写 hidden-models KV（隐藏集合未变）')
+    '采用不即时写 hidden-models KV（防抖自动部署统一处理）')
 }
 
-// ── 测试 46：batch-toggle 仅在隐藏集合变化时重写 hidden-models KV ─
-section('测试 46: batch-toggle 隐藏集合判定')
+// ── 测试 46：batch-toggle 目标状态推导 + 防抖排期（不即时写 KV）─
+// 语义变更：batch-toggle 不再按「隐藏集合是否变化」即时写 hidden-models KV，
+// 统一进入闲置自动部署防抖（本文件禁用排期，断言 autoDeployScheduled 为 false）。
+section('测试 46: batch-toggle 目标状态推导 + 防抖排期')
 {
   const restoreEnv = withCleanEnv()
   try {
     const flushKvQueue = () => new Promise((r) => setTimeout(r, 0))
 
-    // 范围内仅待审 → 批量采用，隐藏集合未变 → 不写 KV
+    // 范围内仅待审 → 批量采用
     {
       const { app, deps } = makeApp({
         'custom-agnes/p1': { status: 'pending', provider: 'custom-agnes', metadata: {} },
@@ -1730,42 +1739,44 @@ section('测试 46: batch-toggle 隐藏集合判定')
       })
       const body = await res.json()
       check(body.status === 'selected', '仅待审范围 → 批量采用')
+      check(body.autoDeployScheduled === false, 'autoDeployScheduled === false（测试环境禁用防抖排期）')
       await flushKvQueue()
       check(deps.kvWrites.filter((w) => w.key === 'hidden-models').length === 0,
-        '批量采用（仅待审）不写 hidden-models KV')
+        '批量采用不即时写 hidden-models KV')
     }
 
-    // 范围含已选中 → 批量隐藏，隐藏集合增大 → 写 KV
+    // 范围含已选中 → 批量隐藏
     {
       const { app, deps } = makeApp({
         'custom-agnes/s1': { status: 'selected', provider: 'custom-agnes', metadata: {} },
         'custom-agnes/p1': { status: 'pending', provider: 'custom-agnes', metadata: {} },
       }, { kvHiddenModels: {}, kvManualModels: {} }, fakeConfigWithKv)
-      await app.request('/api/models/batch-toggle', {
+      const res = await app.request('/api/models/batch-toggle', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ modelIds: ['custom-agnes/s1', 'custom-agnes/p1'] }),
       })
+      check((await res.json()).status === 'hidden', '范围含已选中 → 批量隐藏')
       await flushKvQueue()
-      const writes = deps.kvWrites.filter((w) => w.key === 'hidden-models')
-      check(writes.length === 1 && 'custom-agnes/s1' in writes[0].map, '批量隐藏 → 写 hidden-models KV')
+      check(deps.kvWrites.filter((w) => w.key === 'hidden-models').length === 0,
+        '批量隐藏不即时写 hidden-models KV（防抖自动部署统一处理）')
     }
 
-    // 范围内全为隐藏 → 批量取消隐藏，隐藏集合缩小 → 写 KV
+    // 范围内全为隐藏 → 批量取消隐藏
     {
       const { app, deps } = makeApp({
         'custom-agnes/h1': { status: 'hidden', provider: 'custom-agnes', metadata: {} },
         'custom-agnes/h2': { status: 'hidden', provider: 'custom-agnes', metadata: {} },
       }, { kvHiddenModels: {}, kvManualModels: {} }, fakeConfigWithKv)
-      await app.request('/api/models/batch-toggle', {
+      const res = await app.request('/api/models/batch-toggle', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ modelIds: ['custom-agnes/h1', 'custom-agnes/h2'] }),
       })
+      check((await res.json()).status === 'selected', '范围内全为隐藏 → 批量取消隐藏')
       await flushKvQueue()
-      const writes = deps.kvWrites.filter((w) => w.key === 'hidden-models')
-      check(writes.length === 1 && Object.keys(writes[0].map).length === 0,
-        '批量取消隐藏 → 写 hidden-models KV（清空）')
+      check(deps.kvWrites.filter((w) => w.key === 'hidden-models').length === 0,
+        '批量取消隐藏不即时写 hidden-models KV')
     }
   } finally {
     restoreEnv()

@@ -426,6 +426,10 @@ async function readJsonBody(c) {
  * @param {{ lastHeartbeat: number|null, goodbyeAt: number|null }} [options.heartbeatState]
  *        心跳状态（startServer 创建并注入，配合前端心跳实现「页面全部关闭 →
  *        自动退出」）。缺省 null：/api/heartbeat 仅返回 ok、不记录（直接 createApp 场景）
+ * @param {number} [options.autoDeployIdleMs]
+ *        闲置自动部署防抖窗口（默认 20000ms；0 = 禁用，测试用）：
+ *        toggle/set-status/batch-toggle 变更后不再即时写 hidden-models KV，
+ *        闲置到期一次性 saveAndDeploy + 写 hidden/manual KV（等价 /api/save-deploy）
  * @returns {Hono}
  */
 export function createApp({
@@ -435,6 +439,7 @@ export function createApp({
   routesStore = DEFAULT_ROUTES_STORE,
   deps = {},
   heartbeatState = null,
+  autoDeployIdleMs = 20000,
 } = {}) {
   const app = new Hono()
   // 内存态：createApp 闭包变量，非模块级单例（测试可多次 createApp 隔离状态）
@@ -522,27 +527,19 @@ export function createApp({
   }
 
   /**
-   * 隐藏集合发生增删后即时重写 hidden-models KV（REST API）。
-   * 目的：让「本地隐藏但尚未部署」的决策即时上云，同步时的取消隐藏归位
-   * （applySelectedModels）据 KV 隐藏集合判断，不会误伤本地未部署的隐藏。
-   * 附带收益：隐藏决策跨 PC 即时生效（无需等部署）。
-   *
-   * 调用方必须先确认本次变更真的改动了隐藏集合（toggle / set-status 比对
-   * 变更前后单条状态，batch-toggle 由目标状态推导）：写入是「本地快照全量覆盖」，
-   * 隐藏集合未变时重写没有任何收益，却会把本机尚未同步到的远端隐藏决策抹掉
-   * （另一台 PC 的隐藏随之在下次同步时被取消隐藏归位回滚）。
-   *
-   * 后台串行队列执行，不阻塞端点响应（网络慢/离线时本地操作不受影响）；
-   * 串行化防快速连续操作乱序覆盖（整 map 写入，后写含最新全量）。
-   * KV 不可用或写入失败 → 静默降级（本地已生效，下次部署/同步全量收敛）。
+   * 立即将当前隐藏集合全量写入 hidden-models KV（REST API），返回队列 Promise。
+   * 用途：同步开始前冲刷「本地已隐藏但尚未自动部署」的决策——同步的取消隐藏
+   * 归位（applySelectedModels）据 KV 隐藏集合判断，不冲刷会误伤本地未部署的隐藏。
+   * 后台串行队列执行，串行化防快速连续操作乱序覆盖（整 map 写入，后写含最新全量）；
+   * KV 不可用或写入失败 → 静默降级（本地已生效，部署/同步时全量收敛）。
    */
   let hiddenModelsKvQueue = Promise.resolve()
-  const queueHiddenModelsKvWrite = () => {
+  const flushHiddenModelsKv = () => {
     const config = configStore.load()
     const gateway = config.gateway || {}
     const namespaceId = config.kv?.namespaceId || ''
     const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
-    if (!mgmtToken || !gateway.accountId || !namespaceId) return
+    if (!mgmtToken || !gateway.accountId || !namespaceId) return hiddenModelsKvQueue
     hiddenModelsKvQueue = hiddenModelsKvQueue.then(async () => {
       try {
         await depsAll.writeKvHiddenModels(
@@ -552,6 +549,82 @@ export function createApp({
         // 静默降级
       }
     })
+    return hiddenModelsKvQueue
+  }
+
+  /**
+   * 闲置自动部署（防抖）：toggle / set-status / batch-toggle 变更后不再即时写
+   * hidden-models KV，统一进入 idle 防抖（autoDeployIdleMs，默认 20s，0 禁用）。
+   * 闲置到期一次性执行 saveAndDeploy（models.json → models KV）+ hidden/manual
+   * KV，与 /api/save-deploy 等价：连续操作只触发一次部署，无需手工部署。
+   * - KV 未就绪（缺 token/accountId/namespaceId）→ 不排期（返回 false），本地
+   *   state 已落盘，等手动「保存并部署」或下次同步收敛
+   * - 部署失败不自动重试：baseline 差异仍在（前端「未保存」保留），等手动/同步收敛
+   * - 部署进行中来了新变更 → autoDeployPending 保持 true，完成后重新排期
+   * - stateVersion：任何 state 变更递增，供手动保存/同步部署完成后判断「部署
+   *   期间是否有新变更」，有则重新排期（防取消掉部署间隙到达的变更）
+   */
+  let autoDeployTimer = null
+  let autoDeployPending = false
+  let autoDeployRunning = false
+  let stateVersion = 0
+
+  const cancelAutoDeploy = () => {
+    autoDeployPending = false
+    if (autoDeployTimer) { clearTimeout(autoDeployTimer); autoDeployTimer = null }
+  }
+
+  const scheduleAutoDeploy = () => {
+    if (!autoDeployIdleMs) return false
+    const config = configStore.load()
+    const gateway = config.gateway || {}
+    const namespaceId = config.kv?.namespaceId || ''
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    if (!mgmtToken || !gateway.accountId || !namespaceId) return false
+    autoDeployPending = true
+    if (autoDeployTimer) clearTimeout(autoDeployTimer)
+    autoDeployTimer = setTimeout(() => { runAutoDeploy().catch(() => {}) }, autoDeployIdleMs)
+    // unref：定时器不阻止进程退出（测试 / 孤进程清理场景）
+    if (typeof autoDeployTimer.unref === 'function') autoDeployTimer.unref()
+    return true
+  }
+
+  const runAutoDeploy = async () => {
+    autoDeployTimer = null
+    if (!autoDeployPending || autoDeployRunning) return
+    autoDeployPending = false
+    autoDeployRunning = true
+    const op = 'auto-deploy'
+    const start = Date.now()
+    try {
+      const config = configStore.load()
+      const result = await depsAll.saveAndDeploy({ state, config })
+      if (!result.ok) {
+        const error = result.error instanceof Error ? result.error.message : String(result.error)
+        throw new Error(`step ${result.step}: ${error}`)
+      }
+      // models 键部署成功后写 hidden/manual KV（跨 PC 同步，同 /api/save-deploy）
+      const gateway = config.gateway || {}
+      const namespaceId = config.kv?.namespaceId || ''
+      const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+      if (mgmtToken && gateway.accountId && namespaceId) {
+        await depsAll.writeKvHiddenModels(
+          mgmtToken, gateway.accountId, namespaceId, depsAll.buildHiddenModelsMap(state),
+        )
+        await depsAll.writeKvManualModels(
+          mgmtToken, gateway.accountId, namespaceId, depsAll.buildManualModelsMap(state),
+        )
+      }
+      ioLogResult(op, { ok: true, message: `闲置 ${Math.round(autoDeployIdleMs / 1000)}s 自动部署完成`, elapsedMs: Date.now() - start })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      ioLogResult(op, { ok: false, message: msg, elapsedMs: Date.now() - start })
+      console.error('[aigd] 闲置自动部署失败:', msg)
+    } finally {
+      autoDeployRunning = false
+      // 部署期间来了新变更 → 重新排期（防抖窗口重新计时）
+      if (autoDeployPending) scheduleAutoDeploy()
+    }
   }
 
   // 未捕获异常统一 500 + { error }
@@ -590,8 +663,8 @@ export function createApp({
   })
 
   // POST /api/models/toggle — 切换状态：selected ↔ hidden；pending → selected（采用）
-  // 隐藏集合变化时后台即时重写 hidden-models KV（防同步归位误伤本地未部署的隐藏）；
-  // 采用（pending → selected）不改隐藏集合，不写 KV
+  // 变更后进入闲置自动部署防抖（不再即时写 hidden-models KV；同步前另有冲刷
+  // 保护，见 /api/sync 的 flushHiddenModelsKv 调用）
   app.post('/api/models/toggle', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
@@ -599,20 +672,26 @@ export function createApp({
       return c.json({ error: 'modelId is required' }, 400)
     }
     if (!state[body.modelId]) return c.json({ error: 'model not found' }, 404)
-    const wasHidden = state[body.modelId].status === 'hidden'
     const changed = toggleStatus(state, body.modelId)
+    let autoDeployScheduled = false
     if (changed) {
+      stateVersion++
       stateStore.save(state)
-      // 仅隐藏集合变化时才重写 KV（采用 pending → selected 不隐藏集合）
-      if (wasHidden !== (state[body.modelId].status === 'hidden')) queueHiddenModelsKvWrite()
+      autoDeployScheduled = scheduleAutoDeploy()
     }
-    return c.json({ ok: true, changed, entry: state[body.modelId] })
+    return c.json({
+      ok: true,
+      changed,
+      entry: state[body.modelId],
+      autoDeployScheduled,
+      ...(autoDeployScheduled ? { autoDeployIdleMs } : {}),
+    })
   })
 
   // POST /api/models/set-status — 设置模型状态（selected|hidden），供「待审」审核：
   // 采用（pending → selected）/ 忽略（pending → hidden）。拒绝设回 pending
   // （待审只由同步发现产生，人工决策不回退；误操作可再切换 selected ↔ hidden）。
-  // 隐藏集合变化时后台即时重写 hidden-models KV（同 toggle：采用不改隐藏集合，不写）
+  // 变更后进入闲置自动部署防抖（同 toggle）
   app.post('/api/models/set-status', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
@@ -623,15 +702,21 @@ export function createApp({
       return c.json({ error: 'status 必须为 selected 或 hidden' }, 400)
     }
     if (!state[body.modelId]) return c.json({ error: 'model not found' }, 404)
-    const wasHidden = state[body.modelId].status === 'hidden'
     const changed = state[body.modelId].status !== body.status
+    let autoDeployScheduled = false
     if (changed) {
       state[body.modelId].status = body.status
+      stateVersion++
       stateStore.save(state)
-      // 仅隐藏集合变化时才重写 KV（pending → selected 采用不改隐藏集合）
-      if (wasHidden !== (body.status === 'hidden')) queueHiddenModelsKvWrite()
+      autoDeployScheduled = scheduleAutoDeploy()
     }
-    return c.json({ ok: true, changed, entry: state[body.modelId] })
+    return c.json({
+      ok: true,
+      changed,
+      entry: state[body.modelId],
+      autoDeployScheduled,
+      ...(autoDeployScheduled ? { autoDeployIdleMs } : {}),
+    })
   })
 
   // POST /api/models/remove — 一次性永久删除（entry → null）
@@ -645,6 +730,7 @@ export function createApp({
     if (!state[body.modelId]) return c.json({ error: 'model not found' }, 404)
     const changed = deleteModel(state, body.modelId)
     if (changed) {
+      stateVersion++
       stateStore.save(state)
       await cleanupModelKvAfterDeletion()
     }
@@ -652,36 +738,36 @@ export function createApp({
   })
 
   // POST /api/models/batch-toggle — 批量切换（modelIds 缺省 = 全部）
-  // 隐藏集合变化时后台即时重写 hidden-models KV（范围内仅待审 → 批量采用，不写）
+  // 变更后进入闲置自动部署防抖（单次请求至多排期一次，同 toggle）
   app.post('/api/models/batch-toggle', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
     if (body.modelIds !== undefined && !Array.isArray(body.modelIds)) {
       return c.json({ error: 'modelIds must be an array' }, 400)
     }
-    // 预计算目标状态与参与数量（与 toggleAllStatus 内部逻辑一致）；
-    // 同时记录范围内是否有隐藏项 / 非隐藏项，供「隐藏集合是否被改动」判定
+    // 预计算目标状态与参与数量（与 toggleAllStatus 内部逻辑一致）
     const ids = Array.isArray(body.modelIds) ? body.modelIds : Object.keys(state)
     const targets = ids.filter((id) => state[id])
     let currentSelected = 0
-    let anyHidden = false
-    let anyVisible = false
     for (const id of targets) {
-      const status = state[id].status
-      if (status === 'selected') currentSelected++
-      if (status === 'hidden') anyHidden = true
-      else anyVisible = true
+      if (state[id].status === 'selected') currentSelected++
     }
     const targetStatus = currentSelected > 0 ? 'hidden' : 'selected'
-    // 目标 hidden → 有非隐藏项加入隐藏集合；目标 selected → 有隐藏项移出隐藏集合
-    const hiddenChanged = targetStatus === 'hidden' ? anyVisible : anyHidden
     const changed = toggleAllStatus(state, body.modelIds)
+    let autoDeployScheduled = false
     if (changed) {
+      stateVersion++
       stateStore.save(state)
-      // 仅隐藏集合变化时才重写 KV（范围内只有待审模型时批量采用不改隐藏集合）
-      if (hiddenChanged) queueHiddenModelsKvWrite()
+      autoDeployScheduled = scheduleAutoDeploy()
     }
-    return c.json({ ok: true, changed, status: targetStatus, count: targets.length })
+    return c.json({
+      ok: true,
+      changed,
+      status: targetStatus,
+      count: targets.length,
+      autoDeployScheduled,
+      ...(autoDeployScheduled ? { autoDeployIdleMs } : {}),
+    })
   })
 
   // POST /api/models/batch-remove — 批量永久删除（modelIds 缺省 = 全部）
@@ -700,6 +786,7 @@ export function createApp({
     for (const id of targets) {
       deleteModel(state, id)
     }
+    stateVersion++
     stateStore.save(state)
     await cleanupModelKvAfterDeletion()
     return c.json({ ok: true, changed: true, count: targets.length })
@@ -717,7 +804,10 @@ export function createApp({
     }
     if (!state[body.modelId]) return c.json({ error: 'model not found' }, 404)
     const changed = editModelMetadata(state, body.modelId, body.fields)
-    if (changed) stateStore.save(state)
+    if (changed) {
+      stateVersion++
+      stateStore.save(state)
+    }
     return c.json({ ok: true, metadata: state[body.modelId].metadata || {} })
   })
 
@@ -738,6 +828,7 @@ export function createApp({
       return c.json({ error: 'metadata must be an object' }, 400)
     }
     upsertModel(state, body.modelId, body.provider, body.metadata || {}, { manual: true })
+    stateVersion++
     stateStore.save(state)
     return c.json({ ok: true, entry: state[body.modelId] })
   })
@@ -889,6 +980,9 @@ export function createApp({
       const gateway = config.gateway || {}
       const namespaceId = config.kv?.namespaceId || ''
       const kvReady = Boolean(mgmtToken && gateway.accountId && namespaceId)
+      // 同步前冲刷待自动部署的隐藏决策：取消隐藏归位（applySelectedModels）据 KV
+      // 隐藏集合判断，不冲刷会把本地刚隐藏（尚未自动部署）的模型归位回 selected
+      if (autoDeployPending) await flushHiddenModelsKv()
       let visibilityMap = null
       let hiddenModelsMap = null
       let manualModelsMap = null
@@ -985,6 +1079,7 @@ export function createApp({
       const deployMgmt = mgmtToken
       const deployGw = gateway
       const deployNs = namespaceId
+      const deployVersion = stateVersion
       let autoDeployed = null
       let autoDeployError = null
       if (!hasDeployChanges) autoDeployed = true
@@ -1012,6 +1107,10 @@ export function createApp({
                 )
               }
               ok = true
+              // 同步部署已覆盖当前全部变更 → 取消待部署的闲置自动部署；
+              // 部署期间到达的新变更（version 变化）重新排期防抖
+              cancelAutoDeploy()
+              if (stateVersion !== deployVersion) scheduleAutoDeploy()
             }
           } catch (e) {
             err = e instanceof Error ? e.message : String(e)
@@ -1041,12 +1140,17 @@ export function createApp({
     const op = 'save-deploy'
     const config = configStore.load()
     if (isDebugEnabled()) ioLogRequest(op, { method: 'POST', path: '/api/save-deploy', meta: { models: Object.keys(state).length } })
+    const deployVersion = stateVersion
     const result = await depsAll.saveAndDeploy({ state, config })
     if (!result.ok) {
       const error = result.error instanceof Error ? result.error.message : String(result.error)
       ioLogResult(op, { ok: false, message: `step ${result.step}: ${error}`, elapsedMs: Date.now() - start })
       return c.json({ ok: false, step: result.step, error })
     }
+    // 手动部署已覆盖当前全部变更 → 取消待部署的闲置自动部署；
+    // 部署期间到达的新变更（version 变化）重新排期防抖
+    cancelAutoDeploy()
+    if (stateVersion !== deployVersion) scheduleAutoDeploy()
     // saveAndDeploy 成功后写 hidden-models + manual-models 到 KV（跨 PC 同步）
     const gateway = config.gateway || {}
     const namespaceId = config.kv?.namespaceId || ''
@@ -1088,6 +1192,8 @@ export function createApp({
       ioLogResult(op, { ok: false, message: `step2: ${msg}`, elapsedMs: Date.now() - start })
       return c.json({ ok: false, step: 2, error: msg })
     }
+    // 用户明确选择「仅保存不部署」→ 取消待部署的闲置自动部署（尊重显式意图）
+    cancelAutoDeploy()
     ioLogResult(op, { ok: true, message: 'ok', elapsedMs: Date.now() - start })
     return c.json({ ok: true })
   })

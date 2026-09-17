@@ -2361,10 +2361,44 @@ export function renderModelsView(container) {
     tableWrap.focus({ preventScroll: true })
   }
 
+  // 闲置自动部署（服务端防抖）：toggle/set-status/batch-toggle 响应携带
+  // autoDeployScheduled/autoDeployIdleMs → 标记文案区分「待自动部署 / 未保存」
+  let autoDeployScheduled = false
+  let autoDeployIdleMs = 20000
+
   function updateDirty() {
     const dirty = computeDirty(baseline, state)
     dirtyMark.hidden = !dirty
+    if (dirty) {
+      dirtyMark.textContent = autoDeployScheduled
+        ? ` * 待自动部署（闲置 ${Math.round(autoDeployIdleMs / 1000)}s）`
+        : ' * 未保存'
+      startDirtyPoll()
+    } else {
+      autoDeployScheduled = false
+      stopDirtyPoll()
+    }
     appState().set('modelsDirty', dirty)
+  }
+
+  // dirty 期间轮询 /api/state 的 baseline：服务端闲置自动部署（或另一台 PC
+  // 部署）完成后 baseline 追平 selected 投影 → 自动清除标记，无需手动刷新。
+  // 仅 dirty 时轮询，清除即停；切走视图由 MutationObserver 兜底停止
+  let dirtyPollTimer = null
+  function startDirtyPoll() {
+    if (dirtyPollTimer) return
+    dirtyPollTimer = setInterval(async () => {
+      try {
+        const s = await api('/api/state')
+        baseline = s.baseline || {}
+        updateDirty()
+      } catch {
+        // 本轮失败下轮重试
+      }
+    }, 8000)
+  }
+  function stopDirtyPoll() {
+    if (dirtyPollTimer) { clearInterval(dirtyPollTimer); dirtyPollTimer = null }
   }
 
   // 筛选：表格永远渲染「筛选结果」，内存 state 是全集（已知坑 4）
@@ -2389,6 +2423,8 @@ export function renderModelsView(container) {
     try {
       const res = await withBusy('正在切换模型…', api('/api/models/toggle', { method: 'POST', body: { modelId } }))
       if (state[modelId]) state[modelId] = { ...state[modelId], ...(res.entry || {}) }
+      autoDeployScheduled = !!res.autoDeployScheduled
+      if (res.autoDeployIdleMs) autoDeployIdleMs = res.autoDeployIdleMs
       updateDirty()
       await applyFilter()
       const st = res.entry && res.entry.status
@@ -2406,6 +2442,8 @@ export function renderModelsView(container) {
     try {
       const res = await withBusy('正在更新模型状态…', api('/api/models/set-status', { method: 'POST', body: { modelId, status: target } }))
       if (state[modelId]) state[modelId] = { ...state[modelId], ...(res.entry || {}) }
+      autoDeployScheduled = !!res.autoDeployScheduled
+      if (res.autoDeployIdleMs) autoDeployIdleMs = res.autoDeployIdleMs
       updateDirty()
       await applyFilter()
       logActivity(`模型状态：${modelId} → ${STATUS_TEXT[target] || target}`, 'info')
@@ -2453,6 +2491,8 @@ export function renderModelsView(container) {
       for (const id of targets) {
         if (state[id]) state[id].status = res.status
       }
+      autoDeployScheduled = !!res.autoDeployScheduled
+      if (res.autoDeployIdleMs) autoDeployIdleMs = res.autoDeployIdleMs
       updateDirty()
       await applyFilter()
       logActivity(`批量切换：${targets.length} 个模型 → ${res.status === 'selected' ? '选中' : '隐藏'}`, 'ok')
@@ -2673,6 +2713,8 @@ export function renderModelsView(container) {
       } catch {
         // 重拉失败保持旧基线（至多误标未保存，提示重存，不丢提示）
       }
+      // 手动保存/部署后服务端已取消闲置自动部署定时器
+      autoDeployScheduled = false
       updateDirty()
       logActivity(deploy ? '已保存并提交部署' : '已保存', 'ok')
       flash(deploy ? '已保存并提交部署' : '已保存', 'ok')
@@ -3186,9 +3228,10 @@ export function renderModelsView(container) {
   btnAdd.addEventListener('click', addModel)
 
   // 切走视图强制关闭 EventSource（已知坑 1 简单方案：切回不自动续，避免重复连接）
+  // 同时停止 dirty 轮询（视图隐藏期间不刷 baseline）
   if (typeof MutationObserver !== 'undefined') {
     const obs = new MutationObserver(() => {
-      if (container.hidden) finishSync()
+      if (container.hidden) { finishSync(); stopDirtyPoll() }
     })
     obs.observe(container, { attributes: true, attributeFilter: ['hidden'] })
   }

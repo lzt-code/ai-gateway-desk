@@ -12,6 +12,9 @@ import path from 'node:path'
 import { createApp } from '../src/web/server.js'
 import { editModelMetadata } from '../src/tui/actions.js'
 
+// 测试默认禁用闲置自动部署防抖（避免定时器触发真实 saveAndDeploy / KV 写入）
+const createTestApp = (options = {}) => createApp(Object.assign({ autoDeployIdleMs: 0 }, options))
+
 let failures = 0
 let checks = 0
 
@@ -92,7 +95,7 @@ const noNetworkKvDeps = {
 // 快捷：注入内存 store 的 app + req helper
 function makeApp(initial = sampleState, configStore = defaultMockConfigStore) {
   const store = makeStore(initial)
-  const app = createApp({ stateStore: store, configStore, deps: noNetworkKvDeps })
+  const app = createTestApp({ stateStore: store, configStore, deps: noNetworkKvDeps })
   const req = (method, p, body) =>
     app.request(p, {
       method,
@@ -123,7 +126,7 @@ section('测试 1b: /api/state baseline（部署基线）')
     'a/1': { status: 'selected', metadata: { name: 'A' } },
   }
   const store = makeStore(deployedOnly)
-  const app = createApp({
+  const app = createTestApp({
     stateStore: store,
     configStore: defaultMockConfigStore,
     deps: {
@@ -530,7 +533,7 @@ section('测试 26: 任务 25 回归')
 {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aigw-webapi-'))
   fs.writeFileSync(path.join(dir, 'index.html'), '<h1>ai-gateway-desk placeholder</h1>')
-  const app = createApp({ publicDir: dir, stateStore: makeStore() })
+  const app = createTestApp({ publicDir: dir, stateStore: makeStore() })
   const res = await app.request('/')
   check(res.status === 200, '根路径返回 200')
   check((await res.text()).includes('placeholder'), '返回注入的占位页内容')

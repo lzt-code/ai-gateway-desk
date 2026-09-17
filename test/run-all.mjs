@@ -33,6 +33,7 @@ const TESTS = [
   'test-package-meta.mjs',      // 任务 17：npm 发布元数据断言
   'test-web-server.mjs',        // 任务 25：Web 服务器基础（Hono + 静态文件 + 启动器）
   'test-web-api-models.mjs',    // 任务 26：模型管理 API 端点（内存 stateStore 注入）
+  'test-web-api-auto-deploy.mjs', // 闲置自动部署防抖（toggle 后 idle 部署 + 取消/合并）
   'test-web-api-sync.mjs',      // 任务 27：同步 + 保存部署 API（SSE 进度 + 编排 mock）
   'test-web-api-providers.mjs', // 任务 28：Provider 管理 API（云端合并 + 编辑 + 删除，全 mock）
   'test-web-api-account.mjs',   // 任务 29：Worker + 账户管理 API（状态 + 部署 + Token，全 mock）

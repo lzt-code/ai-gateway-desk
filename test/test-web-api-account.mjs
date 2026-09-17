@@ -14,6 +14,9 @@
 
 import { EventEmitter } from 'node:events'
 import { createApp } from '../src/web/server.js'
+
+// 测试默认禁用闲置自动部署防抖（避免定时器触发真实 saveAndDeploy / KV 写入）
+const createTestApp = (options = {}) => createApp(Object.assign({ autoDeployIdleMs: 0 }, options))
 import {
   summarizeTokenStatus,
   summarizeGatewayInfo,
@@ -132,7 +135,7 @@ const noGatewayConfig = { providers: [] }
 
 function makeApp(deps, { config = kvConfig, state = {} } = {}) {
   const store = makeStore(state)
-  const app = createApp({
+  const app = createTestApp({
     configStore: { load: () => config },
     stateStore: store,
     deps,
