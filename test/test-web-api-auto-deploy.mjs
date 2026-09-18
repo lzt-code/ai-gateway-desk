@@ -68,11 +68,12 @@ function makeStore(initial = sampleState) {
 }
 
 // 计数 mock：saveAndDeploy / hidden / manual KV 写入次数
-function makeCountingDeps(counters, { kvReady = true, saveAndDeployFails = false } = {}) {
+function makeCountingDeps(counters, { kvReady = true, saveAndDeployFails = false, deployDelayMs = 0 } = {}) {
   return {
     readManagementToken: () => (kvReady ? 'mgmt-token' : ''),
     saveAndDeploy: async () => {
       counters.saveAndDeploy++
+      if (deployDelayMs) await sleep(deployDelayMs)
       return saveAndDeployFails ? { ok: false, step: 3, error: new Error('deploy failed') } : { ok: true }
     },
     writeKvHiddenModels: async () => { counters.hiddenWrites++ },
@@ -208,6 +209,46 @@ section('测试 6: set-status 状态未变化 → 不排期')
   check(body.autoDeployScheduled === false, 'autoDeployScheduled === false')
   await waitDeploy()
   check(counters.saveAndDeploy === 0, 'saveAndDeploy 未调用')
+}
+
+// ── 测试 7：退出前冲刷待部署（flushPendingDeploy，页面关闭场景）──
+section('测试 7: 退出前冲刷待部署')
+{
+  // 7a：排期中调用 flush → 立即部署（不等 idle），且仅一次
+  const counters = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
+  const { app, req } = makeApp(counters)
+  await req('POST', '/api/models/toggle', { modelId: 'openrouter/deepseek-r1' })
+  check(counters.saveAndDeploy === 0, 'flush 前未部署（防抖中）')
+  await app.flushPendingDeploy()
+  check(counters.saveAndDeploy === 1, 'flush 立即触发部署 1 次')
+  check(counters.hiddenWrites === 1, 'flush 写入 hidden-models KV')
+  await waitDeploy()
+  check(counters.saveAndDeploy === 1, '原防抖定时器已取消：无重复部署')
+  const stateBody = await (await app.request('/api/state')).json()
+  check(stateBody.autoDeployPending === false, 'flush 后 autoDeployPending === false')
+
+  // 7b：无待部署 → flush 安全空转（不调用 saveAndDeploy）
+  const counters2 = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
+  const { app: app2 } = makeApp(counters2)
+  await app2.flushPendingDeploy()
+  check(counters2.saveAndDeploy === 0, '无待部署时 flush 不触发部署')
+
+  // 7c：部署进行中调用 flush → 等待同一 promise，不重复部署
+  const counters3 = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
+  const { app: app3, req: req3 } = makeApp(counters3, { deployDelayMs: 60 })
+  await req3('POST', '/api/models/toggle', { modelId: 'openrouter/deepseek-r1' })
+  const runP = app3.flushPendingDeploy()
+  const runP2 = app3.flushPendingDeploy()
+  await Promise.all([runP, runP2])
+  check(counters3.saveAndDeploy === 1, '部署中重复 flush 仅部署 1 次')
+
+  // 7d：flush 超时兜底：部署挂起时不阻塞退出
+  const counters4 = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
+  const { app: app4, req: req4 } = makeApp(counters4, { deployDelayMs: 500 })
+  await req4('POST', '/api/models/toggle', { modelId: 'openrouter/deepseek-r1' })
+  const t0 = Date.now()
+  await app4.flushPendingDeploy(50)
+  check(Date.now() - t0 < 400, 'flush 超时兜底：挂起部署不阻塞退出')
 }
 
 console.log(`\n结果: ${checks - failures}/${checks} 通过`)

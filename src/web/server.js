@@ -567,6 +567,7 @@ export function createApp({
   let autoDeployTimer = null
   let autoDeployPending = false
   let autoDeployRunning = false
+  let autoDeployPromise = null
   let stateVersion = 0
 
   const cancelAutoDeploy = () => {
@@ -589,43 +590,72 @@ export function createApp({
     return true
   }
 
-  const runAutoDeploy = async () => {
+  const runAutoDeploy = () => {
     autoDeployTimer = null
-    if (!autoDeployPending || autoDeployRunning) return
+    // 已在执行 → 返回同一个 promise，供 flush 等待；无待部署 → 空 promise
+    if (autoDeployRunning) return autoDeployPromise || Promise.resolve()
+    if (!autoDeployPending) return Promise.resolve()
     autoDeployPending = false
     autoDeployRunning = true
     const op = 'auto-deploy'
     const start = Date.now()
-    try {
-      const config = configStore.load()
-      const result = await depsAll.saveAndDeploy({ state, config })
-      if (!result.ok) {
-        const error = result.error instanceof Error ? result.error.message : String(result.error)
-        throw new Error(`step ${result.step}: ${error}`)
+    autoDeployPromise = (async () => {
+      try {
+        const config = configStore.load()
+        const result = await depsAll.saveAndDeploy({ state, config })
+        if (!result.ok) {
+          const error = result.error instanceof Error ? result.error.message : String(result.error)
+          throw new Error(`step ${result.step}: ${error}`)
+        }
+        // models 键部署成功后写 hidden/manual KV（跨 PC 同步，同 /api/save-deploy）
+        const gateway = config.gateway || {}
+        const namespaceId = config.kv?.namespaceId || ''
+        const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+        if (mgmtToken && gateway.accountId && namespaceId) {
+          await depsAll.writeKvHiddenModels(
+            mgmtToken, gateway.accountId, namespaceId, depsAll.buildHiddenModelsMap(state),
+          )
+          await depsAll.writeKvManualModels(
+            mgmtToken, gateway.accountId, namespaceId, depsAll.buildManualModelsMap(state),
+          )
+        }
+        ioLogResult(op, { ok: true, message: `闲置 ${Math.round(autoDeployIdleMs / 1000)}s 自动部署完成`, elapsedMs: Date.now() - start })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        ioLogResult(op, { ok: false, message: msg, elapsedMs: Date.now() - start })
+        console.error('[aigd] 闲置自动部署失败:', msg)
+      } finally {
+        autoDeployRunning = false
+        autoDeployPromise = null
+        // 部署期间来了新变更 → 重新排期（防抖窗口重新计时）
+        if (autoDeployPending) scheduleAutoDeploy()
       }
-      // models 键部署成功后写 hidden/manual KV（跨 PC 同步，同 /api/save-deploy）
-      const gateway = config.gateway || {}
-      const namespaceId = config.kv?.namespaceId || ''
-      const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
-      if (mgmtToken && gateway.accountId && namespaceId) {
-        await depsAll.writeKvHiddenModels(
-          mgmtToken, gateway.accountId, namespaceId, depsAll.buildHiddenModelsMap(state),
-        )
-        await depsAll.writeKvManualModels(
-          mgmtToken, gateway.accountId, namespaceId, depsAll.buildManualModelsMap(state),
-        )
-      }
-      ioLogResult(op, { ok: true, message: `闲置 ${Math.round(autoDeployIdleMs / 1000)}s 自动部署完成`, elapsedMs: Date.now() - start })
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      ioLogResult(op, { ok: false, message: msg, elapsedMs: Date.now() - start })
-      console.error('[aigd] 闲置自动部署失败:', msg)
-    } finally {
-      autoDeployRunning = false
-      // 部署期间来了新变更 → 重新排期（防抖窗口重新计时）
-      if (autoDeployPending) scheduleAutoDeploy()
-    }
+    })()
+    return autoDeployPromise
   }
+
+  /**
+   * 退出前冲刷待自动部署：立即取消防抖定时器并执行部署（若已在进行则等待其完成），
+   * 带超时兜底避免网络卡住阻塞退出。页面全部关闭后服务器即将退出，20s 防抖窗口
+   * 不再有意义——把用户最后一次变更落盘并推送 KV，避免「操作完直接关页面」丢失。
+   * @param {number} [timeoutMs] 最长等待（默认 15000ms）；0 = 不等待
+   * @returns {Promise<void>}
+   */
+  const flushPendingDeploy = (timeoutMs = 15000) => {
+    if (autoDeployTimer) { clearTimeout(autoDeployTimer); autoDeployTimer = null }
+    const run = autoDeployRunning || autoDeployPending ? runAutoDeploy() : null
+    if (!run) return Promise.resolve()
+    if (!timeoutMs) return Promise.resolve()
+    return Promise.race([
+      run,
+      new Promise((resolve) => {
+        const t = setTimeout(resolve, timeoutMs)
+        if (typeof t.unref === 'function') t.unref()
+      }),
+    ])
+  }
+  // 供 startServer 退出路径调用（createApp 仍返回 Hono app，属性挂载不破坏 app.request）
+  app.flushPendingDeploy = flushPendingDeploy
 
   // 未捕获异常统一 500 + { error }
   app.onError((err, c) => {
@@ -2331,6 +2361,11 @@ export function startServer(options = {}) {
   const heartbeatState = { lastHeartbeat: null, goodbyeAt: null }
   const app = createApp({ heartbeatState })
   const signalListeners = []
+  // 退出前冲刷待自动部署：页面关闭/信号退出时把最后一次变更落盘 + 推 KV，
+  // 避免「操作完直接关页面」导致 20s 防抖部署被进程退出取消
+  const flushPendingDeploy = typeof app.flushPendingDeploy === 'function'
+    ? app.flushPendingDeploy
+    : () => Promise.resolve()
 
   return new Promise((resolve, reject) => {
     // serve 同步返回 http.Server；实际端口（port:0 随机）在监听回调 info.port 里
@@ -2355,12 +2390,29 @@ export function startServer(options = {}) {
             server.close(() => res())
           })
 
+        // 退出前冲刷待自动部署 + 关闭服务器 + 退出。先冲刷再 close：页面已关闭
+        // 时 20s 防抖不再有意义，立即把最后一次变更落盘并推 KV（带超时兜底，
+        // 网络卡住也不会阻塞退出）。
+        let exiting = false
+        const shutdown = async (code) => {
+          if (exiting) return
+          exiting = true
+          if (heartbeatTimer) clearInterval(heartbeatTimer)
+          try {
+            await flushPendingDeploy()
+          } catch {
+            // 冲刷失败不阻断退出
+          }
+          await close()
+          exitFn(code)
+        }
+
         // 心跳监控：从未收到心跳（curl / 无前端页面）不自动退出；收到过心跳后
         // 超时无心跳，或 goodbye 后宽限内无新心跳（刷新场景被新页面首心跳取消），
         // 视为浏览器页面全部关闭 → 自动退出（与桌面应用关闭语义一致）。
         if (heartbeatTimeout > 0) {
           heartbeatTimer = setInterval(() => {
-            if (closed) return
+            if (closed || exiting) return
             const now = Date.now()
             let reason = null
             if (heartbeatState.goodbyeAt && now - heartbeatState.goodbyeAt > GOODBYE_GRACE) {
@@ -2370,14 +2422,14 @@ export function startServer(options = {}) {
             }
             if (reason) {
               console.log(`[aigd] ${reason}，服务器自动退出`)
-              close().then(() => exitFn(0))
+              shutdown(0)
             }
           }, heartbeatCheckInterval)
         }
 
         if (installSignalHandlers) {
           const onSignal = () => {
-            close().then(() => process.exit(0))
+            shutdown(0)
           }
           signalListeners.push(onSignal)
           process.on('SIGINT', onSignal)
