@@ -2383,19 +2383,24 @@ export function renderModelsView(container) {
 
   // dirty 期间轮询 /api/state 的 baseline：服务端闲置自动部署（或另一台 PC
   // 部署）完成后 baseline 追平 selected 投影 → 自动清除标记，无需手动刷新。
-  // 仅 dirty 时轮询，清除即停；切走视图由 MutationObserver 兜底停止
+  // 同时同步 autoDeployPending：部署已完成/失败后 pending 归 false，标记回退
+  // 「未保存」（避免部署未完成时永远卡在「待自动部署」文案）。
+  // 仅 dirty 时轮询，清除即停；切走视图由 MutationObserver 停止，切回时重启
   let dirtyPollTimer = null
+  async function pollDirtyOnce() {
+    try {
+      const s = await api('/api/state')
+      baseline = s.baseline || {}
+      autoDeployScheduled = !!s.autoDeployPending
+      if (s.autoDeployIdleMs) autoDeployIdleMs = s.autoDeployIdleMs
+      updateDirty()
+    } catch {
+      // 本轮失败下轮重试
+    }
+  }
   function startDirtyPoll() {
     if (dirtyPollTimer) return
-    dirtyPollTimer = setInterval(async () => {
-      try {
-        const s = await api('/api/state')
-        baseline = s.baseline || {}
-        updateDirty()
-      } catch {
-        // 本轮失败下轮重试
-      }
-    }, 8000)
+    dirtyPollTimer = setInterval(pollDirtyOnce, 8000)
   }
   function stopDirtyPoll() {
     if (dirtyPollTimer) { clearInterval(dirtyPollTimer); dirtyPollTimer = null }
@@ -2916,6 +2921,8 @@ export function renderModelsView(container) {
       const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
       state = s.state || {}
       baseline = s.baseline || {}
+      autoDeployScheduled = !!s.autoDeployPending
+      if (s.autoDeployIdleMs) autoDeployIdleMs = s.autoDeployIdleMs
       providers = p.providers || []
       renderSidebar()
       // 同步变更明细：有差异即展示（模型+字段+新旧值对比与高亮）
@@ -3228,10 +3235,17 @@ export function renderModelsView(container) {
   btnAdd.addEventListener('click', addModel)
 
   // 切走视图强制关闭 EventSource（已知坑 1 简单方案：切回不自动续，避免重复连接）
-  // 同时停止 dirty 轮询（视图隐藏期间不刷 baseline）
+  // 同时停止 dirty 轮询（视图隐藏期间不刷 baseline）；切回时若仍 dirty 立即
+  // 补一次轮询并重启定时器，避免部署完成后标记卡在「待自动部署」不消失。
   if (typeof MutationObserver !== 'undefined') {
     const obs = new MutationObserver(() => {
-      if (container.hidden) { finishSync(); stopDirtyPoll() }
+      if (container.hidden) {
+        finishSync()
+        stopDirtyPoll()
+      } else if (computeDirty(baseline, state)) {
+        pollDirtyOnce()
+        startDirtyPoll()
+      }
     })
     obs.observe(container, { attributes: true, attributeFilter: ['hidden'] })
   }
@@ -3246,6 +3260,8 @@ export function renderModelsView(container) {
         const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
         state = s.state || {}
         baseline = s.baseline || {}
+        autoDeployScheduled = !!s.autoDeployPending
+        if (s.autoDeployIdleMs) autoDeployIdleMs = s.autoDeployIdleMs
         providers = p.providers || []
         renderSidebar()
         updateDirty()

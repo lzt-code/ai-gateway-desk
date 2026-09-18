@@ -652,13 +652,20 @@ export function createApp({
   // GET /api/state — 完整 model-states（隐藏 provider 下的模型不返回，仅 UI 过滤）
   // 附带 baseline：data/models.json 的部署基线（id → 条目），前端据此判定
   // 「当前 selected 投影 vs 已部署投影」的未保存差异（刷新/重启后不丢失标记）
+  // 附带 autoDeployPending：闲置自动部署是否仍在排期/进行中（含正在执行）。
+  // 前端据此区分「待自动部署 / 未保存」——部署完成后 pending=false 且 baseline
+  // 追平 → 清除；部署失败 pending=false 但 baseline 未变 → 回退「未保存」
+  // （不卡在「待自动部署」文案）。
   app.get('/api/state', (c) => {
     const config = configStore.load()
     const hidden = hiddenProviderSlugs(Array.isArray(config.providers) ? config.providers : [])
+    const pending = autoDeployPending || autoDeployRunning
     return c.json({
       ok: true,
       state: filterVisibleState(state, hidden),
       baseline: depsAll.loadModelsJsonBaseline(),
+      autoDeployPending: pending,
+      ...(pending ? { autoDeployIdleMs } : {}),
     })
   })
 

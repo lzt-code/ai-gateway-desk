@@ -68,10 +68,13 @@ function makeStore(initial = sampleState) {
 }
 
 // 计数 mock：saveAndDeploy / hidden / manual KV 写入次数
-function makeCountingDeps(counters, { kvReady = true } = {}) {
+function makeCountingDeps(counters, { kvReady = true, saveAndDeployFails = false } = {}) {
   return {
     readManagementToken: () => (kvReady ? 'mgmt-token' : ''),
-    saveAndDeploy: async () => { counters.saveAndDeploy++; return { ok: true } },
+    saveAndDeploy: async () => {
+      counters.saveAndDeploy++
+      return saveAndDeployFails ? { ok: false, step: 3, error: new Error('deploy failed') } : { ok: true }
+    },
     writeKvHiddenModels: async () => { counters.hiddenWrites++ },
     writeKvManualModels: async () => { counters.manualWrites++ },
     buildHiddenModelsMap: () => ({}),
@@ -100,17 +103,36 @@ function makeApp(counters, options = {}) {
 section('测试 1: toggle → 闲置后自动部署（models + hidden/manual KV）')
 {
   const counters = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
-  const { req } = makeApp(counters)
+  const { app, req } = makeApp(counters)
   const res = await req('POST', '/api/models/toggle', { modelId: 'openrouter/deepseek-r1' })
   const body = await res.json()
   check(body.ok === true && body.changed === true, 'toggle 成功')
   check(body.autoDeployScheduled === true, '响应 autoDeployScheduled === true')
   check(body.autoDeployIdleMs === IDLE_MS, '响应携带 autoDeployIdleMs')
+  // /api/state 暴露排期中的 autoDeployPending，供前端区分「待自动部署 / 未保存」
+  const pendingBody = await (await app.request('/api/state')).json()
+  check(pendingBody.autoDeployPending === true, '/api/state 排期中 autoDeployPending === true')
+  check(pendingBody.autoDeployIdleMs === IDLE_MS, '/api/state 排期中携带 autoDeployIdleMs')
   check(counters.saveAndDeploy === 0, '响应时未立即部署（防抖中）')
   await waitDeploy()
   check(counters.saveAndDeploy === 1, '闲置后 saveAndDeploy 调用 1 次')
   check(counters.hiddenWrites === 1, 'hidden-models KV 写入 1 次')
   check(counters.manualWrites === 1, 'manual-models KV 写入 1 次')
+  const doneBody = await (await app.request('/api/state')).json()
+  check(doneBody.autoDeployPending === false, '部署完成后 autoDeployPending === false')
+}
+
+// ── 测试 1b：部署失败 → autoDeployPending 归 false（前端回退「未保存」）──
+section('测试 1b: 自动部署失败 → autoDeployPending 归 false')
+{
+  const counters = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
+  const { app, req } = makeApp(counters, { saveAndDeployFails: true })
+  await req('POST', '/api/models/toggle', { modelId: 'openrouter/deepseek-r1' })
+  const pendingBody = await (await app.request('/api/state')).json()
+  check(pendingBody.autoDeployPending === true, '失败前排期中 autoDeployPending === true')
+  await waitDeploy()
+  const doneBody = await (await app.request('/api/state')).json()
+  check(doneBody.autoDeployPending === false, '部署失败后 autoDeployPending 归 false')
 }
 
 // ── 测试 2：连续多次 toggle → 防抖合并为一次部署 ──
