@@ -60,6 +60,11 @@ const baseDeps = {
   validateRouteElements,
   upsertRoute,
   removeRoute,
+  // 隔离真实 data/models.json 与网络：路由部署/刷新成功后服务端调用
+  // syncModelsToKv()（writeModelsJson + deployToKV）。不 mock 会写真实
+  // data/models.json 并可能触网，破坏「零写盘」约定。
+  writeModelsJson: () => {},
+  deployToKV: async () => ({ success: true }),
 }
 
 function makeApp({ routesStore, deps, config }) {
