@@ -53,8 +53,10 @@
 ```
 ai-gateway-desk/
 ├── src/                      # 本地管理工具（Node.js ESM）
-│   ├── bin/aigd.js     # CLI 入口（web 默认 / setup / help）
+│   ├── bin/aigd.js     # CLI 入口（web 默认 / gateway / setup / help）
 │   ├── setup.js              # 初始化向导（7 步，终端交互）
+│   ├── gateway/              # 本地网关（双后端）：server / config-store / router /
+│   │                         # provider-keys / provider-lookup / fallback / backends/
 │   ├── core/                 # config（providers.json 校验）/ state（model-states）/
 │   │                         # routes-store（data/routes.json 动态路由真相源）/
 │   │                         # token-store（双凭证安全存储）
@@ -80,7 +82,7 @@ ai-gateway-desk/
 
 ### 4.1 CLI 入口 — `src/bin/aigd.js`
 
-子命令：`web`（默认，启动本地 Web 界面）、`setup`（终端初始化向导）。`sync` / `deploy` 为规划占位（Web 界面内已实现同功能）。
+子命令：`web`（默认，启动本地 Web 界面）、`gateway`（启动本地长驻网关，OpenAI 兼容端点，仅绑 `127.0.0.1:8788`，支持 `--port` / `--mode`）、`setup`（终端初始化向导）。`sync` / `deploy` 为规划占位（Web 界面内已实现同功能）。
 
 ### 4.2 初始化向导 — `src/setup.js`
 
@@ -100,6 +102,7 @@ Hono 应用，`createApp` 支持依赖注入（测试可 mock stateStore / confi
 | 同步 | `GET /api/sync/progress`（SSE）、`POST /api/sync`、`POST /api/save`、`POST /api/save-deploy` |
 | 调试 | `GET /api/settings/debug`、`POST /api/settings/debug`（详细日志开关，持久化到 providers.json 顶层 `debug` 字段） |
 | Worker | `GET /api/workers/status`、`POST /api/workers/deploy` |
+| 双网关视图 | `GET /api/gateway/overview`、`POST /api/gateway/{mode,cloud-url,backfill-keys,provider-key}`（见 §4.12） |
 | 账户 | `GET /api/account/status`、`POST /api/account/{update-token,clear-token,setup}` |
 | 动态路由配置 | `GET /api/routes/config`、`POST /api/routes/{save,deploy,delete,refresh}`（本地编辑 + REST 部署，见 §4.11） |
 
@@ -110,7 +113,7 @@ Vanilla JS 单页（`app.js` / `index.html` / `style.css`），五个视图 tab�
 - **Provider**：云端+本地合并列表，编辑/隐藏/删除，同步刷新
 - **模型**：模型表格 + Provider 侧栏 + 关键字筛选，状态切换（selected/pending/hidden）、编辑、手动添加、批量删除
 - **动态路由**：路由表格（fallback 链 / 状态 / 操作），表单化编辑（模板 + 「provider/模型」下拉建议）→ 一键部署（REST），「拉取云端路由」同步展示层
-- **Worker**：部署状态面板（KV / models.json / KV key 三态），一键部署
+- **网关**：本地网关 / 云端 Worker 双状态卡片、全局模式开关（热切换）、各 provider 本地凭证状态与「从云端回填 Key」、统一 Base URL 一键复制、手工录入 BYOK Key、部署 Worker
 - **账户**：双 token 槽位管理 + gateway 信息 + 初始化向导入口
 
 ### 4.5 Cloudflare REST 封装 — `src/cloudflare/`
@@ -173,6 +176,25 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 ```
 
 关键决策：**数据格式 1:1 采用 Cloudflare 原生 JSON**（GET versions 读回即同构，云端↔本地 round-trip 不丢信息，无转换层）；编辑器双模式——**表单模式默认**（模板提供骨架 + spec↔elements 互转纯函数 `routeSpecFromElements` / `elementsFromRouteSpec`，模型字段用「provider/模型名」格式并带 model-states 下拉建议；**fallback 链支持任意级数**，与 Cloudflare 原生一致，表单内逐级增删，链外孤儿/成环结构降级 JSON），**JSON 模式兜底**（组合节点等超出表单能力的结构自动降级）。
+
+### 4.12 本地网关 — `src/gateway/`（双网关方案）
+
+Agent 统一只连 `http://127.0.0.1:8788/v1`，由全局模式开关决定后端；切换时 Agent 零改动。
+
+| 模块 | 职责 |
+|------|------|
+| `server.js` | `createGatewayApp(deps)` Hono 工厂（全依赖注入）+ `startGateway()` 启动器（`@hono/node-server`，仅绑 127.0.0.1、无心跳退出、EADDRINUSE 友好提示）；模式切换 = 写配置 + 整体替换 backend（热生效） |
+| `config-store.js` | `data/gateway.json` 读写与校验：`mode`（local/cloud，默认 local）、`port`（默认 8788）、`cloudWorkerUrl` |
+| `router.js` | 纯函数：model slug 解析 / 剥离、base_url + pathPrefix 厂商端点构造；内置常见 BYOK slug 的 OpenAI 兼容 base_url 映射 |
+| `provider-keys.js` | 按 provider slug 在 `~/.ai-gateway-desk/provider-keys/<slug>` 存完整鉴权 headers（复用 token-store 系统级加密；`AI_GW_TEST_DIR` 隔离） |
+| `provider-lookup.js` | gateway slug → `providers.json` 条目查找 |
+| `backends/local.js` | `LocalBackend`：取本地凭证 → 本机出口 IP 直发厂商，超时控制、流式透传；`dynamic/*` 委托 fallback 引擎 |
+| `backends/cloud.js` | `CloudBackend`：隧道转发到云端 Worker（注入 gateway token），body 与流式响应透传 |
+| `fallback.js` | 本地动态路由引擎：执行 `routes.json` elements——线性 fallback 链 + `percentage` 权重；`conditional` / `rate` 明确报错提示改用 cloud |
+
+本地引擎语义对齐 Cloudflare：网络失败 / 429 / 5xx 按节点 `retries` 重试，耗尽后走 fallback 边；200 即成功并开始流式返回；4xx（非 429）立即报错不回退。限制：流式开始后中途错误无法回退（与 CF 一致）。
+
+管理端（`src/web/server.js`）网关视图 API 行为：先探测网关进程 `/health`——进程在跑则把模式切换 / 回填**代理**到网关（热生效），未运行则直接写本地文件 / 在管理进程内拉云端回填。
 
 ## 5. 数据模型
 
@@ -242,6 +264,18 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 ```
 
 调用侧：各 PC Agent 请求 model 填 `dynamic/<name>`，Worker 原样透传到 compat 端点（`routes/chat.js` 的 slug 解析不命中 provider-routes，走默认 compat）。
+
+### 5.5 `data/gateway.json`（私有，gitignore）
+
+本地网关模式配置（模板 `data/gateway.example.json`）：
+
+```json
+{
+  "mode": "local",
+  "port": 8788,
+  "cloudWorkerUrl": "https://ai-gateway-desk-worker.<子域>.workers.dev"
+}
+```
 
 ## 6. 凭证架构
 

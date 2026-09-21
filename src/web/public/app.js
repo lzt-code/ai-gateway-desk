@@ -14,7 +14,7 @@ export const VIEWS = {
   PROVIDERS: 'providers',  // 选项卡 1：Provider
   MODELS: 'models',        // 选项卡 2：模型
   ROUTES: 'routes',        // 选项卡 3：动态路由（只读展示 Cloudflare Dynamic Routes fallback 链）
-  WORKERS: 'workers',      // 选项卡 4：Worker
+  GATEWAY: 'workers',      // 选项卡 4：网关（云端 Worker + 本地网关）
   ACCOUNT: 'account',      // 选项卡 5：账户
 }
 
@@ -24,7 +24,7 @@ export const VIEW_LABELS = {
   providers: 'Provider',
   models: '模型',
   routes: '动态路由',
-  workers: 'Worker',
+  workers: '网关',
   account: '账户',
 }
 
@@ -33,7 +33,7 @@ export const VIEW_HINTS = {
   providers: '云端合并展示 Provider；「隐藏」开关会同步 KV，跨 PC 生效',
   models: 'Provider 侧栏 + 模型表格；space 切换选中/隐藏；同步后保存并部署',
   routes: '动态路由 fallback 链只读展示；数据随「更新模型列表」同步更新，编辑请到 Cloudflare 后台',
-  workers: 'Worker 代码无需修改，此视图仅管理部署',
+  workers: '本地网关直发厂商（本机 IP）/ cloud 模式走云端 Worker，Agent Base URL 保持不变',
   account: '管理 API Token 与 Gateway Token（cfut_xxx）双槽位管理',
 }
 
@@ -5431,6 +5431,134 @@ export function buildAccountStatusView(tokens, gateway) {
   )
 }
 
+// ── 双网关视图：纯函数 HTML 构造（Node 可直接测试）────────────
+
+// 模式文案
+export const GATEWAY_MODE_TEXT = {
+  local: '本地直发（本机出口 IP）',
+  cloud: '云端转发（Cloudflare）',
+}
+
+// 本地网关卡片：运行状态 / 当前模式 / 监听地址 / 统一 Base URL
+export function buildLocalGatewayCard(overview) {
+  const o = overview || {}
+  const running = o.running === true
+  const mode = o.mode === 'cloud' ? 'cloud' : 'local'
+  const runText = running ? '运行中' : '未运行'
+  const runCls = running ? 'ok' : 'warn'
+  const modeText = GATEWAY_MODE_TEXT[mode]
+  const listen = `127.0.0.1:${o.port || 8788}`
+  const baseUrl = o.baseUrl || `http://${listen}/v1`
+  return (
+    `<div class="panel gateway-box local-gateway-card">` +
+    `<h3>本地网关</h3>` +
+    `<div class="status-grid">` +
+    `<div class="status-item"><span class="k">进程状态</span><span class="v ${runCls}">${escapeHtml(runText)}</span></div>` +
+    `<div class="status-item"><span class="k">当前模式</span><span class="v">${escapeHtml(modeText)}</span></div>` +
+    `<div class="status-item"><span class="k">监听地址</span><span class="v">${escapeHtml(listen)}</span></div>` +
+    `</div>` +
+    `<div class="baseurl-row"><span class="k">Agent Base URL</span>` +
+    `<code class="baseurl-code">${escapeHtml(baseUrl)}</code>` +
+    `<button class="btn btn-default btn-copy-baseurl" type="button" data-baseurl="${escapeHtml(baseUrl)}">复制</button>` +
+    `</div>` +
+    (running ? '' : `<p class="gateway-hint warn">网关未运行：请在终端执行 <code>aigd gateway</code> 启动（配置会在启动时生效）</p>`) +
+    `</div>`
+  )
+}
+
+// 云端 Worker 卡片：地址 + cloud 模式说明
+export function buildCloudWorkerCard(overview) {
+  const o = overview || {}
+  const url = typeof o.cloudWorkerUrl === 'string' ? o.cloudWorkerUrl.trim() : ''
+  const configured = url !== ''
+  const text = configured ? url : '未配置'
+  const cls = configured ? 'ok' : 'warn'
+  return (
+    `<div class="panel gateway-box cloud-worker-card">` +
+    `<h3>云端 Worker</h3>` +
+    `<p class="slot-note">cloud 模式下本地网关作为隧道，把请求转发到该 Worker，走 Cloudflare AI Gateway（共享边缘 IP，可能触发 429）</p>` +
+    `<div class="status-grid">` +
+    `<div class="status-item"><span class="k">Worker 地址</span><span class="v ${cls}"${configured ? ` title="${escapeHtml(url)}"` : ''}>${escapeHtml(configured ? truncateNamespaceId(text) : text)}</span></div>` +
+    `</div>` +
+    `<div class="toolbar">` +
+    `<button class="btn btn-primary btn-deploy-worker" type="button">部署 Worker</button>` +
+    `<button class="btn btn-default btn-edit-cloudurl" type="button">编辑 Worker 地址</button>` +
+    `</div>` +
+    `</div>`
+  )
+}
+
+// 模式开关 + 操作按钮
+export function buildGatewayModeSwitch(overview) {
+  const o = overview || {}
+  const mode = o.mode === 'cloud' ? 'cloud' : 'local'
+  return (
+    `<div class="panel gateway-mode-panel">` +
+    `<h3>全局模式</h3>` +
+    `<p class="slot-note">切换后 Agent 无需任何改动；网关运行时立即热切换，未运行时下次启动生效</p>` +
+    `<div class="mode-switch-row" role="group" aria-label="网关模式">` +
+    `<button class="btn mode-btn ${mode === 'local' ? 'btn-primary selected' : 'btn-default'}" type="button" data-mode="local">本地直发</button>` +
+    `<button class="btn mode-btn ${mode === 'cloud' ? 'btn-primary selected' : 'btn-default'}" type="button" data-mode="cloud">云端转发</button>` +
+    `</div>` +
+    `<div class="toolbar">` +
+    `<button class="btn btn-default btn-backfill-keys" type="button">从云端回填 Key</button>` +
+    `<button class="btn btn-default btn-refresh-gateway" type="button">刷新</button>` +
+    `</div>` +
+    `</div>`
+  )
+}
+
+// 凭证状态行
+function providerKeyRow(row) {
+  const r = row || {}
+  const saved = r.keySaved === true
+  const statusText = saved ? '已保存' : r.needsReEntry ? '需重新录入' : '缺失'
+  const cls = saved ? 'ok' : 'warn'
+  return (
+    `<tr data-slug="${escapeHtml(r.slug || '')}">` +
+    `<td>${escapeHtml(r.name || r.slug || r.id || '(unknown)')}</td>` +
+    `<td class="muted">${escapeHtml(r.type || '')}</td>` +
+    `<td>${escapeHtml(r.slug || '')}</td>` +
+    `<td><span class="key-status ${cls}">${escapeHtml(statusText)}</span></td>` +
+    `<td class="row-actions">` +
+    (saved
+      ? `<button class="btn btn-default btn-rekey" type="button" data-slug="${escapeHtml(r.slug || '')}">覆盖</button>`
+      : `<button class="btn btn-default btn-rekey" type="button" data-slug="${escapeHtml(r.slug || '')}">录入</button>`) +
+    `</td>` +
+    `</tr>`
+  )
+}
+
+// 各 provider 本地凭证状态表
+export function buildProviderKeysTable(overview) {
+  const o = overview || {}
+  const rows = Array.isArray(o.providers) ? o.providers : []
+  return (
+    `<div class="panel provider-keys-panel">` +
+    `<h3>本地凭证（按 Provider）</h3>` +
+    `<p class="slot-note">custom-provider 可从云端自动回填完整 Key；BYOK 云端仅存掩码，必须重新录入一次</p>` +
+    `<table class="provider-keys-table">` +
+    `<thead><tr><th>名称</th><th>类型</th><th>Slug</th><th>状态</th><th>操作</th></tr></thead>` +
+    `<tbody>${rows.map(providerKeyRow).join('')}</tbody>` +
+    `</table>` +
+    `</div>`
+  )
+}
+
+// /api/gateway/overview → 网关视图完整 HTML
+export function buildGatewayView(overview) {
+  return (
+    `<div class="gateway-overview">` +
+    buildGatewayModeSwitch(overview) +
+    `<div class="gateway-cards-grid">` +
+    buildLocalGatewayCard(overview) +
+    buildCloudWorkerCard(overview) +
+    `</div>` +
+    buildProviderKeysTable(overview) +
+    `</div>`
+  )
+}
+
 // 视图局部样式（style.css 不在本任务改动范围内，随视图注入一次；
 // .toolbar/.status-item/.panel 与任务 31/32 同源，注入一份避免渲染顺序依赖）
 function injectWorkersAccountStyles() {
@@ -5494,6 +5622,36 @@ function injectWorkersAccountStyles() {
     .slot-card .btn-clear:hover {
       background: var(--err-soft); color: var(--err); border-color: var(--err-border);
     }
+    /* 双网关视图 */
+    .gateway-overview { margin-top: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
+    .gateway-cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 0.75rem; }
+    .gateway-box, .gateway-mode-panel, .provider-keys-panel {
+      background: var(--card-sheen), var(--panel);
+      border: 1px solid var(--border); border-radius: var(--radius-md);
+      padding: 0.75rem 1rem; box-shadow: var(--shadow-1), var(--highlight);
+    }
+    .gateway-box h3, .gateway-mode-panel h3, .provider-keys-panel h3 {
+      margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600;
+    }
+    .mode-switch-row { display: flex; gap: 0.5rem; margin: 0.25rem 0 0.5rem; }
+    .mode-btn.selected { pointer-events: none; }
+    .baseurl-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.6rem; flex-wrap: wrap; }
+    .baseurl-row .k { color: var(--muted); font-size: 0.85rem; }
+    .baseurl-code {
+      flex: 1; min-width: 0; background: var(--panel);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 0.25rem 0.5rem; font-size: 0.85rem;
+    }
+    .gateway-hint code { font-size: 0.85rem; }
+    .provider-keys-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    .provider-keys-table th, .provider-keys-table td {
+      text-align: left; padding: 0.35rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .provider-keys-table th { color: var(--muted); font-weight: 500; }
+    .key-status.ok { color: var(--ok); }
+    .key-status.warn { color: var(--warn); }
+    .row-actions { white-space: nowrap; }
   `
   document.head.appendChild(style)
 }
@@ -5506,79 +5664,94 @@ export function renderWorkersView(container) {
 
   injectWorkersAccountStyles()
 
-  // ── 视图局部状态 ────────────────────────────────────────
-  let canDeploy = false  // 最近一次状态响应（部署按钮可用性）
-  let deploying = false  // 部署状态机：deploying 期间按钮禁用 + 「部署中…」
+  let overview = null
 
-  // ── DOM 骨架（§4.1 结构）────────────────────────────────
+  // ── DOM 骨架 ────────────────────────────────────────────
   container.innerHTML = `
-    <h2 class="view-title">Worker</h2>
-    <div class="workers-view">
-      <p class="view-note">Worker 代码无需修改，此视图仅管理部署</p>
-      <div class="status-panel" id="workers-status"></div>
-      <div class="toolbar">
-        <button id="btn-worker-deploy" class="btn btn-default" type="button">部署 Worker</button>
-        <button id="btn-worker-refresh" class="btn btn-default" type="button">刷新状态</button>
-      </div>
-    </div>
+    <h2 class="view-title">网关</h2>
+    <p class="view-note">Agent 只配置一个 Base URL，本地直发 / 云端转发随时切换，配置零改动</p>
+    <div id="gateway-root"></div>
   `
 
-  const statusPanel = container.querySelector('#workers-status')
-  const btnDeploy = container.querySelector('#btn-worker-deploy')
-  const btnRefresh = container.querySelector('#btn-worker-refresh')
+  const root = container.querySelector('#gateway-root')
 
-  // ── 渲染辅助 ────────────────────────────────────────────
-  function renderStatus(res) {
-    statusPanel.innerHTML = buildWorkersStatusView(res)
-    canDeploy = res && res.canDeploy === true
-    applyDeployUI()
+  function render() {
+    root.innerHTML = buildGatewayView(overview)
   }
 
-  // 部署按钮可用性：canDeploy=false → 禁用 + title 提示先配置 KV
-  function applyDeployUI() {
-    btnDeploy.disabled = deploying || !canDeploy
-    btnDeploy.title = canDeploy ? '' : '先配置 KV namespace（账户视图初始化）'
-  }
-
-  // 拉取状态（已知坑 9：请求期间刷新按钮禁用防连点；失败 flash 后恢复）
-  async function refreshStatus() {
-    btnRefresh.disabled = true
-    const prevText = btnRefresh.textContent
-    btnRefresh.textContent = '刷新中…'
-    logActivity('获取 Worker 状态…', 'info')
+  async function refresh() {
+    logActivity('获取网关状态…', 'info')
     try {
-      const res = await withBusy('正在获取 Worker 状态…', api('/api/workers/status'))
-      renderStatus(res)
-      const mj = res.modelsJson || {}
+      overview = await withBusy('正在获取网关状态…', api('/api/gateway/overview'))
+      render()
+      const saved = Array.isArray(overview.providers)
+        ? overview.providers.filter((p) => p.keySaved).length
+        : 0
       logActivity(
-        `Worker 状态：模型 ${mj.count != null ? mj.count : '?'} 个 / KV key ${res.kvKeyExists === true ? '存在' : '不存在'} / ${res.canDeploy === true ? '可部署' : '不可部署'}`,
+        `网关状态：${overview.running ? '运行中' : '未运行'} / 模式 ${overview.mode} / 凭证 ${saved} 个已保存`,
         'ok',
       )
     } catch (err) {
       flash(err.message, 'err')
-      logActivity(`获取 Worker 状态失败：${err.message}`, 'err')
-    } finally {
-      btnRefresh.textContent = prevText
-      btnRefresh.disabled = false
+      logActivity(`获取网关状态失败：${err.message}`, 'err')
     }
   }
 
-  // 部署（已知坑 1/2：wrangler 长请求，期间按钮禁用 + 「部署中…」防重复；失败时
-  // flash 只显示前 200 字符 output，完整 output 放 dialog <pre>，escapeHtml 防 HTML 注入）
-  async function deploy() {
+  async function switchMode(mode) {
+    if (!mode || (overview && overview.mode === mode)) return
+    logActivity(`切换网关模式为 ${mode}…`, 'info')
+    try {
+      const res = await withBlocking(
+        mode === 'local' ? '正在切换到本地直发…' : '正在切换到云端转发…',
+        api('/api/gateway/mode', { method: 'POST', body: { mode } }),
+      )
+      if (res && res.ok) {
+        flash(res.hotSwapped ? '已热切换' : '已保存，网关启动时生效', 'ok')
+        logActivity(`网关模式已切换：${mode}${res.hotSwapped ? '（热切换）' : ''}`, 'ok')
+        refresh()
+      } else {
+        flash((res && res.error) || '切换失败', 'err')
+      }
+    } catch (err) {
+      flash(err.message, 'err')
+      logActivity(`切换模式失败：${err.message}`, 'err')
+    }
+  }
+
+  async function backfill() {
+    if (guardInitBlocked('从云端回填 Key')) return
+    logActivity('从云端回填 custom-provider Key…', 'info')
+    try {
+      const res = await withBlocking(
+        '正在从云端拉取并回填凭证…',
+        api('/api/gateway/backfill-keys', { method: 'POST' }),
+      )
+      const n = res && Array.isArray(res.backfilled) ? res.backfilled.length : 0
+      const e = res && Array.isArray(res.errors) ? res.errors.length : 0
+      const s = res && Array.isArray(res.skipped) ? res.skipped.length : 0
+      if (res) {
+        flash(`回填 ${n} 个 / 跳过 ${s} / 失败 ${e}`, e ? 'err' : 'ok')
+        logActivity(`Key 回填完成：${n} 成功 / ${s} 跳过 / ${e} 失败`, e ? 'err' : 'ok')
+        refresh()
+      }
+    } catch (err) {
+      flash(err.message, 'err')
+      logActivity(`回填失败：${err.message}`, 'err')
+    }
+  }
+
+  async function deployWorker() {
     if (guardInitBlocked('部署 Worker')) return
-    if (deploying) return
-    deploying = true
-    applyDeployUI()
-    const prevText = btnDeploy.textContent
-    btnDeploy.textContent = '部署中…'
     logActivity('开始部署 Worker…', 'info')
     try {
-      const res = await withBlocking('正在部署 Worker（wrangler）…', api('/api/workers/deploy', { method: 'POST' }))
+      const res = await withBlocking(
+        '正在部署 Worker（wrangler）…',
+        api('/api/workers/deploy', { method: 'POST' }),
+      )
       if (res && res.ok === true) {
-        flash('部署成功', 'ok')
+        flash('Worker 部署成功', 'ok')
         logActivity('Worker 部署成功', 'ok')
-        refreshStatus() // 模型数 / KV key 可能变化（已知坑 7）
+        refresh()
       } else {
         const output = (res && res.output) || ''
         flash(`部署失败：${output.slice(0, 200)}`, 'err')
@@ -5588,24 +5761,102 @@ export function renderWorkersView(container) {
     } catch (err) {
       if (err instanceof ApiError && err.status === 500 && err.message === 'deploy timeout') {
         flash('部署超时', 'err')
-        logActivity('Worker 部署超时', 'err')
       } else {
         flash(err.message, 'err')
         logActivity(`Worker 部署失败：${err.message}`, 'err')
       }
-    } finally {
-      deploying = false
-      btnDeploy.textContent = prevText
-      applyDeployUI()
     }
   }
 
-  // ── 事件绑定 ────────────────────────────────────────────
-  btnDeploy.addEventListener('click', deploy)
-  btnRefresh.addEventListener('click', refreshStatus)
+  async function editCloudUrl() {
+    const current = overview?.cloudWorkerUrl || ''
+    const values = await promptDialog('云端 Worker 地址', [
+      {
+        name: 'cloudWorkerUrl',
+        label: 'Worker URL',
+        type: 'text',
+        value: current,
+        placeholder: 'https://ai-gateway-desk-worker.<子域>.workers.dev',
+        hint: 'cloud 模式的转发目标；可由 Worker 部署输出得到',
+      },
+    ])
+    if (!values) return
+    try {
+      const res = await api('/api/gateway/cloud-url', {
+        method: 'POST',
+        body: { cloudWorkerUrl: values.cloudWorkerUrl || '' },
+      })
+      if (res.ok) {
+        flash('Worker 地址已保存', 'ok')
+        refresh()
+      }
+    } catch (err) {
+      flash(err.message, 'err')
+    }
+  }
 
-  // ── 初始加载：进入视图拉一次（§3.1 step 2）──
-  refreshStatus()
+  async function enterKey(slug) {
+    if (!slug) return
+    const values = await promptDialog(`录入 Key：${slug}`, [
+      {
+        name: 'apiKey',
+        label: 'API Key',
+        type: 'password',
+        value: '',
+        hint: '将以 Authorization: Bearer <key> 形式存入本机系统级加密存储',
+      },
+    ])
+    if (!values || !values.apiKey || !values.apiKey.trim()) return
+    try {
+      const res = await withBusy(
+        '正在保存本地凭证…',
+        api('/api/gateway/provider-key', {
+          method: 'POST',
+          body: { slug, apiKey: values.apiKey.trim() },
+        }),
+      )
+      if (res.ok) {
+        flash('凭证已保存', 'ok')
+        logActivity(`provider '${slug}' 本地凭证已保存`, 'ok')
+        refresh()
+      }
+    } catch (err) {
+      flash(err.message, 'err')
+    }
+  }
+
+  async function copyBaseUrl(btn) {
+    const value = btn?.dataset?.baseurl || overview?.baseUrl || ''
+    try {
+      await navigator.clipboard.writeText(value)
+      flash('Base URL 已复制', 'ok')
+    } catch {
+      flash('复制失败，请手动选择复制', 'err')
+    }
+  }
+
+  // ── 事件委托 ────────────────────────────────────────────
+  root.addEventListener('click', (event) => {
+    const btn = event.target.closest('button')
+    if (!btn) return
+    if (btn.classList.contains('mode-btn')) {
+      switchMode(btn.dataset.mode)
+    } else if (btn.classList.contains('btn-backfill-keys')) {
+      backfill()
+    } else if (btn.classList.contains('btn-refresh-gateway')) {
+      refresh()
+    } else if (btn.classList.contains('btn-edit-cloudurl')) {
+      editCloudUrl()
+    } else if (btn.classList.contains('btn-deploy-worker')) {
+      deployWorker()
+    } else if (btn.classList.contains('btn-rekey')) {
+      enterKey(btn.dataset.slug)
+    } else if (btn.classList.contains('btn-copy-baseurl')) {
+      copyBaseUrl(btn)
+    }
+  })
+
+  refresh()
 }
 
 // 账户视图渲染器（闭包持有视图局部状态；Node 无 DOM 时直接返回）

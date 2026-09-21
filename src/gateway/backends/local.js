@@ -12,6 +12,7 @@
 import { parseModelSlug, stripModelSlug, resolveProviderEndpoint } from '../router.js'
 import { findProvider as defaultFindProvider } from '../provider-lookup.js'
 import { readProviderHeaders as defaultReadProviderHeaders } from '../provider-keys.js'
+import { createFallbackEngine } from '../fallback.js'
 
 const DEFAULT_TIMEOUT_MS = 120000
 
@@ -35,6 +36,7 @@ function jsonError(status, error) {
  * @param {Function} [deps.findProvider] - (slug) => provider 条目 | null
  * @param {Function} [deps.readProviderHeaders] - (slug) => headers | null
  * @param {number} [deps.timeoutMs] - 上游请求超时，默认 120000
+ * @param {object} [deps.fallbackEngine] - 动态路由引擎（默认 createFallbackEngine）
  */
 export function createLocalBackend(deps = {}) {
   const {
@@ -42,6 +44,11 @@ export function createLocalBackend(deps = {}) {
     findProvider = defaultFindProvider,
     readProviderHeaders = defaultReadProviderHeaders,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    fallbackEngine = createFallbackEngine({
+      fetchFn,
+      findProvider,
+      readProviderHeaders,
+    }),
   } = deps
 
   return {
@@ -70,9 +77,10 @@ export function createLocalBackend(deps = {}) {
       }
       const { slug } = parsed
 
-      // dynamic/<name>：本地 fallback 引擎阶段二提供
+      // dynamic/<name>：进入本地 fallback 引擎（§10）
       if (slug === 'dynamic') {
-        return jsonError(501, '动态路由本地引擎暂不支持，请切换到 cloud 模式')
+        const routeName = parsed.upstream
+        return fallbackEngine.execute(routeName, body)
       }
 
       const provider = findProvider(slug)

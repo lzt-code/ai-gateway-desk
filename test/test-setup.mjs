@@ -68,7 +68,10 @@ const REAL_TOKEN_DIR = path.join(os.homedir(), '.ai-gateway-desk')
 const snapRealTokenDir = () => {
   if (!fs.existsSync(REAL_TOKEN_DIR)) return null
   const out = new Map()
-  for (const f of fs.readdirSync(REAL_TOKEN_DIR)) out.set(f, fs.readFileSync(path.join(REAL_TOKEN_DIR, f)))
+  for (const f of fs.readdirSync(REAL_TOKEN_DIR)) {
+    if (fs.statSync(path.join(REAL_TOKEN_DIR, f)).isDirectory()) continue
+    out.set(f, fs.readFileSync(path.join(REAL_TOKEN_DIR, f)))
+  }
   return out
 }
 const realTokenDirBefore = snapRealTokenDir()

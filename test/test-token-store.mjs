@@ -60,7 +60,10 @@ const realDir = path.join(os.homedir(), '.ai-gateway-desk')
 const snapReal = () => {
   if (!fs.existsSync(realDir)) return null
   const out = new Map()
-  for (const f of fs.readdirSync(realDir)) out.set(f, fs.readFileSync(path.join(realDir, f)))
+  for (const f of fs.readdirSync(realDir)) {
+    if (fs.statSync(path.join(realDir, f)).isDirectory()) continue
+    out.set(f, fs.readFileSync(path.join(realDir, f)))
+  }
   return out
 }
 

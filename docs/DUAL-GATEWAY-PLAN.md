@@ -318,11 +318,28 @@ aigd gateway [--port 8788] [--mode local|cloud]
 
 ### 阶段二：路由打通与管理界面
 
-1. `fallback.js`：本地 fallback 引擎（线性链 + percentage；异常结构明确报错）。
-2. 「网关」视图：双卡片、模式开关、凭证状态、回填按钮、Base URL 复制。
-3. save-deploy 扩展为双端同步。
-4. 测试：fallback 引擎 + 新 API + 前端视图。
-5. 文档：README 增加「本地中转 / 双网关」章节，ARCHITECTURE.md 补本地链路与 §模块。
+> ✅ 已完成（2026-09-21）：5 项任务全部落地。`npm test` 47/47 通过，
+> 新增 3 个测试文件（fallback / web-api / view，共 100 条断言），
+> 已通过真实进程冒烟（/health、status 凭证列表、网关视图 API）。
+
+1. ✅ `fallback.js`：本地 fallback 引擎（线性链 + percentage；异常结构明确报错）。
+2. ✅ 「网关」视图：双卡片、模式开关、凭证状态、回填按钮、Base URL 复制。
+3. ✅ save-deploy 双端同步：现有三步编排已同时落本地真相（model-states /
+   models.json）与云端 KV；动态路由 routes.json 一份两处生效。
+4. ✅ 测试：fallback 引擎 + 网关视图 API + 前端视图纯函数。
+5. ✅ 文档：README 增加「本地网关与双模式」章节，ARCHITECTURE.md 补 §4.12 与数据模型。
+
+> 实际回填与方案差异：
+> 1. 管理服务新增独立总览端点 `/api/gateway/overview`（§7 端点表列在网关
+>    进程侧，实际由 web 管理服务聚合 gateway.json + 进程探测 + 凭证状态），
+>    并新增 `POST /api/gateway/{cloud-url,provider-key}` 两个端点。
+> 2. 网关未运行时：模式切换直接写 gateway.json（下次启动生效）；回填在
+>    管理进程内直接拉云端 headers 写本地加密存储。
+> 3. BYOK 手工录入以 `Authorization: Bearer <key>` 形式写本地（自定义鉴权
+>    头的 BYOK 暂不支持手工录入，可走 custom-provider）。
+> 4. 阶段一 501 占位已移除，`dynamic/*` 进入 fallback 引擎。
+> 5. 旧测试 token-store / setup 的真实凭证目录快照函数已兼容新增的
+>    `provider-keys/` 子目录（EISDIR 修复）。
 
 ### 阶段三：可选增强
 

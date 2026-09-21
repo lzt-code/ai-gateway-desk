@@ -35,6 +35,7 @@ import {
   listDynamicRoutes,
   getDynamicRouteDetail,
   deleteDynamicRoute,
+  listCustomProviders,
 } from '../cloudflare/api.js'
 import {
   toggleStatus,
@@ -73,7 +74,12 @@ import { runSyncFlow } from './sync-flow.js'
 import {
   writeProviderHeaders,
   deleteProviderHeaders,
+  hasProviderKey,
 } from '../gateway/provider-keys.js'
+import {
+  loadGatewayConfig,
+  saveGatewayConfig,
+} from '../gateway/config-store.js'
 import {
   SLOTS,
   summarizeTokenStatus,
@@ -166,6 +172,11 @@ const DEFAULT_DEPS = {
   // 双网关方案 §8.3：凭证录入即本地双写
   writeProviderKey: writeProviderHeaders,
   deleteProviderKey: deleteProviderHeaders,
+  // 双网关方案 §12.2：网关视图（代理本地网关管理 API）
+  gatewayFetch: (url, init) => fetch(url, init),
+  readGatewayConfig: () => loadGatewayConfig(),
+  saveGatewayConfig: (cfg) => saveGatewayConfig(cfg),
+  listCloudCustomProviders: listCustomProviders,
   readKvVisibility: async (apiToken, accountId, namespaceId) =>
     readKvJson(apiToken, accountId, namespaceId, PROVIDER_VISIBILITY_KV_KEY, {}),
   writeKvVisibility: async (apiToken, accountId, namespaceId, map) =>
@@ -1935,6 +1946,209 @@ export function createApp({
     if (isDebugEnabled()) ioLogResponse(op, { status: exitCode, output, elapsedMs: Date.now() - start })
     if (exitCode === 0) return c.json({ ok: true, exitCode, output })
     return c.json({ ok: false, exitCode, output })
+  })
+
+  // ─── 双网关方案 §12.2：网关视图 API ───
+  // 管理服务读本地 gateway.json；若本地网关进程在跑，则把模式切换 / 回填等
+  // 操作代理到网关（热生效）；网关未运行时直接写文件（下次启动生效）。
+
+  /**
+   * 探测本地网关进程是否存活
+   * @param {number} port
+   * @returns {Promise<{ running: boolean, health: object }>}
+   */
+  async function probeGateway(port) {
+    try {
+      const res = await depsAll.gatewayFetch(`http://127.0.0.1:${port}/health`, {
+        method: 'GET',
+      })
+      if (!res.ok) return { running: false, health: null }
+      return { running: true, health: await res.json() }
+    } catch {
+      return { running: false, health: null }
+    }
+  }
+
+  // GET /api/gateway/overview — 网关总览（gateway.json + 进程状态 + 各 provider 凭证状态）
+  app.get('/api/gateway/overview', async (c) => {
+    const gwConfig = depsAll.readGatewayConfig()
+    const { running, health } = await probeGateway(gwConfig.port)
+
+    const config = configStore.load()
+    const providers = Array.isArray(config.providers) ? config.providers : []
+    const providerRows = providers.map((p) => {
+      const slug = gatewaySlug(p)
+      let keySaved = false
+      try {
+        keySaved = hasProviderKey(slug)
+      } catch {
+        keySaved = false
+      }
+      return {
+        slug,
+        id: p?.id,
+        name: p?.name,
+        type: p?.type,
+        keySaved,
+        needsReEntry: !keySaved && p?.type === 'byok',
+      }
+    })
+
+    return c.json({
+      ok: true,
+      running,
+      health,
+      mode: gwConfig.mode,
+      port: gwConfig.port,
+      cloudWorkerUrl: gwConfig.cloudWorkerUrl,
+      baseUrl: `http://127.0.0.1:${gwConfig.port}/v1`,
+      providers: providerRows,
+    })
+  })
+
+  // POST /api/gateway/mode — 切换模式（网关在跑则代理热切换，否则写 gateway.json）
+  app.post('/api/gateway/mode', async (c) => {
+    const body = await readJsonBody(c)
+    if (body === null) return c.json({ error: 'invalid json body' }, 400)
+    const mode = body.mode
+    if (mode !== 'local' && mode !== 'cloud') {
+      return c.json({ error: "mode 必须是 'local' 或 'cloud'" }, 400)
+    }
+
+    const gwConfig = depsAll.readGatewayConfig()
+    const { running } = await probeGateway(gwConfig.port)
+    let hotSwapped = false
+
+    if (running) {
+      try {
+        const res = await depsAll.gatewayFetch(
+          `http://127.0.0.1:${gwConfig.port}/api/gateway/mode`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          }
+        )
+        const payload = await res.json().catch(() => ({}))
+        if (!res.ok || !payload.ok) {
+          return c.json(
+            { error: `网关拒绝切换：${payload.error || res.status}` },
+            200
+          )
+        }
+        hotSwapped = true
+      } catch (err) {
+        return c.json(
+          { error: `代理网关切换失败: ${err instanceof Error ? err.message : String(err)}` },
+          200
+        )
+      }
+    } else {
+      depsAll.saveGatewayConfig({ ...gwConfig, mode })
+    }
+
+    ioLogResult('gateway:mode', { ok: true, message: `mode=${mode} hot=${hotSwapped}` })
+    return c.json({ ok: true, mode, hotSwapped })
+  })
+
+  // POST /api/gateway/cloud-url — 保存 cloud 模式的 Worker 地址
+  app.post('/api/gateway/cloud-url', async (c) => {
+    const body = await readJsonBody(c)
+    if (body === null) return c.json({ error: 'invalid json body' }, 400)
+    const gwConfig = depsAll.readGatewayConfig()
+    const saved = depsAll.saveGatewayConfig({
+      ...gwConfig,
+      cloudWorkerUrl: typeof body.cloudWorkerUrl === 'string' ? body.cloudWorkerUrl : '',
+    })
+    return c.json({ ok: true, cloudWorkerUrl: saved.cloudWorkerUrl })
+  })
+
+  // POST /api/gateway/backfill-keys — custom-provider 完整 key 云端回填
+  // 网关在跑则代理到网关（复用其逻辑）；否则在本进程直接拉取并写本地加密存储
+  app.post('/api/gateway/backfill-keys', async (c) => {
+    const gwConfig = depsAll.readGatewayConfig()
+    const { running } = await probeGateway(gwConfig.port)
+
+    if (running) {
+      const res = await depsAll.gatewayFetch(
+        `http://127.0.0.1:${gwConfig.port}/api/gateway/backfill-keys`,
+        { method: 'POST' }
+      )
+      const payload = await res.json().catch(() => ({}))
+      return c.json(payload, res.status)
+    }
+
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    if (!mgmtToken) {
+      return c.json(
+        { error: '本地未配置管理 API Token，无法从云端拉取凭证；请先运行 aigd setup 或手工录入 Key' },
+        400
+      )
+    }
+    const config = configStore.load()
+    const accountId = config.gateway?.accountId
+    if (!accountId) {
+      return c.json({ error: 'providers.json 缺少 gateway.accountId，请先完成 setup' }, 400)
+    }
+
+    let cloudList
+    try {
+      cloudList = await depsAll.listCloudCustomProviders(mgmtToken, accountId)
+    } catch (err) {
+      return c.json(
+        { error: `拉取云端 custom providers 失败: ${err instanceof Error ? err.message : String(err)}` },
+        502
+      )
+    }
+
+    const backfilled = []
+    const skipped = []
+    const errors = []
+    for (const item of Array.isArray(cloudList) ? cloudList : []) {
+      const slug = item?.slug
+      if (!slug) {
+        skipped.push({ slug: '(unknown)', reason: '缺少 slug' })
+        continue
+      }
+      let headers = null
+      try {
+        const parsed = typeof item.headers === 'string' ? JSON.parse(item.headers) : null
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) headers = parsed
+      } catch {
+        headers = null
+      }
+      if (!headers) {
+        skipped.push({ slug, reason: 'headers 缺失或无法解析' })
+        continue
+      }
+      try {
+        depsAll.writeProviderKey(slug, headers)
+        backfilled.push(slug)
+      } catch (err) {
+        errors.push({ slug, error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+
+    ioLogResult('gateway:backfill', {
+      ok: errors.length === 0,
+      message: `backfilled=${backfilled.length} skipped=${skipped.length} errors=${errors.length}`,
+    })
+    return c.json({ ok: errors.length === 0, backfilled, skipped, errors })
+  })
+
+  // POST /api/gateway/provider-key — BYOK / 任意 provider 手工录入完整 headers（本地双写）
+  app.post('/api/gateway/provider-key', async (c) => {
+    const body = await readJsonBody(c)
+    if (body === null) return c.json({ error: 'invalid json body' }, 400)
+    const slug = typeof body.slug === 'string' ? body.slug.trim() : ''
+    const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : ''
+    if (!slug) return c.json({ error: 'slug is required' }, 400)
+    if (!apiKey) return c.json({ error: 'apiKey is required' }, 400)
+
+    const headers = { Authorization: `Bearer ${apiKey}` }
+    depsAll.writeProviderKey(slug, headers)
+    ioLogResult('gateway:provider-key', { ok: true, message: slug })
+    return c.json({ ok: true, slug })
   })
 
   // GET /api/account/status — 账户状态（双 token 槽位汇总 + gateway 信息）

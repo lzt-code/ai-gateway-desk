@@ -61,6 +61,10 @@ const TESTS = [
   'test-gateway-backend-local.mjs',   // LocalBackend 直发（mock fetch / 错误归类）
   'test-gateway-backend-cloud.mjs',   // CloudBackend 转发（URL / token 注入 / 透传）
   'test-gateway-server.mjs',          // 网关全部端点 + 模式热切换 + backfill（全 mock）
+  // ── 双网关方案阶段二：fallback 引擎 + 网关视图 ──
+  'test-gateway-fallback.mjs',        // 本地 fallback 链 / 重试 / percentage / 异常结构
+  'test-gateway-web-api.mjs',         // 管理服务网关 API（overview/mode/cloud-url/backfill/key）
+  'test-gateway-view.mjs',            // 前端网关视图纯函数（双卡片/模式开关/凭证表/转义）
 ]
 
 const results = []

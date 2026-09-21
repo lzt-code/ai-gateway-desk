@@ -141,7 +141,7 @@ check(
   VIEW_LABELS.providers === 'Provider' &&
     VIEW_LABELS.models === '模型' &&
     VIEW_LABELS.routes === '动态路由' &&
-    VIEW_LABELS.workers === 'Worker' &&
+    VIEW_LABELS.workers === '网关' &&
     VIEW_LABELS.account === '账户',
   'VIEW_LABELS 文案（含 模型 / 动态路由）',
 )

@@ -30,6 +30,13 @@ function makeFetch(handler) {
   return { fetchFn, calls }
 }
 
+function jsonResponse(status, payload) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
+
 const provider = {
   id: 'fang-zhou',
   type: 'custom-provider',
@@ -103,8 +110,24 @@ section('3. 错误归类')
   res = await okBackend.chat({ bodyText: JSON.stringify({ model: 'bare-model' }) })
   check(res.status === 400, 'model 无 slug → 400')
 
-  res = await okBackend.chat({ bodyText: JSON.stringify({ model: 'dynamic/x' }) })
-  check(res.status === 501, 'dynamic/* → 501')
+  let delegated = null
+  const dynamicBackend = createLocalBackend({
+    fetchFn,
+    findProvider: () => provider,
+    readProviderHeaders: () => ({ Authorization: 'k' }),
+    fallbackEngine: {
+      async execute(name, body) {
+        delegated = { name, body }
+        return jsonResponse(200, { ok: true })
+      },
+    },
+  })
+  res = await dynamicBackend.chat({
+    bodyText: JSON.stringify({ model: 'dynamic/x' }),
+  })
+  check(res.status === 200, 'dynamic/* 委托 fallback 引擎')
+  check(delegated && delegated.name === 'x', '传入路由名 x')
+  check(delegated && delegated.body.model === 'dynamic/x', '传入原始 body')
 
   const noProvider = createLocalBackend({
     fetchFn,
