@@ -193,7 +193,7 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 
 本地引擎语义对齐 Cloudflare：网络失败 / 429 / 5xx 按节点 `retries` 重试，耗尽后走 fallback 边；200 即成功并开始流式返回；4xx（非 429）立即报错不回退。限制：流式开始后中途错误无法回退（与 CF 一致）。
 
-管理端（`src/web/server.js`）网关视图 API 行为：探测网关进程 `/health` 以展示运行状态；回填 / 凭证录入均在管理进程直接写本地加密存储，与网关进程是否在跑无关。Worker 地址存于 `providers.json` 的 `gateway.workerUrl`（`GET/POST /api/gateway/worker-url`）。
+管理端（`src/web/server.js`）网关视图 API 行为：探测网关进程 `/health` 以展示运行状态；回填 / 凭证录入均在管理进程直接写本地加密存储，与网关进程是否在跑无关。Worker 地址由 Cloudflare API 自动发现（workers.dev 默认地址、Workers Domains 自定义域名、Workers Routes zone 路由，聚合在 `GET /api/gateway/overview`），不本地存储。
 
 ## 5. 数据模型
 

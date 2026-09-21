@@ -5457,23 +5457,41 @@ export function buildLocalGatewayCard(overview) {
   )
 }
 
-// 云端 Worker 卡片：地址 + 直连说明
+// 云端 Worker 卡片：自动发现的地址 + 直连说明
 export function buildCloudWorkerCard(overview) {
   const o = overview || {}
-  const url = typeof o.workerUrl === 'string' ? o.workerUrl.trim() : ''
-  const configured = url !== ''
-  const text = configured ? url : '未配置'
-  const cls = configured ? 'ok' : 'warn'
+  const ep = o.workerEndpoints || {}
+  const workersDev = typeof ep.workersDev === 'string' ? ep.workersDev.trim() : ''
+  const customDomains = Array.isArray(ep.customDomains) ? ep.customDomains.filter((d) => typeof d === 'string' && d.trim()) : []
+  const routeUrls = Array.isArray(ep.routes) ? ep.routes.filter((d) => typeof d === 'string' && d.trim()) : []
+  const error = typeof ep.error === 'string' ? ep.error.trim() : ''
+
+  const endpointRow = (label, url, hint) =>
+    `<div class="baseurl-row"><span class="k">${label}</span>` +
+    `<code class="baseurl-code"${hint ? ` title="${escapeHtml(hint)}"` : ''}>${escapeHtml(url)}</code>` +
+    `<button class="btn btn-default btn-copy-worker-url" type="button" data-url="${escapeHtml(url)}">复制</button></div>` +
+    (hint ? `<p class="gateway-hint warn">${escapeHtml(hint)}</p>` : '')
+
   return (
     `<div class="panel gateway-box cloud-worker-card">` +
     `<h3>云端 Worker</h3>` +
     `<p class="slot-note">走 Cloudflare AI Gateway（共享边缘 IP，可能触发 429）时，让 Agent 的 Base URL 直接指向该 Worker，不经本地网关</p>` +
-    `<div class="status-grid">` +
-    `<div class="status-item"><span class="k">Worker 地址</span><span class="v ${cls}"${configured ? ` title="${escapeHtml(url)}"` : ''}>${escapeHtml(configured ? truncateNamespaceId(text) : text)}</span></div>` +
-    `</div>` +
+    (workersDev
+      ? endpointRow('workers.dev', workersDev)
+      : `<div class="status-item"><span class="k">workers.dev</span><span class="v warn">未开启</span></div>`) +
+    (customDomains.length
+      ? customDomains.map((d) => endpointRow('自定义域名', d)).join('')
+      : `<div class="status-item"><span class="k">自定义域名</span><span class="v warn">未绑定</span></div>`) +
+    (routeUrls.length
+      ? routeUrls.map((d) =>
+          d.includes('<子域>')
+            ? endpointRow('Workers 路由', d, '通配符路由：请将 <子域> 替换为真实子域（该子域需有代理到 Cloudflare 的 DNS 记录）')
+            : endpointRow('Workers 路由', d)
+        ).join('')
+      : '') +
+    (error ? `<p class="gateway-hint warn">${escapeHtml(error)}</p>` : '') +
     `<div class="toolbar">` +
     `<button class="btn btn-primary btn-deploy-worker" type="button">部署 Worker</button>` +
-    `<button class="btn btn-default btn-edit-workerurl" type="button">编辑 Worker 地址</button>` +
     `</div>` +
     `</div>`
   )
@@ -5729,33 +5747,6 @@ export function renderWorkersView(container) {
     }
   }
 
-  async function editWorkerUrl() {
-    const current = overview?.workerUrl || ''
-    const values = await promptDialog('云端 Worker 地址', [
-      {
-        name: 'workerUrl',
-        label: 'Worker URL',
-        type: 'text',
-        value: current,
-        placeholder: 'https://ai-gateway-desk-worker.<子域>.workers.dev',
-        hint: 'Agent 走 Cloudflare 路线时直接把 Base URL 指向该地址',
-      },
-    ])
-    if (!values) return
-    try {
-      const res = await api('/api/gateway/worker-url', {
-        method: 'POST',
-        body: { workerUrl: values.workerUrl || '' },
-      })
-      if (res.ok) {
-        flash('Worker 地址已保存', 'ok')
-        refresh()
-      }
-    } catch (err) {
-      flash(err.message, 'err')
-    }
-  }
-
   async function enterKey(slug) {
     if (!slug) return
     const values = await promptDialog(`录入 Key：${slug}`, [
@@ -5796,6 +5787,20 @@ export function renderWorkersView(container) {
     }
   }
 
+  async function copyWorkerUrl(btn) {
+    const value = btn?.dataset?.url || ''
+    if (!value) {
+      flash('复制失败：无地址', 'err')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(value)
+      flash('Worker 地址已复制', 'ok')
+    } catch {
+      flash('复制失败，请手动选择复制', 'err')
+    }
+  }
+
   // ── 事件委托 ────────────────────────────────────────────
   root.addEventListener('click', (event) => {
     const btn = event.target.closest('button')
@@ -5804,14 +5809,14 @@ export function renderWorkersView(container) {
       backfill()
     } else if (btn.classList.contains('btn-refresh-gateway')) {
       refresh()
-    } else if (btn.classList.contains('btn-edit-workerurl')) {
-      editWorkerUrl()
     } else if (btn.classList.contains('btn-deploy-worker')) {
       deployWorker()
     } else if (btn.classList.contains('btn-rekey')) {
       enterKey(btn.dataset.slug)
     } else if (btn.classList.contains('btn-copy-baseurl')) {
       copyBaseUrl(btn)
+    } else if (btn.classList.contains('btn-copy-worker-url')) {
+      copyWorkerUrl(btn)
     }
   })
 

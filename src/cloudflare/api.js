@@ -668,3 +668,117 @@ export async function createKVNamespace(apiToken, accountId, title) {
   )
   return payload?.result
 }
+
+// ─── Workers 地址发现 ────────────────────────────────────
+
+/**
+ * 本项目 Worker 的脚本名（与 ai-gateway-desk-worker/wrangler.toml 的 name 一致）
+ */
+export const WORKER_SCRIPT_NAME = 'ai-gateway-desk-worker'
+
+/**
+ * 获取账户注册的 workers.dev 子域名
+ * @param {string} apiToken - 管理 API Token（需 Workers Scripts Read）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @returns {Promise<string>} 子域名（如 "my-sub"）；账户未注册时云端返回空串
+ */
+export async function getWorkersSubdomain(apiToken, accountId) {
+  guard(accountId, 'accountId')
+
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/workers/subdomain`
+  )
+  return payload?.result?.subdomain || ''
+}
+
+/**
+ * 查询指定 Worker 脚本是否开启 workers.dev 访问
+ * @param {string} apiToken - 管理 API Token（需 Workers Scripts Read）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @param {string} [scriptName=WORKER_SCRIPT_NAME] - Worker 脚本名
+ * @returns {Promise<boolean>} enabled=true 时脚本在 workers.dev 子域可达
+ */
+export async function getWorkerScriptSubdomainEnabled(
+  apiToken,
+  accountId,
+  scriptName = WORKER_SCRIPT_NAME
+) {
+  guard(accountId, 'accountId')
+  guard(scriptName, 'scriptName')
+
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(scriptName)}/subdomain`
+  )
+  return payload?.result?.enabled === true
+}
+
+/**
+ * 列出绑定到指定 Worker 的自定义域名（Workers Domains）
+ * @param {string} apiToken - 管理 API Token（需 Workers Scripts Read）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @param {string} [scriptName=WORKER_SCRIPT_NAME] - Worker 脚本名（按 service 过滤）
+ * @returns {Promise<Array<string>>} hostname 列表（如 ["ai.example.com"]）；无绑定时为空数组
+ */
+export async function listWorkerDomains(
+  apiToken,
+  accountId,
+  scriptName = WORKER_SCRIPT_NAME
+) {
+  guard(accountId, 'accountId')
+  guard(scriptName, 'scriptName')
+
+  const query = new URLSearchParams({ service: scriptName })
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/workers/domains?${query.toString()}`
+  )
+  const rows = Array.isArray(payload?.result) ? payload.result : []
+  return rows.map((r) => (typeof r?.hostname === 'string' ? r.hostname : '')).filter(Boolean)
+}
+
+/**
+ * 列出账户下的 zone（域名托管区）
+ * @param {string} apiToken - 管理 API Token（需 Zone Read）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @returns {Promise<Array<{id: string, name: string}>>} zone 列表；账户无 zone 时为空数组
+ */
+export async function listZones(apiToken, accountId) {
+  guard(accountId, 'accountId')
+
+  const query = new URLSearchParams({ 'account.id': accountId, per_page: '50' })
+  const payload = await request(
+    apiToken,
+    `/zones?${query.toString()}`
+  )
+  const rows = Array.isArray(payload?.result) ? payload.result : []
+  return rows
+    .map((z) => (z?.id && z?.name ? { id: z.id, name: z.name } : null))
+    .filter(Boolean)
+}
+
+/**
+ * 列出 zone 上绑定到指定 Worker 的路由（Workers Routes）
+ * @param {string} apiToken - 管理 API Token（需 Workers Routes Read）
+ * @param {string} zoneId - zone ID
+ * @param {string} [scriptName=WORKER_SCRIPT_NAME] - Worker 脚本名（按 script 过滤）
+ * @returns {Promise<Array<string>>} 匹配该脚本的 pattern 列表（如 ["*.example.com/api/*"]）
+ */
+export async function listWorkerRoutes(
+  apiToken,
+  zoneId,
+  scriptName = WORKER_SCRIPT_NAME
+) {
+  guard(zoneId, 'zoneId')
+  guard(scriptName, 'scriptName')
+
+  const payload = await request(
+    apiToken,
+    `/zones/${encodeURIComponent(zoneId)}/workers/routes`
+  )
+  const rows = Array.isArray(payload?.result) ? payload.result : []
+  return rows
+    .filter((r) => r?.script === scriptName && typeof r?.pattern === 'string')
+    .map((r) => r.pattern)
+}

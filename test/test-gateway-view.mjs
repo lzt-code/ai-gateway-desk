@@ -32,7 +32,12 @@ function section(name) {
 const overview = {
   running: true,
   port: 8788,
-  workerUrl: 'https://w.example.com',
+  workerEndpoints: {
+    workersDev: 'https://ai-gateway-desk-worker.my-sub.workers.dev',
+    customDomains: ['ai.example.com'],
+    routes: ['https://<子域>.laoliu-dev.uk/api/v1'],
+    error: '',
+  },
   baseUrl: 'http://127.0.0.1:8788/v1',
   providers: [
     { slug: 'custom-fang-zhou', id: 'fang-zhou', name: '方舟', type: 'custom-provider', keySaved: true },
@@ -59,13 +64,23 @@ section('2. buildCloudWorkerCard')
 {
   const html = buildCloudWorkerCard(overview)
   check(html.includes('云端 Worker'), '标题')
-  check(html.includes('https://w.example.com'), 'Worker 地址')
-  check(html.includes('btn-edit-workerurl'), '编辑按钮')
+  check(html.includes('https://ai-gateway-desk-worker.my-sub.workers.dev'), 'workers.dev 地址')
+  check(html.includes('ai.example.com'), '自定义域名')
+  check(html.includes('https://&lt;子域&gt;.laoliu-dev.uk/api/v1'), 'Workers 路由地址（HTML 转义）')
+  check(html.includes('替换为真实子域'), '通配符占位提示')
+  check(!html.includes('btn-edit-workerurl'), '无编辑按钮')
   check(html.includes('btn-deploy-worker'), '部署按钮')
+  check(html.includes('btn-copy-worker-url'), '地址复制按钮')
   check(html.includes('直接指向该 Worker'), '直连说明')
 
-  const empty = buildCloudWorkerCard({ ...overview, workerUrl: '' })
-  check(empty.includes('未配置'), '空地址 → 未配置')
+  const empty = buildCloudWorkerCard({ workerEndpoints: { workersDev: '', customDomains: [], routes: [], error: '' } })
+  check(empty.includes('未开启'), '无 workers.dev → 未开启')
+  check(empty.includes('未绑定'), '无自定义域名 → 未绑定')
+
+  const errCard = buildCloudWorkerCard({
+    workerEndpoints: { workersDev: '', customDomains: [], routes: [], error: '本地未配置管理 API Token，请先运行 aigd setup' },
+  })
+  check(errCard.includes('aigd setup'), '展示发现错误提示')
 }
 
 section('3. buildGatewayActions')
@@ -113,10 +128,16 @@ section('6. XSS 转义')
   check(html.includes('&lt;script&gt;'), '转义为实体')
 
   const evilUrl = buildCloudWorkerCard({
-    ...overview,
-    workerUrl: '"><img src=x onerror=alert(1)>',
+    workerEndpoints: {
+      workersDev: 'https://"><img src=x onerror=alert(1)>.workers.dev',
+      customDomains: ['"><img src=x onerror=alert(2)>'],
+      error: '',
+    },
   })
-  check(!evilUrl.includes('onerror=alert(1)>'), 'URL 被转义')
+  check(!evilUrl.includes('<img'), '两个地址：尖括号均被转义')
+  check(!evilUrl.includes('onerror=alert(1)>'), 'workers.dev 原始标签不残留')
+  check(!evilUrl.includes('onerror=alert(2)>'), '自定义域名原始标签不残留')
+  check(evilUrl.includes('&lt;img'), '标签转义为实体')
 }
 
 console.log(`\n通过 ${checks - failures}/${checks}`)

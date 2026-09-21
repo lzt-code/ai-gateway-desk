@@ -1,7 +1,6 @@
 /**
  * 网关视图 API 测试 — createApp + 全 mock deps：
- * GET  /api/gateway/overview（运行/未运行、凭证行、workerUrl）
- * POST /api/gateway/worker-url
+ * GET  /api/gateway/overview（运行/未运行、凭证行、workerEndpoints 自动发现）
  * POST /api/gateway/backfill-keys（本进程拉取）
  * POST /api/gateway/provider-key
  */
@@ -78,8 +77,15 @@ function makeGatewayFetch(running) {
   return { fetchFn, calls }
 }
 
+const discovered = {
+  workersDev: 'https://ai-gateway-desk-worker.my-sub.workers.dev',
+  customDomains: ['ai.example.com'],
+  routes: ['https://<子域>.laoliu-dev.uk/api/v1'],
+  error: '',
+}
+
 const providersConfig = {
-  gateway: { accountId: 'acc-1', gatewayId: 'gw-1', workerUrl: 'https://w.example.com' },
+  gateway: { accountId: 'acc-1', gatewayId: 'gw-1' },
   kv: { namespaceId: 'ns-1' },
   providers: [
     {
@@ -94,18 +100,24 @@ const providersConfig = {
 
 let tmpDir
 try {
-  section('1. GET /api/gateway/overview：网关运行中 + 凭证状态')
+  section('1. GET /api/gateway/overview：网关运行中 + 凭证状态 + 地址发现')
   {
     tmpDir = makeDataDir(
       { port: 8788 },
       providersConfig
     )
     const { fetchFn, calls } = makeGatewayFetch(true)
+    const discoverCalls = []
     const app = createTestApp({
       configStore: makeStore(providersConfig),
       deps: {
         gatewayFetch: fetchFn,
         readGatewayConfig: () => ({ port: 8788 }),
+        readManagementToken: () => 'mgmt-token',
+        discoverWorkerEndpoints: async (token, accountId) => {
+          discoverCalls.push({ token, accountId })
+          return discovered
+        },
         hasProviderKeyFn: null,
       },
     })
@@ -113,7 +125,15 @@ try {
     const body = await res.json()
     check(res.status === 200, '200')
     check(body.running === true, 'running=true')
-    check(body.workerUrl === 'https://w.example.com', 'workerUrl 回显')
+    check(
+      body.workerEndpoints.workersDev === discovered.workersDev,
+      'workerEndpoints.workersDev 回显'
+    )
+    check(
+      body.workerEndpoints.customDomains[0] === 'ai.example.com',
+      'workerEndpoints.customDomains 回显'
+    )
+    check(!('workerUrl' in body), '不再返回 workerUrl')
     check(body.baseUrl === 'http://127.0.0.1:8788/v1', 'baseUrl 正确')
     check(body.providers.length === 2, '返回 2 个 provider 凭证行')
     check(
@@ -121,46 +141,55 @@ try {
       `provider slug（实际 ${body.providers[0].slug}）`
     )
     check(calls.some((c) => c.url.endsWith('/health')), '探测了 /health')
+    check(discoverCalls.length === 1, '调用了 discoverWorkerEndpoints')
+    check(
+      discoverCalls[0].token === 'mgmt-token' && discoverCalls[0].accountId === 'acc-1',
+      '发现调用携带 token + accountId'
+    )
   }
 
   section('2. overview：网关未运行')
   {
     const { fetchFn } = makeGatewayFetch(false)
-    const emptyGw = { gateway: { accountId: 'a' }, providers: [] }
     const app = createTestApp({
-      configStore: makeStore(emptyGw),
+      configStore: makeStore(providersConfig),
       deps: {
         gatewayFetch: fetchFn,
         readGatewayConfig: () => ({ port: 8788 }),
+        readManagementToken: () => 'mgmt-token',
+        discoverWorkerEndpoints: async () => discovered,
       },
     })
     const res = await app.request('/api/gateway/overview')
     const body = await res.json()
     check(body.running === false, 'running=false')
-    check(body.workerUrl === '', '无 workerUrl → 空串')
+    check(
+      body.workerEndpoints.workersDev === discovered.workersDev,
+      '未运行时仍做地址发现'
+    )
   }
 
-  section('3. POST worker-url：保存 Worker 地址')
+  section('3. overview：无管理 Token → error 不报错')
   {
-    const configState = { gateway: { accountId: 'acc-1' }, providers: [] }
-    const writes = []
+    const { fetchFn } = makeGatewayFetch(false)
     const app = createTestApp({
-      configStore: { load: () => configState, save: () => {} },
+      configStore: makeStore(providersConfig),
       deps: {
-        gatewayFetch: makeGatewayFetch(false).fetchFn,
+        gatewayFetch: fetchFn,
         readGatewayConfig: () => ({ port: 8788 }),
-        writeProvidersConfigFile: (cfg) => writes.push(cfg),
+        readManagementToken: () => null,
+        discoverWorkerEndpoints: async () => {
+          throw new Error('不应被调用')
+        },
       },
     })
-    const res = await app.request('/api/gateway/worker-url', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workerUrl: 'https://x.workers.dev' }),
-    })
+    const res = await app.request('/api/gateway/overview')
     const body = await res.json()
-    check(body.ok && body.workerUrl === 'https://x.workers.dev', '已保存')
-    check(configState.gateway.workerUrl === 'https://x.workers.dev', '写入配置对象')
-    check(writes.length === 1, '通过注入的 writer 落盘（不触真实数据）')
+    check(res.status === 200, '200')
+    check(body.workerEndpoints.workersDev === '', 'workersDev 空串')
+    check(body.workerEndpoints.customDomains.length === 0, 'customDomains 空')
+    check(body.workerEndpoints.routes.length === 0, 'routes 空')
+    check(body.workerEndpoints.error.includes('aigd setup'), '引导 setup')
   }
 
   section('4. backfill：无管理 Token → 400')

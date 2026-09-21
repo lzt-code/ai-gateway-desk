@@ -99,7 +99,7 @@ ai-gateway-desk/
 │   │   ├── backends/local.js       # LocalBackend
 │   │   └── fallback.js             # 本地动态路由引擎
 │   └── web/
-│       ├── server.js               # 网关视图 API（overview/worker-url/backfill/key）
+│       ├── server.js               # 网关视图 API（overview/backfill/key）
 │       └── public/app.js           # 「网关」视图
 ├── data/
 │   ├── gateway.json                # gitignore：{ port }
@@ -171,13 +171,18 @@ EADDRINUSE 返回友好提示。
 
 ### 9.2 Worker 地址
 
-存于 `data/providers.json` 的 `gateway.workerUrl`，由「网关」视图编辑（`GET/POST /api/gateway/worker-url` 聚合在 overview 中）。该地址仅用于展示与引导 Agent 直连，本地网关不会请求它。
+由「网关」视图通过 Cloudflare API 自动发现（`discoverWorkerEndpoints`，聚合在 `GET /api/gateway/overview`），覆盖三类绑定：
+- workers.dev 默认地址：账户子域（`GET /workers/subdomain`）+ 脚本开关（`GET /workers/scripts/{name}/subdomain`）；
+- Custom Domains：`GET /workers/domains`；
+- Workers Routes（zone 路由）：`GET /zones` + `GET /zones/{id}/workers/routes`，路由模式（如 `*.example.com/api/*`）转换为 Agent Base URL；host 含通配符时以 `<子域>` 占位提示替换。
+
+地址仅用于展示与引导 Agent 直连，本地网关不会请求，也不本地存储（旧 `gateway.workerUrl` 字段不再读取）。
 
 ### 9.3 现有数据文件（结构不变）
 
 | 文件 | 角色 |
 |------|------|
-| `data/providers.json` | gateway / kv / providers 配置（含 `gateway.workerUrl`） |
+| `data/providers.json` | gateway / kv / providers 配置 |
 | `data/model-states.json` | 模型状态唯一真相源 |
 | `data/models.json` | 生成产物，本地 `/v1/models` 来源 |
 | `data/routes.json` | 动态路由本地真相源：CF 云端执行 / 本地引擎执行 |

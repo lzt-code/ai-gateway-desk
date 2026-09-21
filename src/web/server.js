@@ -37,6 +37,7 @@ import {
   deleteDynamicRoute,
   listCustomProviders,
 } from '../cloudflare/api.js'
+import { discoverWorkerEndpoints } from '../cloudflare/worker-endpoints.js'
 import {
   toggleStatus,
   deleteModel,
@@ -171,10 +172,11 @@ const DEFAULT_DEPS = {
   // 凭证录入即本地双写
   writeProviderKey: writeProviderHeaders,
   deleteProviderKey: deleteProviderHeaders,
-  // 网关视图（探测本地网关 + Worker 地址读写）
+  // 网关视图（探测本地网关 + Worker 地址自动发现）
   gatewayFetch: (url, init) => fetch(url, init),
   readGatewayConfig: () => loadGatewayConfig(),
   listCloudCustomProviders: listCustomProviders,
+  discoverWorkerEndpoints,
   readKvVisibility: async (apiToken, accountId, namespaceId) =>
     readKvJson(apiToken, accountId, namespaceId, PROVIDER_VISIBILITY_KV_KEY, {}),
   writeKvVisibility: async (apiToken, accountId, namespaceId, map) =>
@@ -1947,7 +1949,7 @@ export function createApp({
   })
 
   // ─── 网关视图 API ───
-  // 管理服务读本地 gateway.json（仅端口）+ providers.json（gateway.workerUrl）；
+  // 管理服务读本地 gateway.json（仅端口）；Worker 地址由 Cloudflare API 自动发现；
   // 探测本地网关进程存活状态以展示运行情况。回填 / 凭证录入均在本进程直接写
   // 本地加密存储，与网关进程是否在跑无关。
 
@@ -1968,14 +1970,30 @@ export function createApp({
     }
   }
 
-  // GET /api/gateway/overview — 网关总览（gateway.json 端口 + 进程状态 + Worker 地址 + 凭证状态）
+  // GET /api/gateway/overview — 网关总览（gateway.json 端口 + 进程状态 + Worker 地址自动发现 + 凭证状态）
   app.get('/api/gateway/overview', async (c) => {
     const gwConfig = depsAll.readGatewayConfig()
-    const { running, health } = await probeGateway(gwConfig.port)
-
     const config = configStore.load()
     const providers = Array.isArray(config.providers) ? config.providers : []
-    const workerUrl = config?.gateway?.workerUrl || ''
+
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    const accountId = config.gateway?.accountId || ''
+    const endpointPromise = mgmtToken && accountId
+      ? depsAll.discoverWorkerEndpoints(mgmtToken, accountId)
+      : Promise.resolve({
+          workersDev: '',
+          customDomains: [],
+          routes: [],
+          error: mgmtToken
+            ? 'providers.json 缺少 gateway.accountId，请先完成 setup'
+            : '本地未配置管理 API Token，请先运行 aigd setup',
+        })
+
+    const [{ running, health }, workerEndpoints] = await Promise.all([
+      probeGateway(gwConfig.port),
+      endpointPromise,
+    ])
+
     const providerRows = providers.map((p) => {
       const slug = gatewaySlug(p)
       let keySaved = false
@@ -1999,22 +2017,10 @@ export function createApp({
       running,
       health,
       port: gwConfig.port,
-      workerUrl,
+      workerEndpoints,
       baseUrl: `http://127.0.0.1:${gwConfig.port}/v1`,
       providers: providerRows,
     })
-  })
-
-  // POST /api/gateway/worker-url — 保存云端 Worker 地址（providers.json.gateway.workerUrl）
-  app.post('/api/gateway/worker-url', async (c) => {
-    const body = await readJsonBody(c)
-    if (body === null) return c.json({ error: 'invalid json body' }, 400)
-    const workerUrl = typeof body.workerUrl === 'string' ? body.workerUrl.trim() : ''
-    const config = configStore.load()
-    config.gateway = config.gateway || {}
-    config.gateway.workerUrl = workerUrl
-    depsAll.writeProvidersConfigFile(config)
-    return c.json({ ok: true, workerUrl })
   })
 
   // POST /api/gateway/backfill-keys — custom-provider 完整 key 云端回填

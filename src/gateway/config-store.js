@@ -7,7 +7,7 @@
 //   }
 //
 // Cloudflare 路线（共享边缘 IP）由 Agent 直连云端 Worker，不经本地网关；
-// Worker 地址记录在 providers.json 的 gateway.workerUrl。
+// Worker 地址由 Cloudflare API 自动发现，不落地存储。
 //
 // 数据目录按 import.meta.url 定位（不依赖 cwd），与其他 src 模块一致；
 // 文件缺失 / 损坏时回退默认值，保证网关可冷启动。
