@@ -54,17 +54,16 @@ const TESTS = [
   'test-routes-deploy.mjs',           // 动态路由配置：REST 部署编排（版本→部署，全 mock）
   'test-web-api-routes.mjs',          // 动态路由配置：配置 API 端点（保存/部署/删除/刷新，全 mock）
   'test-enrich-models-dev.mjs',       // 双源富化：OpenRouter + models.dev 融合补全、匹配优先级 a/b/c/d、失败降级、缓存
-  // ── 双网关方案阶段一：本地网关 ──
-  'test-gateway-config-store.mjs',    // gateway.json 读写、默认值、字段校验
+  // ── 本地网关阶段一 ──
+  'test-gateway-config-store.mjs',    // gateway.json 端口读写、默认值、校验
   'test-gateway-provider-keys.mjs',   // 凭证加密存储（AI_GW_TEST_DIR 隔离）
   'test-gateway-router.mjs',          // slug 解析/剥离、厂商 URL 构造、BYOK 映射
   'test-gateway-backend-local.mjs',   // LocalBackend 直发（mock fetch / 错误归类）
-  'test-gateway-backend-cloud.mjs',   // CloudBackend 转发（URL / token 注入 / 透传）
-  'test-gateway-server.mjs',          // 网关全部端点 + 模式热切换 + backfill（全 mock）
-  // ── 双网关方案阶段二：fallback 引擎 + 网关视图 ──
+  'test-gateway-server.mjs',          // 网关全部端点 + backfill（全 mock）
+  // ── 本地网关阶段二：fallback 引擎 + 网关视图 ──
   'test-gateway-fallback.mjs',        // 本地 fallback 链 / 重试 / percentage / 异常结构
-  'test-gateway-web-api.mjs',         // 管理服务网关 API（overview/mode/cloud-url/backfill/key）
-  'test-gateway-view.mjs',            // 前端网关视图纯函数（双卡片/模式开关/凭证表/转义）
+  'test-gateway-web-api.mjs',         // 管理服务网关 API（overview/worker-url/backfill/key）
+  'test-gateway-view.mjs',            // 前端网关视图纯函数（操作/双卡片/凭证表/转义）
 ]
 
 const results = []

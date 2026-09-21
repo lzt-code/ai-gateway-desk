@@ -122,9 +122,9 @@ threw = false
 try {
   resolveProviderEndpoint({ id: 'weird-byok', type: 'byok' })
 } catch (err) {
-  threw = err.message.includes('cloud 模式')
+  threw = err.message.includes('直连云端 Worker')
 }
-check(threw, 'byok 内置未覆盖且无 base_url → 抛错提示 cloud')
+check(threw, 'byok 内置未覆盖且无 base_url → 抛错提示直连 Worker')
 threw = false
 try {
   resolveProviderEndpoint({ id: 'custom-x', type: 'custom-provider' })

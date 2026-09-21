@@ -1,12 +1,13 @@
 // ============================================================
 // 网关配置存储模块 — data/gateway.json 读写与校验
 // ============================================================
-// 双网关方案（docs/DUAL-GATEWAY-PLAN.md §9.1）：
+// 本地网关只做本机出口 IP 直发：
 //   {
-//     "mode": "local" | "cloud",      // 全局后端选择，默认 local
-//     "port": 8788,                    // 本地网关固定端口
-//     "cloudWorkerUrl": "https://..."  // cloud 模式的云端 Worker 地址
+//     "port": 8788                    // 本地网关固定端口
 //   }
+//
+// Cloudflare 路线（共享边缘 IP）由 Agent 直连云端 Worker，不经本地网关；
+// Worker 地址记录在 providers.json 的 gateway.workerUrl。
 //
 // 数据目录按 import.meta.url 定位（不依赖 cwd），与其他 src 模块一致；
 // 文件缺失 / 损坏时回退默认值，保证网关可冷启动。
@@ -19,18 +20,16 @@ import { fileURLToPath } from 'node:url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 /** src/gateway/ → 项目根 data/ */
-const DEFAULT_DATA_DIR = path.resolve(__dirname, '..', '..', 'data')
+export const DEFAULT_DATA_DIR = path.resolve(__dirname, '..', '..', 'data')
 
-export const DEFAULT_MODE = 'local'
 export const DEFAULT_PORT = 8788
-const VALID_MODES = ['local', 'cloud']
 
 /**
  * 返回默认配置（深拷贝字面量，避免共享引用）
- * @returns {{ mode: string, port: number, cloudWorkerUrl: string }}
+ * @returns {{ port: number }}
  */
 export function defaultGatewayConfig() {
-  return { mode: DEFAULT_MODE, port: DEFAULT_PORT, cloudWorkerUrl: '' }
+  return { port: DEFAULT_PORT }
 }
 
 /**
@@ -48,45 +47,9 @@ export function normalizePort(value) {
 }
 
 /**
- * 校验模式
- * @param {unknown} value
- * @returns {'local'|'cloud'}
- * @throws 非法时抛错
- */
-export function normalizeMode(value) {
-  if (typeof value !== 'string' || !VALID_MODES.includes(value)) {
-    throw new Error("mode 必须是 'local' 或 'cloud'")
-  }
-  return /** @type {'local'|'cloud'} */ (value)
-}
-
-/**
- * 校验 cloudWorkerUrl：允许空字符串（未配置）或 http(s) URL
- * @param {unknown} value
- * @returns {string}
- * @throws 非法时抛错
- */
-export function normalizeCloudWorkerUrl(value) {
-  if (value === undefined || value === null) return ''
-  if (typeof value !== 'string') throw new Error('cloudWorkerUrl 必须是字符串')
-  const s = value.trim()
-  if (!s) return ''
-  let u
-  try {
-    u = new URL(s)
-  } catch {
-    throw new Error('cloudWorkerUrl 必须是合法的 http(s) URL')
-  }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-    throw new Error('cloudWorkerUrl 必须以 http:// 或 https:// 开头')
-  }
-  return s
-}
-
-/**
  * 校验并归一化一份（可能不完整的）网关配置，与默认值合并。
  * @param {unknown} raw
- * @returns {{ mode: 'local'|'cloud', port: number, cloudWorkerUrl: string }}
+ * @returns {{ port: number }}
  * @throws 任一字段非法时抛错（中文消息）
  */
 export function validateGatewayConfig(raw) {
@@ -97,10 +60,7 @@ export function validateGatewayConfig(raw) {
   }
   const obj = /** @type {Record<string, unknown>} */ (raw)
   return {
-    mode: obj.mode === undefined ? base.mode : normalizeMode(obj.mode),
     port: obj.port === undefined ? base.port : normalizePort(obj.port),
-    cloudWorkerUrl:
-      obj.cloudWorkerUrl === undefined ? base.cloudWorkerUrl : normalizeCloudWorkerUrl(obj.cloudWorkerUrl),
   }
 }
 
@@ -108,7 +68,7 @@ export function validateGatewayConfig(raw) {
  * 读取网关配置。文件缺失 / JSON 损坏时回退默认值（不抛错）；
  * 字段非法时抛错（提醒用户修复配置，而非静默改用默认）。
  * @param {string} [dataDir]
- * @returns {{ mode: 'local'|'cloud', port: number, cloudWorkerUrl: string }}
+ * @returns {{ port: number }}
  */
 export function loadGatewayConfig(dataDir = DEFAULT_DATA_DIR) {
   const file = path.join(dataDir, 'gateway.json')
@@ -131,7 +91,7 @@ export function loadGatewayConfig(dataDir = DEFAULT_DATA_DIR) {
  * 保存网关配置（先校验归一化再写盘）。
  * @param {object} config
  * @param {string} [dataDir]
- * @returns {{ mode: 'local'|'cloud', port: number, cloudWorkerUrl: string }} 归一化后的配置
+ * @returns {{ port: number }} 归一化后的配置
  */
 export function saveGatewayConfig(config, dataDir = DEFAULT_DATA_DIR) {
   const normalized = validateGatewayConfig(config)

@@ -78,7 +78,6 @@ import {
 } from '../gateway/provider-keys.js'
 import {
   loadGatewayConfig,
-  saveGatewayConfig,
 } from '../gateway/config-store.js'
 import {
   SLOTS,
@@ -169,13 +168,12 @@ const DEFAULT_DEPS = {
   deleteProviderCloud,
   writeProvidersConfigFile,
   deployProviderRoutesToKV,
-  // 双网关方案 §8.3：凭证录入即本地双写
+  // 凭证录入即本地双写
   writeProviderKey: writeProviderHeaders,
   deleteProviderKey: deleteProviderHeaders,
-  // 双网关方案 §12.2：网关视图（代理本地网关管理 API）
+  // 网关视图（探测本地网关 + Worker 地址读写）
   gatewayFetch: (url, init) => fetch(url, init),
   readGatewayConfig: () => loadGatewayConfig(),
-  saveGatewayConfig: (cfg) => saveGatewayConfig(cfg),
   listCloudCustomProviders: listCustomProviders,
   readKvVisibility: async (apiToken, accountId, namespaceId) =>
     readKvJson(apiToken, accountId, namespaceId, PROVIDER_VISIBILITY_KV_KEY, {}),
@@ -1948,9 +1946,10 @@ export function createApp({
     return c.json({ ok: false, exitCode, output })
   })
 
-  // ─── 双网关方案 §12.2：网关视图 API ───
-  // 管理服务读本地 gateway.json；若本地网关进程在跑，则把模式切换 / 回填等
-  // 操作代理到网关（热生效）；网关未运行时直接写文件（下次启动生效）。
+  // ─── 网关视图 API ───
+  // 管理服务读本地 gateway.json（仅端口）+ providers.json（gateway.workerUrl）；
+  // 探测本地网关进程存活状态以展示运行情况。回填 / 凭证录入均在本进程直接写
+  // 本地加密存储，与网关进程是否在跑无关。
 
   /**
    * 探测本地网关进程是否存活
@@ -1969,13 +1968,14 @@ export function createApp({
     }
   }
 
-  // GET /api/gateway/overview — 网关总览（gateway.json + 进程状态 + 各 provider 凭证状态）
+  // GET /api/gateway/overview — 网关总览（gateway.json 端口 + 进程状态 + Worker 地址 + 凭证状态）
   app.get('/api/gateway/overview', async (c) => {
     const gwConfig = depsAll.readGatewayConfig()
     const { running, health } = await probeGateway(gwConfig.port)
 
     const config = configStore.load()
     const providers = Array.isArray(config.providers) ? config.providers : []
+    const workerUrl = config?.gateway?.workerUrl || ''
     const providerRows = providers.map((p) => {
       const slug = gatewaySlug(p)
       let keySaved = false
@@ -1998,86 +1998,28 @@ export function createApp({
       ok: true,
       running,
       health,
-      mode: gwConfig.mode,
       port: gwConfig.port,
-      cloudWorkerUrl: gwConfig.cloudWorkerUrl,
+      workerUrl,
       baseUrl: `http://127.0.0.1:${gwConfig.port}/v1`,
       providers: providerRows,
     })
   })
 
-  // POST /api/gateway/mode — 切换模式（网关在跑则代理热切换，否则写 gateway.json）
-  app.post('/api/gateway/mode', async (c) => {
+  // POST /api/gateway/worker-url — 保存云端 Worker 地址（providers.json.gateway.workerUrl）
+  app.post('/api/gateway/worker-url', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
-    const mode = body.mode
-    if (mode !== 'local' && mode !== 'cloud') {
-      return c.json({ error: "mode 必须是 'local' 或 'cloud'" }, 400)
-    }
-
-    const gwConfig = depsAll.readGatewayConfig()
-    const { running } = await probeGateway(gwConfig.port)
-    let hotSwapped = false
-
-    if (running) {
-      try {
-        const res = await depsAll.gatewayFetch(
-          `http://127.0.0.1:${gwConfig.port}/api/gateway/mode`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mode }),
-          }
-        )
-        const payload = await res.json().catch(() => ({}))
-        if (!res.ok || !payload.ok) {
-          return c.json(
-            { error: `网关拒绝切换：${payload.error || res.status}` },
-            200
-          )
-        }
-        hotSwapped = true
-      } catch (err) {
-        return c.json(
-          { error: `代理网关切换失败: ${err instanceof Error ? err.message : String(err)}` },
-          200
-        )
-      }
-    } else {
-      depsAll.saveGatewayConfig({ ...gwConfig, mode })
-    }
-
-    ioLogResult('gateway:mode', { ok: true, message: `mode=${mode} hot=${hotSwapped}` })
-    return c.json({ ok: true, mode, hotSwapped })
-  })
-
-  // POST /api/gateway/cloud-url — 保存 cloud 模式的 Worker 地址
-  app.post('/api/gateway/cloud-url', async (c) => {
-    const body = await readJsonBody(c)
-    if (body === null) return c.json({ error: 'invalid json body' }, 400)
-    const gwConfig = depsAll.readGatewayConfig()
-    const saved = depsAll.saveGatewayConfig({
-      ...gwConfig,
-      cloudWorkerUrl: typeof body.cloudWorkerUrl === 'string' ? body.cloudWorkerUrl : '',
-    })
-    return c.json({ ok: true, cloudWorkerUrl: saved.cloudWorkerUrl })
+    const workerUrl = typeof body.workerUrl === 'string' ? body.workerUrl.trim() : ''
+    const config = configStore.load()
+    config.gateway = config.gateway || {}
+    config.gateway.workerUrl = workerUrl
+    depsAll.writeProvidersConfigFile(config)
+    return c.json({ ok: true, workerUrl })
   })
 
   // POST /api/gateway/backfill-keys — custom-provider 完整 key 云端回填
-  // 网关在跑则代理到网关（复用其逻辑）；否则在本进程直接拉取并写本地加密存储
+  // 直接在本进程拉云端并写本地加密存储（与网关进程是否在跑无关）
   app.post('/api/gateway/backfill-keys', async (c) => {
-    const gwConfig = depsAll.readGatewayConfig()
-    const { running } = await probeGateway(gwConfig.port)
-
-    if (running) {
-      const res = await depsAll.gatewayFetch(
-        `http://127.0.0.1:${gwConfig.port}/api/gateway/backfill-keys`,
-        { method: 'POST' }
-      )
-      const payload = await res.json().catch(() => ({}))
-      return c.json(payload, res.status)
-    }
-
     const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
     if (!mgmtToken) {
       return c.json(

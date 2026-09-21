@@ -5431,22 +5431,14 @@ export function buildAccountStatusView(tokens, gateway) {
   )
 }
 
-// ── 双网关视图：纯函数 HTML 构造（Node 可直接测试）────────────
+// ── 网关视图：纯函数 HTML 构造（Node 可直接测试）────────────
 
-// 模式文案
-export const GATEWAY_MODE_TEXT = {
-  local: '本地直发（本机出口 IP）',
-  cloud: '云端转发（Cloudflare）',
-}
-
-// 本地网关卡片：运行状态 / 当前模式 / 监听地址 / 统一 Base URL
+// 本地网关卡片：运行状态 / 监听地址 / 统一 Base URL
 export function buildLocalGatewayCard(overview) {
   const o = overview || {}
   const running = o.running === true
-  const mode = o.mode === 'cloud' ? 'cloud' : 'local'
   const runText = running ? '运行中' : '未运行'
   const runCls = running ? 'ok' : 'warn'
-  const modeText = GATEWAY_MODE_TEXT[mode]
   const listen = `127.0.0.1:${o.port || 8788}`
   const baseUrl = o.baseUrl || `http://${listen}/v1`
   return (
@@ -5454,7 +5446,6 @@ export function buildLocalGatewayCard(overview) {
     `<h3>本地网关</h3>` +
     `<div class="status-grid">` +
     `<div class="status-item"><span class="k">进程状态</span><span class="v ${runCls}">${escapeHtml(runText)}</span></div>` +
-    `<div class="status-item"><span class="k">当前模式</span><span class="v">${escapeHtml(modeText)}</span></div>` +
     `<div class="status-item"><span class="k">监听地址</span><span class="v">${escapeHtml(listen)}</span></div>` +
     `</div>` +
     `<div class="baseurl-row"><span class="k">Agent Base URL</span>` +
@@ -5466,40 +5457,33 @@ export function buildLocalGatewayCard(overview) {
   )
 }
 
-// 云端 Worker 卡片：地址 + cloud 模式说明
+// 云端 Worker 卡片：地址 + 直连说明
 export function buildCloudWorkerCard(overview) {
   const o = overview || {}
-  const url = typeof o.cloudWorkerUrl === 'string' ? o.cloudWorkerUrl.trim() : ''
+  const url = typeof o.workerUrl === 'string' ? o.workerUrl.trim() : ''
   const configured = url !== ''
   const text = configured ? url : '未配置'
   const cls = configured ? 'ok' : 'warn'
   return (
     `<div class="panel gateway-box cloud-worker-card">` +
     `<h3>云端 Worker</h3>` +
-    `<p class="slot-note">cloud 模式下本地网关作为隧道，把请求转发到该 Worker，走 Cloudflare AI Gateway（共享边缘 IP，可能触发 429）</p>` +
+    `<p class="slot-note">走 Cloudflare AI Gateway（共享边缘 IP，可能触发 429）时，让 Agent 的 Base URL 直接指向该 Worker，不经本地网关</p>` +
     `<div class="status-grid">` +
     `<div class="status-item"><span class="k">Worker 地址</span><span class="v ${cls}"${configured ? ` title="${escapeHtml(url)}"` : ''}>${escapeHtml(configured ? truncateNamespaceId(text) : text)}</span></div>` +
     `</div>` +
     `<div class="toolbar">` +
     `<button class="btn btn-primary btn-deploy-worker" type="button">部署 Worker</button>` +
-    `<button class="btn btn-default btn-edit-cloudurl" type="button">编辑 Worker 地址</button>` +
+    `<button class="btn btn-default btn-edit-workerurl" type="button">编辑 Worker 地址</button>` +
     `</div>` +
     `</div>`
   )
 }
 
-// 模式开关 + 操作按钮
-export function buildGatewayModeSwitch(overview) {
-  const o = overview || {}
-  const mode = o.mode === 'cloud' ? 'cloud' : 'local'
+// 操作按钮
+export function buildGatewayActions(overview) {
   return (
     `<div class="panel gateway-mode-panel">` +
-    `<h3>全局模式</h3>` +
-    `<p class="slot-note">切换后 Agent 无需任何改动；网关运行时立即热切换，未运行时下次启动生效</p>` +
-    `<div class="mode-switch-row" role="group" aria-label="网关模式">` +
-    `<button class="btn mode-btn ${mode === 'local' ? 'btn-primary selected' : 'btn-default'}" type="button" data-mode="local">本地直发</button>` +
-    `<button class="btn mode-btn ${mode === 'cloud' ? 'btn-primary selected' : 'btn-default'}" type="button" data-mode="cloud">云端转发</button>` +
-    `</div>` +
+    `<h3>网关操作</h3>` +
     `<div class="toolbar">` +
     `<button class="btn btn-default btn-backfill-keys" type="button">从云端回填 Key</button>` +
     `<button class="btn btn-default btn-refresh-gateway" type="button">刷新</button>` +
@@ -5549,7 +5533,7 @@ export function buildProviderKeysTable(overview) {
 export function buildGatewayView(overview) {
   return (
     `<div class="gateway-overview">` +
-    buildGatewayModeSwitch(overview) +
+    buildGatewayActions(overview) +
     `<div class="gateway-cards-grid">` +
     buildLocalGatewayCard(overview) +
     buildCloudWorkerCard(overview) +
@@ -5633,8 +5617,6 @@ function injectWorkersAccountStyles() {
     .gateway-box h3, .gateway-mode-panel h3, .provider-keys-panel h3 {
       margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600;
     }
-    .mode-switch-row { display: flex; gap: 0.5rem; margin: 0.25rem 0 0.5rem; }
-    .mode-btn.selected { pointer-events: none; }
     .baseurl-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.6rem; flex-wrap: wrap; }
     .baseurl-row .k { color: var(--muted); font-size: 0.85rem; }
     .baseurl-code {
@@ -5669,7 +5651,7 @@ export function renderWorkersView(container) {
   // ── DOM 骨架 ────────────────────────────────────────────
   container.innerHTML = `
     <h2 class="view-title">网关</h2>
-    <p class="view-note">Agent 只配置一个 Base URL，本地直发 / 云端转发随时切换，配置零改动</p>
+    <p class="view-note">本地网关以本机出口 IP 直发厂商，降低共享边缘 IP 触发的 429；需要 Cloudflare 能力时让 Agent 直连云端 Worker</p>
     <div id="gateway-root"></div>
   `
 
@@ -5688,33 +5670,12 @@ export function renderWorkersView(container) {
         ? overview.providers.filter((p) => p.keySaved).length
         : 0
       logActivity(
-        `网关状态：${overview.running ? '运行中' : '未运行'} / 模式 ${overview.mode} / 凭证 ${saved} 个已保存`,
+        `网关状态：${overview.running ? '运行中' : '未运行'} / 凭证 ${saved} 个已保存`,
         'ok',
       )
     } catch (err) {
       flash(err.message, 'err')
       logActivity(`获取网关状态失败：${err.message}`, 'err')
-    }
-  }
-
-  async function switchMode(mode) {
-    if (!mode || (overview && overview.mode === mode)) return
-    logActivity(`切换网关模式为 ${mode}…`, 'info')
-    try {
-      const res = await withBlocking(
-        mode === 'local' ? '正在切换到本地直发…' : '正在切换到云端转发…',
-        api('/api/gateway/mode', { method: 'POST', body: { mode } }),
-      )
-      if (res && res.ok) {
-        flash(res.hotSwapped ? '已热切换' : '已保存，网关启动时生效', 'ok')
-        logActivity(`网关模式已切换：${mode}${res.hotSwapped ? '（热切换）' : ''}`, 'ok')
-        refresh()
-      } else {
-        flash((res && res.error) || '切换失败', 'err')
-      }
-    } catch (err) {
-      flash(err.message, 'err')
-      logActivity(`切换模式失败：${err.message}`, 'err')
     }
   }
 
@@ -5768,23 +5729,23 @@ export function renderWorkersView(container) {
     }
   }
 
-  async function editCloudUrl() {
-    const current = overview?.cloudWorkerUrl || ''
+  async function editWorkerUrl() {
+    const current = overview?.workerUrl || ''
     const values = await promptDialog('云端 Worker 地址', [
       {
-        name: 'cloudWorkerUrl',
+        name: 'workerUrl',
         label: 'Worker URL',
         type: 'text',
         value: current,
         placeholder: 'https://ai-gateway-desk-worker.<子域>.workers.dev',
-        hint: 'cloud 模式的转发目标；可由 Worker 部署输出得到',
+        hint: 'Agent 走 Cloudflare 路线时直接把 Base URL 指向该地址',
       },
     ])
     if (!values) return
     try {
-      const res = await api('/api/gateway/cloud-url', {
+      const res = await api('/api/gateway/worker-url', {
         method: 'POST',
-        body: { cloudWorkerUrl: values.cloudWorkerUrl || '' },
+        body: { workerUrl: values.workerUrl || '' },
       })
       if (res.ok) {
         flash('Worker 地址已保存', 'ok')
@@ -5839,14 +5800,12 @@ export function renderWorkersView(container) {
   root.addEventListener('click', (event) => {
     const btn = event.target.closest('button')
     if (!btn) return
-    if (btn.classList.contains('mode-btn')) {
-      switchMode(btn.dataset.mode)
-    } else if (btn.classList.contains('btn-backfill-keys')) {
+    if (btn.classList.contains('btn-backfill-keys')) {
       backfill()
     } else if (btn.classList.contains('btn-refresh-gateway')) {
       refresh()
-    } else if (btn.classList.contains('btn-edit-cloudurl')) {
-      editCloudUrl()
+    } else if (btn.classList.contains('btn-edit-workerurl')) {
+      editWorkerUrl()
     } else if (btn.classList.contains('btn-deploy-worker')) {
       deployWorker()
     } else if (btn.classList.contains('btn-rekey')) {

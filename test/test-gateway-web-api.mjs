@@ -1,9 +1,8 @@
 /**
- * 双网关视图 API 测试 — createApp + 全 mock deps：
- * GET  /api/gateway/overview（运行/未运行、凭证行）
- * POST /api/gateway/mode（运行时代理热切换 / 未运行写文件）
- * POST /api/gateway/cloud-url
- * POST /api/gateway/backfill-keys（代理 / 本进程拉取）
+ * 网关视图 API 测试 — createApp + 全 mock deps：
+ * GET  /api/gateway/overview（运行/未运行、凭证行、workerUrl）
+ * POST /api/gateway/worker-url
+ * POST /api/gateway/backfill-keys（本进程拉取）
  * POST /api/gateway/provider-key
  */
 
@@ -59,19 +58,18 @@ function makeDataDir(gatewayConfig, providersConfig) {
 }
 
 // ── mock gatewayFetch：按 health 存活与否返回 ──
-function makeGatewayFetch(running, modeHandler) {
+function makeGatewayFetch(running) {
   const calls = []
-  const fetchFn = async (url, init = {}) => {
+  const fetchFn = async (url) => {
     const u = String(url)
-    calls.push({ url: u, init })
+    calls.push({ url: u })
     if (u.endsWith('/health')) {
       if (!running) throw new TypeError('ECONNREFUSED')
       return new Response(
-        JSON.stringify({ ok: true, mode: 'local', backend: { type: 'local' } }),
+        JSON.stringify({ ok: true, backend: { type: 'local' } }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       )
     }
-    if (modeHandler) return modeHandler(u, init)
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -81,7 +79,7 @@ function makeGatewayFetch(running, modeHandler) {
 }
 
 const providersConfig = {
-  gateway: { accountId: 'acc-1', gatewayId: 'gw-1' },
+  gateway: { accountId: 'acc-1', gatewayId: 'gw-1', workerUrl: 'https://w.example.com' },
   kv: { namespaceId: 'ns-1' },
   providers: [
     {
@@ -99,7 +97,7 @@ try {
   section('1. GET /api/gateway/overview：网关运行中 + 凭证状态')
   {
     tmpDir = makeDataDir(
-      { mode: 'local', port: 8788, cloudWorkerUrl: 'https://w.example.com' },
+      { port: 8788 },
       providersConfig
     )
     const { fetchFn, calls } = makeGatewayFetch(true)
@@ -107,20 +105,15 @@ try {
       configStore: makeStore(providersConfig),
       deps: {
         gatewayFetch: fetchFn,
-        readGatewayConfig: () => ({
-          mode: 'local',
-          port: 8788,
-          cloudWorkerUrl: 'https://w.example.com',
-        }),
+        readGatewayConfig: () => ({ port: 8788 }),
         hasProviderKeyFn: null,
       },
     })
-    // hasProviderKey 默认走真实加密存储：覆盖 deps 不行（overview 用的是直接 import 的 hasProviderKey）
     const res = await app.request('/api/gateway/overview')
     const body = await res.json()
     check(res.status === 200, '200')
     check(body.running === true, 'running=true')
-    check(body.mode === 'local', 'mode=local')
+    check(body.workerUrl === 'https://w.example.com', 'workerUrl 回显')
     check(body.baseUrl === 'http://127.0.0.1:8788/v1', 'baseUrl 正确')
     check(body.providers.length === 2, '返回 2 个 provider 凭证行')
     check(
@@ -133,147 +126,50 @@ try {
   section('2. overview：网关未运行')
   {
     const { fetchFn } = makeGatewayFetch(false)
+    const emptyGw = { gateway: { accountId: 'a' }, providers: [] }
     const app = createTestApp({
-      configStore: makeStore(providersConfig),
+      configStore: makeStore(emptyGw),
       deps: {
         gatewayFetch: fetchFn,
-        readGatewayConfig: () => ({ mode: 'cloud', port: 8788, cloudWorkerUrl: '' }),
+        readGatewayConfig: () => ({ port: 8788 }),
       },
     })
     const res = await app.request('/api/gateway/overview')
     const body = await res.json()
     check(body.running === false, 'running=false')
-    check(body.mode === 'cloud', 'mode=cloud')
-    const byok = body.providers.find((p) => p.id === 'openai')
-    check(byok.needsReEntry === true, 'BYOK 缺 key 标记需重新录入')
+    check(body.workerUrl === '', '无 workerUrl → 空串')
   }
 
-  section('3. POST mode：网关运行中 → 代理热切换')
+  section('3. POST worker-url：保存 Worker 地址')
   {
-    const modeCalls = []
-    const { fetchFn } = makeGatewayFetch(true, (url, init) => {
-      modeCalls.push({ url, body: init.body })
-      return new Response(JSON.stringify({ ok: true, mode: 'cloud' }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      })
-    })
-    let savedToFile = null
+    const configState = { gateway: { accountId: 'acc-1' }, providers: [] }
+    const writes = []
     const app = createTestApp({
+      configStore: { load: () => configState, save: () => {} },
       deps: {
-        gatewayFetch: fetchFn,
-        readGatewayConfig: () => ({ mode: 'local', port: 8788, cloudWorkerUrl: '' }),
-        saveGatewayConfig: (cfg) => {
-          savedToFile = cfg
-          return cfg
-        },
+        gatewayFetch: makeGatewayFetch(false).fetchFn,
+        readGatewayConfig: () => ({ port: 8788 }),
+        writeProvidersConfigFile: (cfg) => writes.push(cfg),
       },
     })
-    const res = await app.request('/api/gateway/mode', {
+    const res = await app.request('/api/gateway/worker-url', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'cloud' }),
+      body: JSON.stringify({ workerUrl: 'https://x.workers.dev' }),
     })
     const body = await res.json()
-    check(body.ok === true, 'ok')
-    check(body.hotSwapped === true, 'hotSwapped=true')
-    check(savedToFile === null, '热切换时不写文件')
-    check(modeCalls[0].url.includes('/api/gateway/mode'), '代理到网关 mode API')
-    check(modeCalls[0].body === JSON.stringify({ mode: 'cloud' }), '携带 mode')
+    check(body.ok && body.workerUrl === 'https://x.workers.dev', '已保存')
+    check(configState.gateway.workerUrl === 'https://x.workers.dev', '写入配置对象')
+    check(writes.length === 1, '通过注入的 writer 落盘（不触真实数据）')
   }
 
-  section('4. POST mode：网关未运行 → 写 gateway.json')
-  {
-    const { fetchFn } = makeGatewayFetch(false)
-    let savedToFile = null
-    const app = createTestApp({
-      deps: {
-        gatewayFetch: fetchFn,
-        readGatewayConfig: () => ({ mode: 'cloud', port: 8788, cloudWorkerUrl: '' }),
-        saveGatewayConfig: (cfg) => {
-          savedToFile = cfg
-          return cfg
-        },
-      },
-    })
-    const res = await app.request('/api/gateway/mode', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'local' }),
-    })
-    const body = await res.json()
-    check(body.ok && body.hotSwapped === false, 'ok，非热切换')
-    check(savedToFile && savedToFile.mode === 'local', '写入文件 mode=local')
-  }
-
-  section('5. POST mode：非法 mode → 400')
+  section('4. backfill：无管理 Token → 400')
   {
     const { fetchFn } = makeGatewayFetch(false)
     const app = createTestApp({
       deps: {
         gatewayFetch: fetchFn,
-        readGatewayConfig: () => ({ mode: 'local', port: 8788, cloudWorkerUrl: '' }),
-      },
-    })
-    const res = await app.request('/api/gateway/mode', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode: 'bogus' }),
-    })
-    check(res.status === 400, '400')
-  }
-
-  section('6. POST cloud-url：保存 Worker 地址')
-  {
-    let saved = null
-    const app = createTestApp({
-      deps: {
-        readGatewayConfig: () => ({ mode: 'local', port: 8788, cloudWorkerUrl: '' }),
-        saveGatewayConfig: (cfg) => {
-          saved = cfg
-          return cfg
-        },
-      },
-    })
-    const res = await app.request('/api/gateway/cloud-url', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cloudWorkerUrl: 'https://x.workers.dev' }),
-    })
-    const body = await res.json()
-    check(body.ok && body.cloudWorkerUrl === 'https://x.workers.dev', '已保存')
-    check(saved.port === 8788, '保留其他字段')
-  }
-
-  section('7. POST backfill-keys：网关运行中 → 代理')
-  {
-    const proxied = []
-    const { fetchFn } = makeGatewayFetch(true, (url) => {
-      proxied.push(url)
-      return new Response(
-        JSON.stringify({ ok: true, backfilled: ['custom-fang-zhou'], skipped: [], errors: [] }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } }
-      )
-    })
-    const app = createTestApp({
-      deps: {
-        gatewayFetch: fetchFn,
-        readGatewayConfig: () => ({ mode: 'local', port: 8788, cloudWorkerUrl: '' }),
-      },
-    })
-    const res = await app.request('/api/gateway/backfill-keys', { method: 'POST' })
-    const body = await res.json()
-    check(body.backfilled.length === 1, '回填 1 个')
-    check(proxied.some((u) => u.includes('backfill-keys')), '代理到网关回填 API')
-  }
-
-  section('8. backfill：网关未运行 + 无管理 Token → 400')
-  {
-    const { fetchFn } = makeGatewayFetch(false)
-    const app = createTestApp({
-      deps: {
-        gatewayFetch: fetchFn,
-        readGatewayConfig: () => ({ mode: 'local', port: 8788, cloudWorkerUrl: '' }),
+        readGatewayConfig: () => ({ port: 8788 }),
         readManagementToken: () => null,
       },
     })
@@ -281,7 +177,7 @@ try {
     check(res.status === 400, '400 提示手工录入')
   }
 
-  section('9. backfill：网关未运行 → 本进程拉云端写本地')
+  section('5. backfill：本进程拉云端写本地')
   {
     const { fetchFn: gatewayFetchFn } = makeGatewayFetch(false)
     const keyWrites = []
@@ -289,7 +185,7 @@ try {
       configStore: makeStore(providersConfig),
       deps: {
         gatewayFetch: gatewayFetchFn,
-        readGatewayConfig: () => ({ mode: 'local', port: 8788, cloudWorkerUrl: '' }),
+        readGatewayConfig: () => ({ port: 8788 }),
         readManagementToken: () => 'mgmt-token',
         listCloudCustomProviders: async () => [
           {
@@ -308,7 +204,7 @@ try {
     check(keyWrites[0].headers.Authorization === 'Bearer sk-cloud', '写入完整 headers')
   }
 
-  section('10. POST provider-key：手工录入 BYOK Key')
+  section('6. POST provider-key：手工录入 BYOK Key')
   {
     const writes = []
     const app = createTestApp({
@@ -326,7 +222,7 @@ try {
     check(writes[0].headers.Authorization === 'Bearer sk-xxx', 'Bearer 形式写入')
   }
 
-  section('11. provider-key：缺 slug / 缺 key → 400')
+  section('7. provider-key：缺 slug / 缺 key → 400')
   {
     const app = createTestApp({ deps: { writeProviderKey: () => {} } })
     let res = await app.request('/api/gateway/provider-key', {

@@ -1,5 +1,3 @@
 {
-  "mode": "local",
-  "port": 8788,
-  "cloudWorkerUrl": "https://ai-gateway-desk-worker.<你的Workers子域>.workers.dev"
+  "port": 8788
 }

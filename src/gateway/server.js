@@ -1,18 +1,16 @@
 // ============================================================
 // 本地网关服务器 — OpenAI 兼容端点 + 网关管理 API
 // ============================================================
-// 双网关方案（docs/DUAL-GATEWAY-PLAN.md §7）：
-//   createGatewayApp(deps)：Hono app 工厂，依赖注入（配置存储 / 凭证 /
-//     backend 工厂 / fetch 等），对齐 src/web/server.js 的可测模式。
-//   startGateway(...)：独立启动器，@hono/node-server，仅绑定 127.0.0.1，
-//     固定端口、无心跳退出（与 web 管理服务器刻意区分）。
+// createGatewayApp(deps)：Hono app 工厂，依赖注入（配置存储 / 凭证 /
+//   backend 工厂 / fetch 等），对齐 src/web/server.js 的可测模式。
+// startGateway(...)：独立启动器，@hono/node-server，仅绑定 127.0.0.1，
+//   固定端口、无心跳退出（与 web 管理服务器刻意区分）。
 //
 // 端点：
-//   POST /v1/chat/completions     进入当前 backend
-//   GET  /v1/models               两模式都读本地 data/models.json
-//   GET  /health                  进程存活 + 当前模式 + backend 健康
-//   GET/POST /api/gateway/mode    读取 / 热切换全局模式
-//   GET  /api/gateway/status      模式 / 端口 / cloudWorkerUrl / 凭证状态
+//   POST /v1/chat/completions     进入 LocalBackend（本机出口 IP 直发）
+//   GET  /v1/models               读本地 data/models.json
+//   GET  /health                  进程存活 + backend 健康
+//   GET  /api/gateway/status      端口 / 各 provider 凭证状态
 //   POST /api/gateway/backfill-keys  custom-provider 完整 key 云端回填
 // ============================================================
 
@@ -24,7 +22,6 @@ import { fileURLToPath } from 'node:url'
 
 import {
   loadGatewayConfig as defaultLoadGatewayConfig,
-  saveGatewayConfig as defaultSaveGatewayConfig,
 } from './config-store.js'
 import {
   writeProviderHeaders as defaultWriteProviderHeaders,
@@ -33,7 +30,6 @@ import {
 import { loadRawProvidersConfig } from './provider-lookup.js'
 import { gatewaySlug } from '../cloudflare/discover.js'
 import { createLocalBackend } from './backends/local.js'
-import { createCloudBackend } from './backends/cloud.js'
 import { listCustomProviders } from '../cloudflare/api.js'
 import { readManagementToken as defaultReadManagementToken } from '../core/token-store.js'
 
@@ -56,14 +52,10 @@ export function readModelsList(dataDir = DEFAULT_DATA_DIR) {
 }
 
 /**
- * 默认 backend 工厂：按 gateway.json 的 mode 实例化对应后端
- * @param {{ mode: string, cloudWorkerUrl: string }} config
+ * 默认 backend 工厂：本地直发
  * @returns {object}
  */
-export function defaultBackendFactory(config) {
-  if (config.mode === 'cloud') {
-    return createCloudBackend({ cloudWorkerUrl: config.cloudWorkerUrl })
-  }
+export function defaultBackendFactory() {
   return createLocalBackend()
 }
 
@@ -90,8 +82,7 @@ function parseCloudHeaders(rawHeaders) {
  * @param {object} [options]
  * @param {string} [options.dataDir] - 数据目录（默认项目 data/）
  * @param {Function} [options.loadConfig] - () => gateway 配置
- * @param {Function} [options.saveConfig] - (cfg) => 归一化配置
- * @param {Function} [options.backendFactory] - (cfg) => backend 实例
+ * @param {Function} [options.backendFactory] - () => backend 实例
  * @param {Function} [options.readModels] - () => model 数组
  * @param {Function} [options.hasProviderKey] - (slug) => boolean
  * @param {Function} [options.writeProviderHeaders] - (slug, headers) => void
@@ -103,8 +94,6 @@ export function createGatewayApp(options = {}) {
   const dataDir = options.dataDir || DEFAULT_DATA_DIR
   const loadConfig =
     options.loadConfig || (() => defaultLoadGatewayConfig(dataDir))
-  const saveConfig =
-    options.saveConfig || ((cfg) => defaultSaveGatewayConfig(cfg, dataDir))
   const backendFactory = options.backendFactory || defaultBackendFactory
   const readModels = options.readModels || (() => readModelsList(dataDir))
   const hasKey = options.hasProviderKey || defaultHasProviderKey
@@ -133,13 +122,13 @@ export function createGatewayApp(options = {}) {
     c.header('Access-Control-Allow-Origin', '*')
   })
 
-  // POST /v1/chat/completions — 进入当前 backend
+  // POST /v1/chat/completions — 进入本地直发 backend
   app.post('/v1/chat/completions', async (c) => {
     const bodyText = await c.req.text()
     return backend.chat({ bodyText, headers: c.req.raw.headers })
   })
 
-  // GET /v1/models — 两模式统一读本地 models.json
+  // GET /v1/models — 读本地 models.json
   app.get('/v1/models', (c) => {
     try {
       const data = readModels()
@@ -152,7 +141,7 @@ export function createGatewayApp(options = {}) {
     }
   })
 
-  // GET /health — 进程存活 + 当前模式 + backend 健康
+  // GET /health — 进程存活 + backend 健康
   app.get('/health', async (c) => {
     let backendHealth = {}
     try {
@@ -160,55 +149,10 @@ export function createGatewayApp(options = {}) {
     } catch (err) {
       backendHealth = { error: err instanceof Error ? err.message : String(err) }
     }
-    return c.json({ ok: true, mode: gatewayConfig.mode, backend: backendHealth })
+    return c.json({ ok: true, backend: backendHealth })
   })
 
-  // GET /api/gateway/mode — 读取当前模式
-  app.get('/api/gateway/mode', (c) => {
-    return c.json({
-      mode: gatewayConfig.mode,
-      port: gatewayConfig.port,
-      cloudWorkerUrl: gatewayConfig.cloudWorkerUrl,
-    })
-  })
-
-  // POST /api/gateway/mode — 切换模式（写配置 + 热替换 backend，无需重启）
-  app.post('/api/gateway/mode', async (c) => {
-    let body
-    try {
-      body = await c.req.json()
-    } catch {
-      return c.json({ error: 'invalid json body' }, 400)
-    }
-    const nextMode = body?.mode
-    if (nextMode !== 'local' && nextMode !== 'cloud') {
-      return c.json({ error: "mode 必须是 'local' 或 'cloud'" }, 400)
-    }
-
-    let saved
-    try {
-      saved = saveConfig({ ...gatewayConfig, mode: nextMode })
-    } catch (err) {
-      return c.json(
-        { error: `保存网关配置失败: ${err instanceof Error ? err.message : String(err)}` },
-        500
-      )
-    }
-
-    gatewayConfig = saved
-    try {
-      backend = backendFactory(gatewayConfig)
-    } catch (err) {
-      return c.json(
-        { error: `backend 初始化失败: ${err instanceof Error ? err.message : String(err)}` },
-        500
-      )
-    }
-
-    return c.json({ ok: true, mode: saved.mode, port: saved.port })
-  })
-
-  // GET /api/gateway/status — 模式 / 端口 / cloudWorkerUrl / 各 provider 凭证状态
+  // GET /api/gateway/status — 端口 / 各 provider 凭证状态
   app.get('/api/gateway/status', (c) => {
     const raw = loadRawProvidersConfig(dataDir)
     const providerKeys = (raw.providers || []).map((p) => {
@@ -229,9 +173,7 @@ export function createGatewayApp(options = {}) {
       }
     })
     return c.json({
-      mode: gatewayConfig.mode,
       port: gatewayConfig.port,
-      cloudWorkerUrl: gatewayConfig.cloudWorkerUrl,
       providers: providerKeys,
     })
   })
@@ -300,7 +242,6 @@ export function createGatewayApp(options = {}) {
  * 独立启动器：固定端口、仅绑 127.0.0.1、无心跳退出。
  * @param {object} [options]
  * @param {number} [options.port] - 端口（默认取 gateway.json / 8788）
- * @param {string} [options.mode] - 启动模式覆盖
  * @param {string} [options.hostname] - 绑定地址，固定默认 127.0.0.1
  * @param {boolean} [options.installSignalHandlers]
  * @returns {Promise<{ server: object, port: number, close: Function }>}
@@ -311,15 +252,8 @@ export function startGateway(options = {}) {
 
   const initialConfig = defaultLoadGatewayConfig()
   const port = options.port || initialConfig.port
-  const modeOverride = options.mode
 
-  const app = createGatewayApp(
-    modeOverride && modeOverride !== initialConfig.mode
-      ? {
-          loadConfig: () => ({ ...initialConfig, mode: modeOverride }),
-        }
-      : undefined
-  )
+  const app = createGatewayApp()
 
   return new Promise((resolve, reject) => {
     const server = serve({ fetch: app.fetch, port, hostname }, (info) => {

@@ -1,16 +1,15 @@
 /**
- * 双网关「网关」视图纯函数测试：
+ * 网关视图纯函数测试：
  * buildLocalGatewayCard / buildCloudWorkerCard /
- * buildGatewayModeSwitch / buildProviderKeysTable / buildGatewayView
+ * buildGatewayActions / buildProviderKeysTable / buildGatewayView
  */
 
 import {
   buildLocalGatewayCard,
   buildCloudWorkerCard,
-  buildGatewayModeSwitch,
+  buildGatewayActions,
   buildProviderKeysTable,
   buildGatewayView,
-  GATEWAY_MODE_TEXT,
 } from '../src/web/public/app.js'
 
 let failures = 0
@@ -32,9 +31,8 @@ function section(name) {
 
 const overview = {
   running: true,
-  mode: 'local',
   port: 8788,
-  cloudWorkerUrl: 'https://w.example.com',
+  workerUrl: 'https://w.example.com',
   baseUrl: 'http://127.0.0.1:8788/v1',
   providers: [
     { slug: 'custom-fang-zhou', id: 'fang-zhou', name: '方舟', type: 'custom-provider', keySaved: true },
@@ -47,7 +45,7 @@ section('1. buildLocalGatewayCard')
   const html = buildLocalGatewayCard(overview)
   check(html.includes('本地网关'), '标题')
   check(html.includes('运行中'), '运行中状态')
-  check(html.includes(GATEWAY_MODE_TEXT.local), '模式文案')
+  check(!html.includes('当前模式'), '不再展示模式行')
   check(html.includes('127.0.0.1:8788'), '监听地址')
   check(html.includes('http://127.0.0.1:8788/v1'), 'Base URL')
   check(html.includes('btn-copy-baseurl'), '复制按钮')
@@ -62,33 +60,21 @@ section('2. buildCloudWorkerCard')
   const html = buildCloudWorkerCard(overview)
   check(html.includes('云端 Worker'), '标题')
   check(html.includes('https://w.example.com'), 'Worker 地址')
-  check(html.includes('btn-edit-cloudurl'), '编辑按钮')
+  check(html.includes('btn-edit-workerurl'), '编辑按钮')
   check(html.includes('btn-deploy-worker'), '部署按钮')
+  check(html.includes('直接指向该 Worker'), '直连说明')
 
-  const empty = buildCloudWorkerCard({ ...overview, cloudWorkerUrl: '' })
+  const empty = buildCloudWorkerCard({ ...overview, workerUrl: '' })
   check(empty.includes('未配置'), '空地址 → 未配置')
 }
 
-section('3. buildGatewayModeSwitch')
+section('3. buildGatewayActions')
 {
-  const html = buildGatewayModeSwitch(overview)
-  check(html.includes('全局模式'), '标题')
-  const localBtn = html.match(/data-mode="local"[^>]*class="[^"]*"|class="[^"]*"[^>]*data-mode="local"/)
-  check(html.includes('data-mode="local"'), '本地模式按钮')
-  check(html.includes('data-mode="cloud"'), '云端模式按钮')
+  const html = buildGatewayActions(overview)
+  check(html.includes('网关操作'), '标题')
   check(html.includes('btn-backfill-keys'), '回填按钮')
-  check(html.includes('btn-primary'), '当前选中模式为主按钮')
-
-  const cloudView = buildGatewayModeSwitch({ ...overview, mode: 'cloud' })
-  const cloudBtnSegment = cloudView
-    .split('data-mode="cloud"')[1]
-    ?.slice(0, 80)
-  check(
-    cloudView
-      .split('data-mode="cloud"')[0]
-      .includes('btn-primary'),
-    'cloud 模式下 cloud 按钮为主样式'
-  )
+  check(html.includes('btn-refresh-gateway'), '刷新按钮')
+  check(!html.includes('mode-btn'), '不再有模式按钮')
 }
 
 section('4. buildProviderKeysTable')
@@ -110,7 +96,7 @@ section('5. buildGatewayView 聚合')
   const html = buildGatewayView(overview)
   check(html.includes('本地网关'), '含本地网关卡')
   check(html.includes('云端 Worker'), '含云端 Worker 卡')
-  check(html.includes('全局模式'), '含模式开关')
+  check(html.includes('网关操作'), '含操作面板')
   check(html.includes('本地凭证'), '含凭证表')
 }
 
@@ -128,7 +114,7 @@ section('6. XSS 转义')
 
   const evilUrl = buildCloudWorkerCard({
     ...overview,
-    cloudWorkerUrl: '"><img src=x onerror=alert(1)>',
+    workerUrl: '"><img src=x onerror=alert(1)>',
   })
   check(!evilUrl.includes('onerror=alert(1)>'), 'URL 被转义')
 }

@@ -99,7 +99,7 @@ export function createLocalBackend(deps = {}) {
       if (!credentialHeaders) {
         return jsonError(
           400,
-          `本地缺少 provider '${slug}' 的凭证，请在管理界面回填 / 录入，或切换 cloud 模式`
+          `本地缺少 provider '${slug}' 的凭证，请在管理界面回填 / 录入，或让 Agent 直连云端 Worker`
         )
       }
 

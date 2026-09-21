@@ -177,24 +177,23 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 
 关键决策：**数据格式 1:1 采用 Cloudflare 原生 JSON**（GET versions 读回即同构，云端↔本地 round-trip 不丢信息，无转换层）；编辑器双模式——**表单模式默认**（模板提供骨架 + spec↔elements 互转纯函数 `routeSpecFromElements` / `elementsFromRouteSpec`，模型字段用「provider/模型名」格式并带 model-states 下拉建议；**fallback 链支持任意级数**，与 Cloudflare 原生一致，表单内逐级增删，链外孤儿/成环结构降级 JSON），**JSON 模式兜底**（组合节点等超出表单能力的结构自动降级）。
 
-### 4.12 本地网关 — `src/gateway/`（双网关方案）
+### 4.12 本地网关 — `src/gateway/`（本机出口 IP 直发）
 
-Agent 统一只连 `http://127.0.0.1:8788/v1`，由全局模式开关决定后端；切换时 Agent 零改动。
+本地网关把请求从用户本机出口 IP 直发厂商，绕开 Cloudflare 边缘共享 IP（降低共享 IP 触发的 429）。需要 Cloudflare 路线时 Agent 直连云端 Worker，不经本地网关。
 
 | 模块 | 职责 |
 |------|------|
-| `server.js` | `createGatewayApp(deps)` Hono 工厂（全依赖注入）+ `startGateway()` 启动器（`@hono/node-server`，仅绑 127.0.0.1、无心跳退出、EADDRINUSE 友好提示）；模式切换 = 写配置 + 整体替换 backend（热生效） |
-| `config-store.js` | `data/gateway.json` 读写与校验：`mode`（local/cloud，默认 local）、`port`（默认 8788）、`cloudWorkerUrl` |
+| `server.js` | `createGatewayApp(deps)` Hono 工厂（全依赖注入）+ `startGateway()` 启动器（`@hono/node-server`，仅绑 127.0.0.1、无心跳退出、EADDRINUSE 友好提示） |
+| `config-store.js` | `data/gateway.json` 读写与校验：仅 `port`（默认 8788） |
 | `router.js` | 纯函数：model slug 解析 / 剥离、base_url + pathPrefix 厂商端点构造；内置常见 BYOK slug 的 OpenAI 兼容 base_url 映射 |
 | `provider-keys.js` | 按 provider slug 在 `~/.ai-gateway-desk/provider-keys/<slug>` 存完整鉴权 headers（复用 token-store 系统级加密；`AI_GW_TEST_DIR` 隔离） |
 | `provider-lookup.js` | gateway slug → `providers.json` 条目查找 |
 | `backends/local.js` | `LocalBackend`：取本地凭证 → 本机出口 IP 直发厂商，超时控制、流式透传；`dynamic/*` 委托 fallback 引擎 |
-| `backends/cloud.js` | `CloudBackend`：隧道转发到云端 Worker（注入 gateway token），body 与流式响应透传 |
-| `fallback.js` | 本地动态路由引擎：执行 `routes.json` elements——线性 fallback 链 + `percentage` 权重；`conditional` / `rate` 明确报错提示改用 cloud |
+| `fallback.js` | 本地动态路由引擎：执行 `routes.json` elements——线性 fallback 链 + `percentage` 权重；`conditional` / `rate` 明确报错（该结构仅 Cloudflare 支持，请直连 Worker） |
 
 本地引擎语义对齐 Cloudflare：网络失败 / 429 / 5xx 按节点 `retries` 重试，耗尽后走 fallback 边；200 即成功并开始流式返回；4xx（非 429）立即报错不回退。限制：流式开始后中途错误无法回退（与 CF 一致）。
 
-管理端（`src/web/server.js`）网关视图 API 行为：先探测网关进程 `/health`——进程在跑则把模式切换 / 回填**代理**到网关（热生效），未运行则直接写本地文件 / 在管理进程内拉云端回填。
+管理端（`src/web/server.js`）网关视图 API 行为：探测网关进程 `/health` 以展示运行状态；回填 / 凭证录入均在管理进程直接写本地加密存储，与网关进程是否在跑无关。Worker 地址存于 `providers.json` 的 `gateway.workerUrl`（`GET/POST /api/gateway/worker-url`）。
 
 ## 5. 数据模型
 

@@ -40,7 +40,7 @@ aigd setup
 - **Provider**：管理云端 Provider（编辑 / 隐藏 / 删除 / 同步刷新）
 - **模型**：模型表格，按 Provider 或关键字筛选，切换状态（selected / hidden）、编辑、添加、批量删除
 - **动态路由**：只读展示 Cloudflare Dynamic Routes 的 fallback 链
-- **网关**：全局模式开关（本地直发 / 云端转发）、本地凭证状态与回填、统一 Base URL、部署 Worker
+- **网关**：本地网关运行状态与统一 Base URL、本地凭证状态与云端回填、部署云端 Worker
 - **账户**：管理双 token 槽位与 gateway 信息，重新进入初始化向导
 
 > 关闭语义与桌面应用一致：浏览器页面全部关闭后本地服务器自动退出；刷新页面不会误退出。
@@ -54,22 +54,21 @@ aigd setup
 
 关闭时保持原有简洁日志（请求 URL + 成功/失败摘要）。
 
-## 本地网关与双模式（本地中转 / Cloudflare）
+## 本地网关（本机出口 IP 直发）
 
-默认调用链走 Cloudflare AI Gateway，其出口是大量用户共享的边缘 IP，部分厂商会对这类 IP 风控，即使 Key 额度充足也可能收到 `429`。本工具提供**本地网关**：请求从你的本机出口 IP 直发厂商，绕开共享 IP；Cloudflare 路线保留为可选项，二者一键切换。
+默认调用链走 Cloudflare AI Gateway，其出口是大量用户共享的边缘 IP，部分厂商会对这类 IP 风控，即使 Key 额度充足也可能收到 `429`。本工具提供**本地网关**：请求从你的本机出口 IP 直发厂商，绕开共享 IP。需要 Cloudflare 路线（analytics / 缓存等）时，让 Agent 直接指向已部署的云端 Worker，不经本地网关。
 
 ```bash
 # 启动本地网关（长驻进程，仅绑定 127.0.0.1，默认端口 8788）
 aigd gateway
 
-# 指定端口 / 启动模式
-aigd gateway --port 8788 --mode local
+# 指定端口
+aigd gateway --port 8788
 ```
 
-- Agent 的 Base URL 统一填 `http://127.0.0.1:8788/v1`，切换模式时 Agent **零改动**。
-- **本地直发（local）**：解析模型的 provider slug → 取本机加密凭证 → 本机出口 IP 直连厂商，支持动态路由 fallback 链。
-- **云端转发（cloud）**：本地网关仅作隧道，转发到已部署的云端 Worker → Cloudflare AI Gateway。
-- 模式在「网关」视图点击切换：网关运行中立即热生效，未运行时写入 `data/gateway.json`，下次启动生效。
+- 走本地直发时，Agent 的 Base URL 填 `http://127.0.0.1:8788/v1`。
+- 本地网关解析模型的 provider slug → 取本机加密凭证 → 本机出口 IP 直连厂商，支持动态路由 fallback 链。
+- 走 Cloudflare 时，Agent 的 Base URL 直接填云端 Worker 地址（见下方「部署转发 Worker」）。
 
 ### 凭证从哪来
 
@@ -79,7 +78,7 @@ aigd gateway --port 8788 --mode local
 
 ### 本地动态路由 fallback
 
-`data/routes.json` 一份配置两处生效：cloud 模式部署到 Cloudflare 执行；local 模式由本地引擎执行——线性 fallback 链与 `percentage` 随机权重均支持；`conditional` / `rate` 图结构本地不支持，会明确提示改用 cloud 模式。与 Cloudflare 相同，**上游开始流式返回（200）后中途的错误无法再回退**。
+`data/routes.json` 一份配置两处生效：Cloudflare 路线部署到云端执行；本地网关由本地引擎执行——线性 fallback 链与 `percentage` 随机权重均支持；`conditional` / `rate` 图结构本地不支持，会明确提示该结构仅 Cloudflare 可用，请让 Agent 直连 Worker。与 Cloudflare 相同，**上游开始流式返回（200）后中途的错误无法再回退**。
 
 ## 部署转发 Worker
 

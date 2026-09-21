@@ -23,8 +23,8 @@ aigd — AI Gateway 模型管理工具
 
 用法:
   aigd web        启动本地 Web 管理界面（默认）
-  aigd gateway    启动本地网关（OpenAI 兼容端点，长驻进程）
-                  选项: --port <端口>  --mode <local|cloud>
+  aigd gateway    启动本地网关（OpenAI 兼容端点，长驻进程，本机出口 IP 直发）
+                  选项: --port <端口>
                   环境变量: AIGD_GATEWAY_PORT
   aigd sync       同步模型列表（规划中）
   aigd deploy     部署模型列表到 KV（规划中）
@@ -37,7 +37,7 @@ const PLANNED = new Set(['sync', 'deploy'])
 /**
  * 解析 gateway 子命令的命令行参数
  * @param {string[]} argv - process.argv.slice(3)
- * @returns {{ port?: number, mode?: string, error?: string }}
+ * @returns {{ port?: number, error?: string }}
  */
 export function parseGatewayFlags(argv) {
   const out = {}
@@ -50,12 +50,6 @@ export function parseGatewayFlags(argv) {
         return { error: `--port 需要 1–65535 之间的整数（收到: ${v}）` }
       }
       out.port = n
-    } else if (a === '--mode') {
-      const v = argv[++i]
-      if (v !== 'local' && v !== 'cloud') {
-        return { error: `--mode 必须是 local 或 cloud（收到: ${v}）` }
-      }
-      out.mode = v
     } else {
       return { error: `未知参数: ${a}` }
     }
@@ -106,10 +100,9 @@ async function main() {
     try {
       const r = await startGateway({
         port: port || cfg.port,
-        mode: flags.mode || cfg.mode,
       })
       console.log(`[aigd] 本地网关已启动: http://127.0.0.1:${r.port}`)
-      console.log(`[aigd] 当前模式: ${flags.mode || cfg.mode}（Agent Base URL: http://127.0.0.1:${r.port}/v1）`)
+      console.log(`[aigd] Agent Base URL: http://127.0.0.1:${r.port}/v1`)
       console.log('按 Ctrl+C 退出')
     } catch (err) {
       console.log(`[aigd] 网关启动失败: ${err.message}`)
