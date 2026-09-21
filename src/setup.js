@@ -36,6 +36,7 @@ import {
   writeToken,
   getSlotStatus,
 } from './core/token-store.js'
+import { writeProviderHeaders } from './gateway/provider-keys.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -304,6 +305,12 @@ async function addProviders(rl, ctx) {
           secret,
           alias,
         })
+        // 凭证本地双写（双网关方案 §8.3）：BYOK 的 gateway slug 即原始 slug
+        try {
+          writeProviderHeaders(slug, { Authorization: `Bearer ${secret.trim()}` })
+        } catch (keyErr) {
+          console.log(`  ⚠ 本地凭证写入失败（不影响云端结果）: ${keyErr.message}`)
+        }
         ctx.providers.push({ id: slug, name: alias, enabled: true })
         console.log(`  ✓ BYOK ${slug} 已保存`)
       } catch (err) {

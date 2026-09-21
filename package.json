@@ -17,7 +17,8 @@
     "LICENSE",
     "data/providers.example.json",
     "data/models.example.json",
-    "data/routes.example.json"
+    "data/routes.example.json",
+    "data/gateway.example.json"
   ],
   "scripts": {
     "dev": "node scripts/deploy.mjs dev",

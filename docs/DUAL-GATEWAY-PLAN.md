@@ -289,16 +289,32 @@ aigd gateway [--port 8788] [--mode local|cloud]
 
 ### 阶段一：可用的双后端
 
-1. `data/gateway.json` + example 模板 + `config-store.js`（读写与校验）。
-2. `provider-keys.js`：本地加密存储（复用 token-store 原语，测试隔离）。
-3. `router.js`：slug 解析 / 剥离、厂商 URL 构造（base_url + pathPrefix）纯函数。
-4. `backends/local.js`、`backends/cloud.js`：两后端直发 / 转发，流式透传。
-5. `gateway/server.js`：Hono app + 启动器，统一 chat 与 models 端点，模式热切换。
-6. 录入 provider key 处增加本地双写（create / update / delete、setup）。
-7. CLI `aigd gateway` 子命令。
-8. 测试：router / provider-keys / 两 backend / API 端点，注册 `run-all.mjs`。
+> ✅ 已完成（2026-09-21）：8 项任务全部落地。`npm test` 44/44 通过，
+> 新增 6 个测试文件（config-store / provider-keys / router /
+> backend-local / backend-cloud / server，共 114 条断言）；
+> 已通过真实进程冒烟（/health、/v1/models、模式热切换、端口占用提示）。
+
+1. ✅ `data/gateway.json` + example 模板 + `config-store.js`（读写与校验）。
+2. ✅ `provider-keys.js`：本地加密存储（复用 token-store 原语，测试隔离）。
+3. ✅ `router.js`：slug 解析 / 剥离、厂商 URL 构造（base_url + pathPrefix）纯函数。
+4. ✅ `backends/local.js`、`backends/cloud.js`：两后端直发 / 转发，流式透传。
+5. ✅ `gateway/server.js`：Hono app + 启动器，统一 chat 与 models 端点，模式热切换。
+6. ✅ 录入 provider key 处增加本地双写（create / update / delete、setup）。
+7. ✅ CLI `aigd gateway` 子命令。
+8. ✅ 测试：router / provider-keys / 两 backend / API 端点，注册 `run-all.mjs`。
 
 交付标准：Agent 改 base_url 为本地端口即可用；local / cloud 可切换；custom-provider 凭证可回填。
+
+> 实际回填与方案差异：
+> 1. 额外新增 `src/gateway/provider-lookup.js`（gateway slug →
+>    providers.json 条目查找），§6 目录树未列出。
+> 2. BYOK 本地直发：`router.js` 内置 10 个常见 byok slug 的 OpenAI
+>    兼容 base_url 映射（openai / openrouter / anthropic / google /
+>    groq / deepseek / xai / mistral / together / perplexity），条目自带
+>    base_url 时优先；未覆盖且缺失则报错。
+> 3. cloudWorkerUrl 手动填写，缺失时 cloud 请求返回 400。
+> 4. local 模式遇 `dynamic/*` 返回 501（fallback 引擎阶段二）。
+> 5. 上游超时 120s，网络错误 / 超时统一归类 502。
 
 ### 阶段二：路由打通与管理界面
 

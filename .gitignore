@@ -11,6 +11,7 @@ data/*
 !data/providers.example.json
 !data/models.example.json
 !data/routes.example.json
+!data/gateway.example.json
 
 # MCP / 代码图谱配置（本机工具配置，不入库）
 .mcp.json

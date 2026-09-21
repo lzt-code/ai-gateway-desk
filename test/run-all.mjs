@@ -54,6 +54,13 @@ const TESTS = [
   'test-routes-deploy.mjs',           // 动态路由配置：REST 部署编排（版本→部署，全 mock）
   'test-web-api-routes.mjs',          // 动态路由配置：配置 API 端点（保存/部署/删除/刷新，全 mock）
   'test-enrich-models-dev.mjs',       // 双源富化：OpenRouter + models.dev 融合补全、匹配优先级 a/b/c/d、失败降级、缓存
+  // ── 双网关方案阶段一：本地网关 ──
+  'test-gateway-config-store.mjs',    // gateway.json 读写、默认值、字段校验
+  'test-gateway-provider-keys.mjs',   // 凭证加密存储（AI_GW_TEST_DIR 隔离）
+  'test-gateway-router.mjs',          // slug 解析/剥离、厂商 URL 构造、BYOK 映射
+  'test-gateway-backend-local.mjs',   // LocalBackend 直发（mock fetch / 错误归类）
+  'test-gateway-backend-cloud.mjs',   // CloudBackend 转发（URL / token 注入 / 透传）
+  'test-gateway-server.mjs',          // 网关全部端点 + 模式热切换 + backfill（全 mock）
 ]
 
 const results = []

@@ -143,7 +143,7 @@ function linuxClear(tokenPath) {
   }
 }
 
-// ─── 统一内部入口（按槽位读写） ──────────────────────────
+// ─── 统一内部入口（按槽位 / 按名称读写） ────────────────
 
 function getPlatform() {
   // 测试隔离模式：强制文件存储（避免 macOS Keychain 无法重定向，污染真实钥匙串）
@@ -151,6 +151,65 @@ function getPlatform() {
   if (process.platform === 'win32') return 'win32'
   if (process.platform === 'darwin') return 'darwin'
   return 'linux'
+}
+
+/**
+ * 把通用相对名转换为 macOS Keychain account 名。
+ * 子路径分隔符（/ \）替换为 '.'，如 provider-keys/custom-ark → provider-keys.custom-ark
+ * @param {string} name
+ * @returns {string}
+ */
+function macAccountForName(name) {
+  return String(name).replace(/[\\/]/g, '.')
+}
+
+/**
+ * 校验相对名合法且解析后仍位于 STORE_DIR 内（防路径穿越）。
+ * @param {string} name - 相对存储名，可含子路径（如 provider-keys/custom-ark）
+ * @returns {{ tokenPath: string, macAccount: string }}
+ */
+function resolveEntry(name) {
+  if (typeof name !== 'string' || !name || name.includes('\0')) {
+    throw new Error('无效的凭证名称')
+  }
+  const tokenPath = path.resolve(STORE_DIR, name)
+  const rootWithSep = STORE_DIR.endsWith(path.sep) ? STORE_DIR : STORE_DIR + path.sep
+  if (tokenPath !== STORE_DIR && !tokenPath.startsWith(rootWithSep)) {
+    throw new Error('凭证名称越界')
+  }
+  return { tokenPath, macAccount: macAccountForName(name) }
+}
+
+/** 按存储名读取，失败 / 未保存返回 null */
+function readEntryByName(name) {
+  const { tokenPath, macAccount } = resolveEntry(name)
+  try {
+    const p = getPlatform()
+    if (p === 'win32') return winRead(tokenPath)
+    if (p === 'darwin') return macRead(macAccount)
+    return linuxRead(tokenPath)
+  } catch {
+    return null
+  }
+}
+
+/** 按存储名写入，失败时抛出（调用方应捕获并提示） */
+function writeEntryByName(name, value) {
+  const { tokenPath, macAccount } = resolveEntry(name)
+  fs.mkdirSync(path.dirname(tokenPath), { recursive: true })
+  const p = getPlatform()
+  if (p === 'win32') return winWrite(value, tokenPath)
+  if (p === 'darwin') return macWrite(value, macAccount)
+  return linuxWrite(value, tokenPath)
+}
+
+/** 按存储名清除 */
+function deleteEntryByName(name) {
+  const { tokenPath, macAccount } = resolveEntry(name)
+  const p = getPlatform()
+  if (p === 'win32') return winClear(tokenPath)
+  if (p === 'darwin') return macClear(macAccount)
+  return linuxClear(tokenPath)
 }
 
 /** 读取指定槽位，失败 / 未保存返回 null */
@@ -238,6 +297,35 @@ export function writeManagementToken(token) {
  */
 export function clearManagementToken() {
   return clearSlot('management')
+}
+
+// ─── 导出接口：通用加密串（按名称读写，支持子路径）──────
+
+/**
+ * 按名称读取加密存储的字符串
+ * @param {string} name - 相对存储名，可含子路径（如 'provider-keys/custom-ark'）
+ * @returns {string|null} 值或 null（未保存 / 读取失败）
+ */
+export function readSecret(name) {
+  return readEntryByName(name)
+}
+
+/**
+ * 按名称写入加密字符串
+ * @param {string} name - 相对存储名，可含子路径（如 'provider-keys/custom-ark'）
+ * @param {string} value
+ * @throws 名称非法或写入失败时抛出
+ */
+export function writeSecret(name, value) {
+  return writeEntryByName(name, value)
+}
+
+/**
+ * 按名称删除加密存储
+ * @param {string} name - 相对存储名，可含子路径
+ */
+export function deleteSecret(name) {
+  return deleteEntryByName(name)
 }
 
 // ─── 槽位状态（新增） ────────────────────────────────────

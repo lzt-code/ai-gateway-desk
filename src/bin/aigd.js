@@ -23,6 +23,9 @@ aigd — AI Gateway 模型管理工具
 
 用法:
   aigd web        启动本地 Web 管理界面（默认）
+  aigd gateway    启动本地网关（OpenAI 兼容端点，长驻进程）
+                  选项: --port <端口>  --mode <local|cloud>
+                  环境变量: AIGD_GATEWAY_PORT
   aigd sync       同步模型列表（规划中）
   aigd deploy     部署模型列表到 KV（规划中）
   aigd setup      初始化向导（建 gateway / 存凭证 / provider / KV）
@@ -30,6 +33,35 @@ aigd — AI Gateway 模型管理工具
 `
 
 const PLANNED = new Set(['sync', 'deploy'])
+
+/**
+ * 解析 gateway 子命令的命令行参数
+ * @param {string[]} argv - process.argv.slice(3)
+ * @returns {{ port?: number, mode?: string, error?: string }}
+ */
+export function parseGatewayFlags(argv) {
+  const out = {}
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === '--port') {
+      const v = argv[++i]
+      const n = Number(v)
+      if (!v || !Number.isInteger(n) || n < 1 || n > 65535) {
+        return { error: `--port 需要 1–65535 之间的整数（收到: ${v}）` }
+      }
+      out.port = n
+    } else if (a === '--mode') {
+      const v = argv[++i]
+      if (v !== 'local' && v !== 'cloud') {
+        return { error: `--mode 必须是 local 或 cloud（收到: ${v}）` }
+      }
+      out.mode = v
+    } else {
+      return { error: `未知参数: ${a}` }
+    }
+  }
+  return out
+}
 
 async function main() {
   const cmd = process.argv[2] || 'web'
@@ -56,6 +88,33 @@ async function main() {
     const { url } = await startServer({ openBrowser: !process.env.AIGD_NO_OPEN })
     console.log(`[aigd] Web 管理界面已启动: ${url}`)
     console.log('按 Ctrl+C 退出')
+    return
+  }
+
+  if (cmd === 'gateway') {
+    const flags = parseGatewayFlags(process.argv.slice(3))
+    if (flags.error) {
+      console.log(`[aigd] ${flags.error}`)
+      process.exitCode = 1
+      return
+    }
+    const envPort = Number(process.env.AIGD_GATEWAY_PORT)
+    const port = flags.port || (Number.isInteger(envPort) && envPort >= 1 ? envPort : undefined)
+    const { startGateway } = await import('../gateway/server.js')
+    const { loadGatewayConfig } = await import('../gateway/config-store.js')
+    const cfg = loadGatewayConfig()
+    try {
+      const r = await startGateway({
+        port: port || cfg.port,
+        mode: flags.mode || cfg.mode,
+      })
+      console.log(`[aigd] 本地网关已启动: http://127.0.0.1:${r.port}`)
+      console.log(`[aigd] 当前模式: ${flags.mode || cfg.mode}（Agent Base URL: http://127.0.0.1:${r.port}/v1）`)
+      console.log('按 Ctrl+C 退出')
+    } catch (err) {
+      console.log(`[aigd] 网关启动失败: ${err.message}`)
+      process.exitCode = 1
+    }
     return
   }
 

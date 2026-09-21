@@ -71,6 +71,10 @@ import {
 } from '../tui/provider-actions.js'
 import { runSyncFlow } from './sync-flow.js'
 import {
+  writeProviderHeaders,
+  deleteProviderHeaders,
+} from '../gateway/provider-keys.js'
+import {
   SLOTS,
   summarizeTokenStatus,
   summarizeGatewayInfo,
@@ -159,6 +163,9 @@ const DEFAULT_DEPS = {
   deleteProviderCloud,
   writeProvidersConfigFile,
   deployProviderRoutesToKV,
+  // 双网关方案 §8.3：凭证录入即本地双写
+  writeProviderKey: writeProviderHeaders,
+  deleteProviderKey: deleteProviderHeaders,
   readKvVisibility: async (apiToken, accountId, namespaceId) =>
     readKvJson(apiToken, accountId, namespaceId, PROVIDER_VISIBILITY_KV_KEY, {}),
   writeKvVisibility: async (apiToken, accountId, namespaceId, map) =>
@@ -1453,6 +1460,17 @@ export function createApp({
       if (name) local = setLocalName(local, body.id, name)
       // baseUrl 有变更 → 同步本地 base_url（编辑表单预填一致）
       if (baseUrl) local = setLocalBaseUrl(local, body.id, baseUrl)
+      // 凭证本地双写（双网关方案 §8.3）：覆盖 key 成功后同步覆盖本地加密 headers
+      if (apiKey && apiKey.trim()) {
+        try {
+          depsAll.writeProviderKey(gatewaySlug(provider), {
+            Authorization: `Bearer ${apiKey.trim()}`,
+          })
+        } catch (err) {
+          const warn = `本地凭证写入失败: ${err instanceof Error ? err.message : String(err)}`
+          ioLogResult(`provider:update:${body.id}`, { ok: false, message: warn })
+        }
+      }
       cloudChanged = true
     }
 
@@ -1618,6 +1636,20 @@ export function createApp({
     local = [...local, entry]
     depsAll.writeProvidersConfigFile(local)
 
+    // 凭证本地双写（双网关方案 §8.3）：云端创建成功后同步写一份加密 headers；
+    // 失败不阻断云端结果，仅告警并在响应中标记，供前端提示 / 重试回填。
+    let localKeyWarning = null
+    if (body.apiKey && body.apiKey.trim()) {
+      try {
+        depsAll.writeProviderKey(gatewaySlug(entry), {
+          Authorization: `Bearer ${body.apiKey.trim()}`,
+        })
+      } catch (err) {
+        localKeyWarning = `本地凭证写入失败: ${err instanceof Error ? err.message : String(err)}`
+        ioLogResult(`provider:create:${body.id}`, { ok: false, message: localKeyWarning })
+      }
+    }
+
     // KV 同步：带 pathPrefix → 重推 provider-routes（worker 路由即时生效）。
     // 无 pathPrefix 不动 KV（kvDeployed 保持 true）；推送失败不回滚
     // （云端 + 本地已成功），由前端提示并可在模型页【部署更改】重试。
@@ -1655,6 +1687,7 @@ export function createApp({
       kvDeployed,
       kvSkipped,
       kvError,
+      localKeyWarning,
     })
   })
 
@@ -1768,8 +1801,17 @@ export function createApp({
     local = followDelete(local, body.id)
     depsAll.writeProvidersConfigFile(local)
 
-    // 级联删除该 provider 下所有模型（state 中 provider 字段即为 gateway slug）
+    // 凭证本地同步删除（双网关方案 §8.3），失败仅告警不影响删除结果
     const providerSlug = gatewaySlug(provider)
+    let localKeyWarning = null
+    try {
+      depsAll.deleteProviderKey(providerSlug)
+    } catch (err) {
+      localKeyWarning = `本地凭证删除失败: ${err instanceof Error ? err.message : String(err)}`
+      ioLogResult(`provider:delete:${body.id}`, { ok: false, message: localKeyWarning })
+    }
+
+    // 级联删除该 provider 下所有模型（state 中 provider 字段即为 gateway slug）
     const modelsToDelete = Object.entries(state)
       .filter(([, entry]) => entry.provider === providerSlug)
       .map(([modelId]) => modelId)
@@ -1817,7 +1859,7 @@ export function createApp({
     }
     ioLogResult(`provider:delete:${body.id}`, { ok: true, message: `cloud:${cloudAction} models:${modelsDeleted} kv:${kvDeployed ? 'ok' : kvError || 'skipped'}` })
     if (isDebugEnabled()) ioLogRequest(`provider:delete:${body.id}`, { method: 'POST', path: '/api/providers/delete', body: { id: body.id } })
-    return c.json({ ok: true, removed: true, cloudAction, modelsDeleted, kvDeployed, kvSkipped, kvError })
+    return c.json({ ok: true, removed: true, cloudAction, modelsDeleted, kvDeployed, kvSkipped, kvError, localKeyWarning })
   })
 
   // ─── 任务 29：Worker + 账户管理 API（注册在静态文件中间件之前）───
