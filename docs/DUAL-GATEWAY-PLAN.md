@@ -178,6 +178,22 @@ EADDRINUSE 返回友好提示。
 
 地址仅用于展示与引导 Agent 直连，本地网关不会请求，也不本地存储（旧 `gateway.workerUrl` 字段不再读取）。
 
+> **后续优化（待实现）：Workers Routes 的 `<子域>` 自动解析**
+>
+> 现状：路由模式 host 含通配符（如 `*.example.com/api/*`）时仅以 `<子域>` 占位，
+> 需用户自行到 Cloudflare DNS 中确认可用子域。
+>
+> 计划改为通过 API 自动解析：
+> - 管理 Token 需新增权限（引导流程 `aigd setup` 的权限列表同步更新）：
+>   - Zone → Zone → Read（列 zone，现有 Token 已具备）
+>   - Zone → DNS  → Read（列 DNS 记录）
+> - 调用 `GET /zones/{id}/dns_records`，取 `proxied=true` 记录与路由模式匹配：
+>   - 有具体代理子域记录 → 直接给出可用 Base URL；
+>   - 有 `*` 通配代理记录 → 任意子域可用；
+>   - 无匹配记录 → 提示需先在 DNS 添加代理记录；
+>   - DNS 接口 403（旧 Token 无权限）→ 降级提示补充 DNS Read 权限。
+> - Token 权限只能在 Cloudflare 面板手动编辑（API 无法自改），Token 字符串不变。
+
 ### 9.3 现有数据文件（结构不变）
 
 | 文件 | 角色 |
