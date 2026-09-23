@@ -5475,7 +5475,7 @@ export function buildCloudWorkerCard(overview) {
   return (
     `<div class="panel gateway-box cloud-worker-card">` +
     `<h3>云端 Worker</h3>` +
-    `<p class="slot-note">走 Cloudflare AI Gateway（共享边缘 IP，可能触发 429）时，让 Agent 的 Base URL 直接指向该 Worker，不经本地网关</p>` +
+    `<p class="slot-note">走 Cloudflare AI Gateway 时，让 Agent 的 Base URL 直接指向该 Worker，不经本地网关</p>` +
     (workersDev
       ? endpointRow('workers.dev', workersDev)
       : `<div class="status-item"><span class="k">workers.dev</span><span class="v warn">未开启</span></div>`) +
@@ -5669,7 +5669,7 @@ export function renderWorkersView(container) {
   // ── DOM 骨架 ────────────────────────────────────────────
   container.innerHTML = `
     <h2 class="view-title">网关</h2>
-    <p class="view-note">本地网关以本机出口 IP 直发厂商，降低共享边缘 IP 触发的 429；需要 Cloudflare 能力时让 Agent 直连云端 Worker</p>
+    <p class="view-note">本地网关以本机出口 IP 直发厂商；需要 Cloudflare 能力时让 Agent 直连云端 Worker</p>
     <div id="gateway-root"></div>
   `
 
