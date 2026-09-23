@@ -13,6 +13,7 @@ import { parseModelSlug, stripModelSlug, resolveProviderEndpoint } from '../rout
 import { findProvider as defaultFindProvider } from '../provider-lookup.js'
 import { readProviderHeaders as defaultReadProviderHeaders } from '../provider-keys.js'
 import { createFallbackEngine } from '../fallback.js'
+import { logRequest, logResponse, logResult } from '../../core/io-logger.js'
 
 const DEFAULT_TIMEOUT_MS = 120000
 
@@ -83,24 +84,31 @@ export function createLocalBackend(deps = {}) {
         return fallbackEngine.execute(routeName, body)
       }
 
+      const op = `gateway:chat:${slug}`
+      const start = Date.now()
+
       const provider = findProvider(slug)
       if (!provider) {
-        return jsonError(400, `本地配置中找不到 provider '${slug}'`)
+        const message = `本地配置中找不到 provider '${slug}'`
+        logResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+        return jsonError(400, message)
       }
 
       let endpoint
       try {
         endpoint = resolveProviderEndpoint(provider)
       } catch (err) {
-        return jsonError(400, err instanceof Error ? err.message : String(err))
+        const message = err instanceof Error ? err.message : String(err)
+        logResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+        return jsonError(400, message)
       }
 
       const credentialHeaders = readProviderHeaders(slug)
       if (!credentialHeaders) {
-        return jsonError(
-          400,
+        const message =
           `本地缺少 provider '${slug}' 的凭证，请在管理界面回填 / 录入，或让 Agent 直连云端 Worker`
-        )
+        logResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+        return jsonError(400, message)
       }
 
       const forwardBody = JSON.stringify(stripModelSlug(body, slug))
@@ -108,20 +116,41 @@ export function createLocalBackend(deps = {}) {
       headers.set('Content-Type', 'application/json')
       headers.set('Accept', 'text/event-stream')
 
+      logRequest(op, {
+        method: 'POST',
+        url: endpoint,
+        headers: Object.fromEntries(headers.entries()),
+        body: forwardBody,
+      })
+
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), timeoutMs)
       try {
-        return await fetchFn(endpoint, {
+        const response = await fetchFn(endpoint, {
           method: 'POST',
           headers,
           body: forwardBody,
           signal: controller.signal,
         })
+        const elapsed = Date.now() - start
+        logResponse(op, {
+          status: response.status,
+          statusText: response.statusText,
+          elapsedMs: elapsed,
+        })
+        logResult(op, {
+          ok: response.ok,
+          message: `HTTP ${response.status}`,
+          elapsedMs: elapsed,
+        })
+        return response
       } catch (err) {
         const aborted = err?.name === 'AbortError'
         const message = aborted
           ? `请求 provider '${slug}' 超时（${timeoutMs}ms）`
           : `请求 provider '${slug}' 失败: ${err instanceof Error ? err.message : String(err)}`
+        logResponse(op, { status: null, output: message, elapsedMs: Date.now() - start })
+        logResult(op, { ok: false, message, elapsedMs: Date.now() - start })
         return jsonError(502, message)
       } finally {
         clearTimeout(timer)

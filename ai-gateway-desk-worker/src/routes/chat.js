@@ -17,6 +17,7 @@
 
 import { getGatewayConfig } from '../config.js'
 import { jsonResponse } from '../http.js'
+import { logRequest, logResponse, logResult } from '../io-log.js'
 
 /**
  * 从请求体 JSON 中提取 model 字段的 provider slug
@@ -69,8 +70,10 @@ function stripProviderSlug(bodyText, slug) {
  * @returns {Promise<Response>}
  */
 export async function handleChat(request, env) {
+  const start = Date.now()
   const auth = request.headers.get('Authorization')
   if (!auth || !auth.startsWith('Bearer ')) {
+    logResult('worker:chat', { ok: false, message: '401 Missing Authorization', elapsedMs: Date.now() - start })
     return jsonResponse({ error: 'Missing Authorization' }, 401)
   }
 
@@ -79,10 +82,9 @@ export async function handleChat(request, env) {
   try {
     gateway = getGatewayConfig(env)
   } catch {
-    return jsonResponse(
-      { error: '缺少 ACCOUNT_ID / GATEWAY_ID 环境变量，请在 wrangler.toml [vars] 或 secret 中配置' },
-      500
-    )
+    const message = '缺少 ACCOUNT_ID / GATEWAY_ID 环境变量，请在 wrangler.toml [vars] 或 secret 中配置'
+    logResult('worker:chat', { ok: false, message, elapsedMs: Date.now() - start })
+    return jsonResponse({ error: message }, 500)
   }
   const { host, accountId, gatewayId } = gateway
 
@@ -103,6 +105,7 @@ export async function handleChat(request, env) {
 
   const slug = extractProviderSlug(bodyText)
   const pathPrefix = slug ? customRoutes[slug] : null
+  const op = `worker:chat:${slug ?? '(none)'}`
 
   // 决定目标 URL；provider-specific 端点需要剥离 model 中的 slug 前缀
   let targetUrl
@@ -127,12 +130,13 @@ export async function handleChat(request, env) {
   headers.delete('Authorization')
   headers.set('Content-Type', 'application/json')
 
-  // 打印调试信息到控制台（Wrangler 日志中可见）
-  console.log(`Fetching POST ${target.toString()}`, {
+  // 转发请求日志：debug 开启时输出目标 URL / headers / body（统一脱敏）
+  logRequest(op, {
+    method: 'POST',
+    url: target.toString(),
     headers: Object.fromEntries(headers.entries()),
-    route: pathPrefix ? 'provider-specific' : 'compat',
-    slug: slug ?? '(none)',
-    bodyRewritten: forwardBody !== bodyText,
+    body: forwardBody,
+    meta: { route: pathPrefix ? 'provider-specific' : 'compat', bodyRewritten: forwardBody !== bodyText },
   })
 
   // 转发请求（使用已读取的 bodyText，避免重复读取流）
@@ -142,13 +146,19 @@ export async function handleChat(request, env) {
     body: forwardBody,
   })
 
-  // 如果上游返回错误，也记录一下
-  if (!response.ok) {
-    console.error(`AI Gateway returned ${response.status}`, {
-      status: response.status,
-      statusText: response.statusText,
-    })
-  }
+  const elapsed = Date.now() - start
+  // 上游响应：debug 开启时记录细节；结果日志始终输出
+  logResponse(op, {
+    status: response.status,
+    statusText: response.statusText,
+    elapsedMs: elapsed,
+  })
+  logResult(op, {
+    ok: response.ok,
+    message: `HTTP ${response.status}`,
+    elapsedMs: elapsed,
+    extra: pathPrefix ? 'provider-specific' : 'compat',
+  })
 
   return response
 }

@@ -33,6 +33,7 @@ import {
 import {
   readProviderHeaders as defaultReadProviderHeaders,
 } from './provider-keys.js'
+import { logRequest, logResponse, logResult } from '../core/io-logger.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -154,9 +155,10 @@ export function createFallbackEngine(deps = {}) {
    * 单个 model 节点的一次直发尝试
    * @param {object} node - model 节点
    * @param {object} body - 已解析的请求体
+   * @param {string} op - 日志操作名
    * @returns {Promise<{ ok: true, response: Response } | { ok: false, error: string, status?: number }>}
    */
-  async function attemptModel(node, body) {
+  async function attemptModel(node, body, op) {
     const props = node.properties || {}
     const slug = props.provider
     const upstreamModel = props.model
@@ -199,6 +201,16 @@ export function createFallbackEngine(deps = {}) {
     headers.set('Content-Type', 'application/json')
     headers.set('Accept', 'text/event-stream')
 
+    const attemptStart = Date.now()
+    const attemptMeta = { node: node.id, model: upstreamModel }
+    logRequest(op, {
+      method: 'POST',
+      url: endpoint,
+      headers: Object.fromEntries(headers.entries()),
+      body: forwardBody,
+      meta: attemptMeta,
+    })
+
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), nodeTimeout)
     try {
@@ -208,15 +220,25 @@ export function createFallbackEngine(deps = {}) {
         body: forwardBody,
         signal: controller.signal,
       })
+      logResponse(op, {
+        status: response.status,
+        statusText: response.statusText,
+        elapsedMs: Date.now() - attemptStart,
+        meta: attemptMeta,
+      })
       return { ok: true, response }
     } catch (err) {
       const aborted = err?.name === 'AbortError'
-      return {
-        ok: false,
-        error: aborted
-          ? `请求 provider '${slug}' 超时（${nodeTimeout}ms）`
-          : `请求 provider '${slug}' 失败: ${err instanceof Error ? err.message : String(err)}`,
-      }
+      const error = aborted
+        ? `请求 provider '${slug}' 超时（${nodeTimeout}ms）`
+        : `请求 provider '${slug}' 失败: ${err instanceof Error ? err.message : String(err)}`
+      logResponse(op, {
+        status: null,
+        output: error,
+        elapsedMs: Date.now() - attemptStart,
+        meta: attemptMeta,
+      })
+      return { ok: false, error }
     } finally {
       clearTimeout(timer)
     }
@@ -229,11 +251,18 @@ export function createFallbackEngine(deps = {}) {
    * @returns {Promise<Response>}
    */
   async function execute(routeName, body) {
+    const op = `gateway:dynamic:${routeName}`
+    const start = Date.now()
+    const fail = (status, message) => {
+      logResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+      return jsonError(status, message)
+    }
+
     let store
     try {
       store = loadStore(dataDir)
     } catch (err) {
-      return jsonError(
+      return fail(
         500,
         `读取路由配置失败: ${err instanceof Error ? err.message : String(err)}`
       )
@@ -241,52 +270,52 @@ export function createFallbackEngine(deps = {}) {
 
     const entry = findRouteEntry(store, routeName)
     if (!entry) {
-      return jsonError(400, `本地路由中找不到动态路由 '${routeName}'`)
+      return fail(400, `本地路由中找不到动态路由 '${routeName}'`)
     }
 
     const elements = Array.isArray(entry.elements) ? entry.elements : []
     const byId = indexElements(elements)
-    const start = elements.find((el) => el.type === 'start')
-    if (!start) {
-      return jsonError(400, `路由 '${routeName}' 缺少 start 节点`)
+    const startNode = elements.find((el) => el.type === 'start')
+    if (!startNode) {
+      return fail(400, `路由 '${routeName}' 缺少 start 节点`)
     }
 
-    let nodeId = start.outputs?.next?.elementId
+    let nodeId = startNode.outputs?.next?.elementId
     const visited = new Set()
     const attemptsLog = []
 
     while (nodeId) {
       if (nodeId === 'END' || byId.get(nodeId)?.type === 'end') {
-        return jsonError(502, `动态路由 '${routeName}' 所有候选均失败（已到 END）`)
+        return fail(502, `动态路由 '${routeName}' 所有候选均失败（已到 END）`)
       }
       if (visited.has(nodeId)) {
-        return jsonError(500, `路由 '${routeName}' 存在环，本地引擎拒绝执行`)
+        return fail(500, `路由 '${routeName}' 存在环，本地引擎拒绝执行`)
       }
       visited.add(nodeId)
 
       const node = byId.get(nodeId)
       if (!node) {
-        return jsonError(400, `路由 '${routeName}' 连线指向不存在的节点 ${nodeId}`)
+        return fail(400, `路由 '${routeName}' 连线指向不存在的节点 ${nodeId}`)
       }
 
       const unsupported = unsupportedNodeError(node)
-      if (unsupported) return jsonError(400, unsupported)
+      if (unsupported) return fail(400, unsupported)
 
       if (node.type === 'percentage') {
         const picked = pickPercentageOutput(node, random)
         if (picked instanceof Error) {
-          return jsonError(400, `路由 '${routeName}'：${picked.message}`)
+          return fail(400, `路由 '${routeName}'：${picked.message}`)
         }
         nodeId = node.outputs[picked.port]?.elementId
         continue
       }
 
       if (node.type === 'start') {
-        return jsonError(400, `路由 '${routeName}' 连线回到 start，图结构非法`)
+        return fail(400, `路由 '${routeName}' 连线回到 start，图结构非法`)
       }
 
       if (node.type !== 'model') {
-        return jsonError(
+        return fail(
           400,
           `本地网关不支持 ${node.type} 图结构，该结构仅 Cloudflare 支持，请让 Agent 直连云端 Worker`
         )
@@ -302,11 +331,17 @@ export function createFallbackEngine(deps = {}) {
       let terminal = null
 
       for (let attemptIndex = 0; attemptIndex < totalTries; attemptIndex++) {
-        const result = await attemptModel(node, body)
+        const result = await attemptModel(node, body, op)
 
         if (result.ok) {
           const { response } = result
           if (response.status === 200) {
+            logResult(op, {
+              ok: true,
+              message: `HTTP 200 via ${props.provider}`,
+              elapsedMs: Date.now() - start,
+              extra: `node=${node.id}${attemptIndex > 0 ? ` tries=${attemptIndex + 1}` : ''}`,
+            })
             return response
           }
           if (isRetryableStatus(response.status)) {
@@ -324,7 +359,12 @@ export function createFallbackEngine(deps = {}) {
         lastFailure = result.error
       }
 
-      if (terminal) return terminal
+      if (terminal) {
+        const message =
+          terminal.status ? `provider '${props.provider}' 返回 ${terminal.status}` : (lastFailure || '请求失败')
+        logResult(op, { ok: false, message, elapsedMs: Date.now() - start, extra: `node=${node.id}` })
+        return terminal
+      }
 
       attemptsLog.push({
         node: node.id,
@@ -335,13 +375,13 @@ export function createFallbackEngine(deps = {}) {
 
       const fallbackId = node.outputs?.fallback?.elementId
       if (!fallbackId) {
-        return jsonError(502, `动态路由 '${routeName}' 无可用 fallback：${lastFailure || ''}`)
+        return fail(502, `动态路由 '${routeName}' 无可用 fallback：${lastFailure || ''}`)
       }
       nodeId = fallbackId
     }
 
     const detail = attemptsLog.map((a) => `${a.provider}: ${a.reason}`).join('；')
-    return jsonError(
+    return fail(
       502,
       `动态路由 '${routeName}' 所有候选均失败${detail ? `：${detail}` : ''}`
     )

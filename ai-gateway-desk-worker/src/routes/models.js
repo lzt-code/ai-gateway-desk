@@ -9,6 +9,7 @@
 
 import defaultModels from '../models-list.js'
 import { jsonResponse } from '../http.js'
+import { logRequest, logResult } from '../io-log.js'
 
 /**
  * 处理 models 请求
@@ -16,16 +17,34 @@ import { jsonResponse } from '../http.js'
  * @returns {Promise<Response>}
  */
 export async function handleModels(env) {
+  const op = 'worker:models'
+  const start = Date.now()
   let models
+  let kvOk = false
   try {
     const stored = await env.MODELS_KV.get('models', 'json')
-    console.log(`[MODELS] KV stored type: ${typeof stored}, isArray: ${Array.isArray(stored)}, value:`, JSON.stringify(stored)?.substring(0, 100))
+    kvOk = true
+    logRequest(op, {
+      method: 'GET',
+      path: 'KV:models',
+      meta: { isArray: Array.isArray(stored), preview: JSON.stringify(stored)?.substring(0, 100) },
+    })
     models = stored ?? defaultModels
-    console.log(`[MODELS] Final models count: ${Array.isArray(models) ? models.length : 'not array'}`)
   } catch (err) {
-    console.error(`[MODELS] KV read error:`, err.message)
     models = defaultModels
+    logResult(op, {
+      ok: false,
+      message: `KV 读取失败，使用内置列表: ${err.message}`,
+      elapsedMs: Date.now() - start,
+    })
+    return jsonResponse({ object: 'list', data: models })
   }
 
+  logResult(op, {
+    ok: Array.isArray(models),
+    message: `${Array.isArray(models) ? models.length : 'not array'} 个模型`,
+    elapsedMs: Date.now() - start,
+    extra: kvOk ? 'source=kv/default' : '',
+  })
   return jsonResponse({ object: 'list', data: models })
 }

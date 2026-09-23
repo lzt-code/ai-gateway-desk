@@ -1877,6 +1877,8 @@ export function createApp({
 
   // GET /api/workers/status — Worker 部署状态（平铺字段 + buildWorkersStatus 完整结构）
   app.get('/api/workers/status', async (c) => {
+    const op = 'worker:status'
+    const start = Date.now()
     const config = configStore.load()
     const namespaceId = (config && config.kv && config.kv.namespaceId) || ''
     const key = (config && config.kv && config.kv.key) || 'models'
@@ -1884,6 +1886,12 @@ export function createApp({
     // namespaceId 为空（未配置 KV）→ 短路为 skipped，不调 checkKVKey（免触网）
     const kvStatus = namespaceId ? await depsAll.checkKVKey(namespaceId, key) : 'skipped'
     const status = depsAll.buildWorkersStatus({ namespaceId, modelsJson: mj, kvKey: kvStatus, kvKeyName: key })
+    ioLogResult(op, {
+      ok: true,
+      message: `kv=${kvStatus} models=${status.modelsJson.count}`,
+      elapsedMs: Date.now() - start,
+    })
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'GET', path: '/api/workers/status', meta: { namespaceId } })
     return c.json({
       ok: true,
       namespaceId,
@@ -1972,6 +1980,8 @@ export function createApp({
 
   // GET /api/gateway/overview — 网关总览（gateway.json 端口 + 进程状态 + Worker 地址自动发现 + 凭证状态）
   app.get('/api/gateway/overview', async (c) => {
+    const op = 'gateway:overview'
+    const start = Date.now()
     const gwConfig = depsAll.readGatewayConfig()
     const config = configStore.load()
     const providers = Array.isArray(config.providers) ? config.providers : []
@@ -2012,6 +2022,13 @@ export function createApp({
       }
     })
 
+    ioLogResult(op, {
+      ok: true,
+      message: `local=${running ? 'up' : 'down'} providers=${providerRows.length}`,
+      elapsedMs: Date.now() - start,
+      extra: workerEndpoints?.error ? workerEndpoints.error : '',
+    })
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'GET', path: '/api/gateway/overview' })
     return c.json({
       ok: true,
       running,
@@ -2026,27 +2043,29 @@ export function createApp({
   // POST /api/gateway/backfill-keys — custom-provider 完整 key 云端回填
   // 直接在本进程拉云端并写本地加密存储（与网关进程是否在跑无关）
   app.post('/api/gateway/backfill-keys', async (c) => {
+    const op = 'gateway:backfill'
+    const start = Date.now()
     const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
     if (!mgmtToken) {
-      return c.json(
-        { error: '本地未配置管理 API Token，无法从云端拉取凭证；请先运行 aigd setup 或手工录入 Key' },
-        400
-      )
+      const message = '本地未配置管理 API Token，无法从云端拉取凭证；请先运行 aigd setup 或手工录入 Key'
+      ioLogResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+      return c.json({ error: message }, 400)
     }
     const config = configStore.load()
     const accountId = config.gateway?.accountId
     if (!accountId) {
-      return c.json({ error: 'providers.json 缺少 gateway.accountId，请先完成 setup' }, 400)
+      const message = 'providers.json 缺少 gateway.accountId，请先完成 setup'
+      ioLogResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+      return c.json({ error: message }, 400)
     }
 
     let cloudList
     try {
       cloudList = await depsAll.listCloudCustomProviders(mgmtToken, accountId)
     } catch (err) {
-      return c.json(
-        { error: `拉取云端 custom providers 失败: ${err instanceof Error ? err.message : String(err)}` },
-        502
-      )
+      const message = `拉取云端 custom providers 失败: ${err instanceof Error ? err.message : String(err)}`
+      ioLogResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+      return c.json({ error: message }, 502)
     }
 
     const backfilled = []
@@ -2077,15 +2096,19 @@ export function createApp({
       }
     }
 
-    ioLogResult('gateway:backfill', {
+    ioLogResult(op, {
       ok: errors.length === 0,
       message: `backfilled=${backfilled.length} skipped=${skipped.length} errors=${errors.length}`,
+      elapsedMs: Date.now() - start,
     })
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'POST', path: '/api/gateway/backfill-keys' })
     return c.json({ ok: errors.length === 0, backfilled, skipped, errors })
   })
 
   // POST /api/gateway/provider-key — BYOK / 任意 provider 手工录入完整 headers（本地双写）
   app.post('/api/gateway/provider-key', async (c) => {
+    const op = 'gateway:provider-key'
+    const start = Date.now()
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
     const slug = typeof body.slug === 'string' ? body.slug.trim() : ''
@@ -2095,7 +2118,8 @@ export function createApp({
 
     const headers = { Authorization: `Bearer ${apiKey}` }
     depsAll.writeProviderKey(slug, headers)
-    ioLogResult('gateway:provider-key', { ok: true, message: slug })
+    ioLogResult(op, { ok: true, message: slug, elapsedMs: Date.now() - start })
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'POST', path: '/api/gateway/provider-key', body: { slug } })
     return c.json({ ok: true, slug })
   })
 
@@ -2113,6 +2137,8 @@ export function createApp({
 
   // POST /api/account/update-token — 更新 Token 槽位（结果透传 updateToken 语义）
   app.post('/api/account/update-token', async (c) => {
+    const op = 'account:update-token'
+    const start = Date.now()
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
     const slot = body.slot
@@ -2124,9 +2150,16 @@ export function createApp({
     }
     // 空 / 空白 token → 取消（{ ok:false, skipped:true }，HTTP 200），与 updateToken 语义一致
     if (!body.token.trim()) {
+      ioLogResult(op, { ok: false, message: `skipped (empty) slot=${slot}`, elapsedMs: Date.now() - start })
       return c.json({ ok: false, skipped: true })
     }
     const r = depsAll.updateToken(slot, body.token)
+    ioLogResult(op, {
+      ok: !!r.ok,
+      message: r.ok ? `slot=${slot}` : r.skipped ? `skipped slot=${slot}` : `slot=${slot} 失败`,
+      elapsedMs: Date.now() - start,
+    })
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'POST', path: '/api/account/update-token', body: { slot } })
     if (r.ok) return c.json({ ok: true, slot })
     if (r.skipped) return c.json({ ok: false, skipped: true })
     return c.json({ ok: false, error: r.error instanceof Error ? r.error.message : String(r.error) })
@@ -2134,6 +2167,8 @@ export function createApp({
 
   // POST /api/account/clear-token — 清除 Token 槽位（附影响面文案 IMPACT_TEXT[slot]）
   app.post('/api/account/clear-token', async (c) => {
+    const op = 'account:clear-token'
+    const start = Date.now()
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
     const slot = body.slot
@@ -2143,19 +2178,26 @@ export function createApp({
     const r = depsAll.clearSlotToken(slot)
     if (!r.ok) {
       const msg = r.error instanceof Error ? r.error.message : 'clear failed'
+      ioLogResult(op, { ok: false, message: `slot=${slot} ${msg}`, elapsedMs: Date.now() - start })
       return c.json({ error: msg }, 500)
     }
+    ioLogResult(op, { ok: true, message: `slot=${slot}`, elapsedMs: Date.now() - start })
     return c.json({ ok: true, cleared: slot, impact: IMPACT_TEXT[slot] })
   })
 
   // POST /api/account/setup — 触发初始化向导（spawn aigd setup，stdio inherit，
   // 立即返回 started:true；向导交互在服务器终端进行，这是本机工具的设计）
   app.post('/api/account/setup', (c) => {
+    const op = 'account:setup'
+    const start = Date.now()
     try {
       depsAll.spawnFn(process.execPath, [AIGD_BIN_PATH, 'setup'], { stdio: 'inherit' })
     } catch (err) {
-      return c.json({ error: err.message || 'spawn failed' }, 500)
+      const message = err.message || 'spawn failed'
+      ioLogResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+      return c.json({ error: message }, 500)
     }
+    ioLogResult(op, { ok: true, message: 'started', elapsedMs: Date.now() - start })
     return c.json({ ok: true, started: true })
   })
 
@@ -2171,6 +2213,8 @@ export function createApp({
   // ?local=1：跳过云端存在性拉取，仅返回本地条目（cloudExists=null），供前端先渲染
   // 本地数据、后台再拉取云端完成合并——避免进入页面时空白等待服务端。
   app.get('/api/routes/config', async (c) => {
+    const op = 'routes:config'
+    const start = Date.now()
     const config = configStore.load()
     const gateway = config.gateway || {}
     const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
@@ -2202,6 +2246,12 @@ export function createApp({
         lastSyncedAt: entry.lastSyncedAt || null,
         cloudExists: localOnly ? null : cloudByName.has(entry.name),
       }))
+    ioLogResult(op, {
+      ok: cloudError === null,
+      message: `${routes.length} 条本地${hasCloud ? ` / ${cloudRoutes?.length ?? 0} 条云端` : ''}`,
+      elapsedMs: Date.now() - start,
+      extra: cloudError || (localOnly ? 'local=1' : ''),
+    })
     return c.json({
       ok: true,
       routes,
@@ -2215,6 +2265,8 @@ export function createApp({
 
   // POST /api/routes/save — 保存一条路由（先本地校验，落盘 dirty=true，不触网）
   app.post('/api/routes/save', async (c) => {
+    const op = 'routes:save'
+    const start = Date.now()
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
     if (!isRouteName(body.name)) {
@@ -2227,6 +2279,7 @@ export function createApp({
     } catch { /* 无配置 / 配置损坏 → 跳过警告 */ }
     const validation = depsAll.validateRouteElements(body.elements, { customPathProviders })
     if (!validation.ok) {
+      ioLogResult(op, { ok: false, message: `${body.name} elements 校验失败`, elapsedMs: Date.now() - start })
       return c.json({ error: 'elements 校验失败', errors: validation.errors }, 400)
     }
     routesState = depsAll.upsertRoute(routesState, body.name, {
@@ -2234,6 +2287,13 @@ export function createApp({
       dirty: true,
     })
     routesStore.save(routesState)
+    ioLogResult(op, {
+      ok: true,
+      message: body.name,
+      elapsedMs: Date.now() - start,
+      extra: validation.warnings?.length ? `${validation.warnings.length} 条警告` : '',
+    })
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'POST', path: '/api/routes/save', body: { name: body.name, elements: body.elements?.length ?? 0 } })
     return c.json({ ok: true, name: body.name, entry: routesState.routes[body.name], warnings: validation.warnings })
   })
 
@@ -2305,6 +2365,8 @@ export function createApp({
 
   // POST /api/routes/delete — 删除（本地必删；body.cloud=true 时同步删云端）
   app.post('/api/routes/delete', async (c) => {
+    const op = 'routes:delete'
+    const start = Date.now()
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
     if (typeof body.name !== 'string' || !body.name) {
@@ -2387,6 +2449,13 @@ export function createApp({
       delete state[modelId]
       await syncModelsToKv()
     }
+    ioLogResult(op, {
+      ok: cloudError === null,
+      message: `${routeName} local=${routesRemoved} cloud=${cloudDeleted}`,
+      elapsedMs: Date.now() - start,
+      extra: cloudError || '',
+    })
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'POST', path: '/api/routes/delete', body: { name: routeName, cloud: body.cloud === true } })
     return c.json({
       ok: cloudError === null,
       removed: true,
@@ -2399,6 +2468,8 @@ export function createApp({
   // POST /api/routes/refresh — 从云端拉取路由图覆盖本地（云端优先，与「拉取云端路由」同语义）。
   // body.name 可选：缺省刷新全部云端路由；elements 取详情 version.data（数组，实测唯一来源）。
   app.post('/api/routes/refresh', async (c) => {
+    const op = 'routes:refresh'
+    const start = Date.now()
     const body = await readJsonBody(c)
     if (body === null && c.req.header('content-type')) return c.json({ error: 'invalid json body' }, 400)
     const config = configStore.load()
@@ -2412,7 +2483,9 @@ export function createApp({
     try {
       list = await depsAll.listDynamicRoutes(mgmtToken, gateway.accountId, gateway.gatewayId)
     } catch (err) {
-      return c.json({ error: `拉取云端路由失败：${err instanceof Error ? err.message : String(err)}` }, 400)
+      const message = `拉取云端路由失败：${err instanceof Error ? err.message : String(err)}`
+      ioLogResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+      return c.json({ error: message }, 400)
     }
     const cloudRoutes = (Array.isArray(list) ? list : []).filter((r) => r && typeof r.name === 'string' && r.name)
     const wanted = body && typeof body.name === 'string' && body.name
@@ -2458,6 +2531,13 @@ export function createApp({
     }
     if (refreshedState) await syncModelsToKv()
     const failed = results.filter((r) => !r.ok)
+    ioLogResult(op, {
+      ok: failed.length === 0,
+      message: `${results.length} 条, 失败 ${failed.length}`,
+      elapsedMs: Date.now() - start,
+      extra: results.map((r) => `${r.name}:${r.ok ? 'ok' : r.error}`).join(', ').slice(0, 400),
+    })
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'POST', path: '/api/routes/refresh' })
     return c.json({ ok: failed.length === 0, results })
   })
 

@@ -32,6 +32,7 @@ import { gatewaySlug } from '../cloudflare/discover.js'
 import { createLocalBackend } from './backends/local.js'
 import { listCustomProviders } from '../cloudflare/api.js'
 import { readManagementToken as defaultReadManagementToken } from '../core/token-store.js'
+import { logResult } from '../core/io-logger.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -130,12 +131,17 @@ export function createGatewayApp(options = {}) {
 
   // GET /v1/models — 读本地 models.json
   app.get('/v1/models', (c) => {
+    const op = 'gateway:models'
+    const start = Date.now()
     try {
       const data = readModels()
+      logResult(op, { ok: true, message: `${data.length} 个模型`, elapsedMs: Date.now() - start })
       return c.json({ object: 'list', data })
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      logResult(op, { ok: false, message, elapsedMs: Date.now() - start })
       return c.json(
-        { error: `读取本地 models.json 失败: ${err instanceof Error ? err.message : String(err)}` },
+        { error: `读取本地 models.json 失败: ${message}` },
         503
       )
     }
@@ -154,6 +160,8 @@ export function createGatewayApp(options = {}) {
 
   // GET /api/gateway/status — 端口 / 各 provider 凭证状态
   app.get('/api/gateway/status', (c) => {
+    const op = 'gateway:status'
+    const start = Date.now()
     const raw = loadRawProvidersConfig(dataDir)
     const providerKeys = (raw.providers || []).map((p) => {
       const resolvedSlug = gatewaySlug(p)
@@ -172,6 +180,11 @@ export function createGatewayApp(options = {}) {
         needsReEntry: !keySaved && p?.type === 'byok',
       }
     })
+    logResult(op, {
+      ok: true,
+      message: `${providerKeys.length} 个 provider`,
+      elapsedMs: Date.now() - start,
+    })
     return c.json({
       port: gatewayConfig.port,
       providers: providerKeys,
@@ -180,28 +193,30 @@ export function createGatewayApp(options = {}) {
 
   // POST /api/gateway/backfill-keys — 云端 custom-provider 完整 headers 回填本地
   app.post('/api/gateway/backfill-keys', async (c) => {
+    const op = 'gateway:backfill'
+    const start = Date.now()
     const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || readMgmtToken()
     if (!mgmtToken) {
-      return c.json(
-        { error: '本地未配置管理 API Token，无法从云端拉取凭证；请先运行 aigd setup 或手工录入 Key' },
-        400
-      )
+      const message = '本地未配置管理 API Token，无法从云端拉取凭证；请先运行 aigd setup 或手工录入 Key'
+      logResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+      return c.json({ error: message }, 400)
     }
 
     const raw = loadRawProvidersConfig(dataDir)
     const accountId = raw.gateway?.accountId
     if (!accountId) {
-      return c.json({ error: 'providers.json 缺少 gateway.accountId，请先完成 setup' }, 400)
+      const message = 'providers.json 缺少 gateway.accountId，请先完成 setup'
+      logResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+      return c.json({ error: message }, 400)
     }
 
     let cloudList
     try {
       cloudList = await listCloudCustomProviders(mgmtToken, accountId)
     } catch (err) {
-      return c.json(
-        { error: `拉取云端 custom providers 失败: ${err instanceof Error ? err.message : String(err)}` },
-        502
-      )
+      const message = `拉取云端 custom providers 失败: ${err instanceof Error ? err.message : String(err)}`
+      logResult(op, { ok: false, message, elapsedMs: Date.now() - start })
+      return c.json({ error: message }, 502)
     }
 
     const backfilled = []
@@ -227,6 +242,11 @@ export function createGatewayApp(options = {}) {
       }
     }
 
+    logResult(op, {
+      ok: errors.length === 0,
+      message: `backfilled=${backfilled.length} skipped=${skipped.length} errors=${errors.length}`,
+      elapsedMs: Date.now() - start,
+    })
     return c.json({ ok: errors.length === 0, backfilled, skipped, errors })
   })
 

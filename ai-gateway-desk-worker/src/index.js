@@ -10,16 +10,23 @@
 import { CORS_HEADERS } from './http.js'
 import { handleChat } from './routes/chat.js'
 import { handleModels } from './routes/models.js'
+import { setDebug, logRequest, logResult } from './io-log.js'
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url)
 
-    // 调试日志：记录所有进入 Worker 的请求
-    console.log(`[REQ] ${request.method} ${url.pathname}`, {
-      userAgent: request.headers.get('User-Agent'),
-      authorization: request.headers.get('Authorization') ? 'present' : 'absent',
-      cfRay: request.headers.get('CF-Ray'),
+    setDebug(env?.IO_DEBUG === 'true')
+
+    // 入站请求日志：默认记录结果，debug 开启时记录请求细节（authorization 脱敏）
+    logRequest('worker:req', {
+      method: request.method,
+      url: url.pathname,
+      headers: {
+        'User-Agent': request.headers.get('User-Agent') ?? '',
+        'Authorization': request.headers.get('Authorization') ? 'present' : 'absent',
+        'CF-Ray': request.headers.get('CF-Ray') ?? '',
+      },
     })
 
     // CORS 预检
@@ -30,6 +37,7 @@ export default {
         ...CORS_HEADERS,
         ...(reqHeaders ? { 'Access-Control-Allow-Headers': reqHeaders } : {}),
       }
+      logResult('worker:req', { ok: true, message: 'OPTIONS 204' })
       return new Response(null, { status: 204, headers: preflightHeaders })
     }
 
@@ -38,6 +46,7 @@ export default {
     const isModels = request.method === 'GET' && url.pathname.endsWith('/models')
 
     if (!isChat && !isModels) {
+      logResult('worker:req', { ok: false, message: `404 ${url.pathname}` })
       return new Response('Not Found', { status: 404, headers: CORS_HEADERS })
     }
 

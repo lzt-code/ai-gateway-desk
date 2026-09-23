@@ -18,6 +18,11 @@ AI Gateway 模型管理工具（本地 Web 界面）+ 转发封装 Worker。
 2. **不提交私有数据**：`data/` 目录下的运行时数据（如 `models.json`、`providers.json`）不得写入 git。
 3. **改动前先读上下文**：修改代码前先阅读相关文件，理解现有结构与约定，避免破坏既有行为。
 4. **保持简洁**：优先最小改动解决问题，避免过度设计或无关重构。
+5. **统一日志格式**：所有涉及 IO 的操作（Cloudflare REST、KV REST、wrangler/子进程、文件读写、本地网关直发厂商、Worker 转发）都必须走统一日志器，禁止用裸 `console.log` 记录业务 IO：
+   - 主程序（`src/`）：`src/core/io-logger.js`；Worker（`ai-gateway-desk-worker/`）：`src/io-log.js`。
+   - 默认必须输出 `logResult`（成功/失败 + `elapsedMs` + 关键摘要）；debug 开启时另输出 `logRequest`/`logResponse` 的脱敏细节（用模块内 mask 工具，禁止打印明文 token/secret/key）。
+   - 操作名采用 `域:动作[:目标]` 风格，如 `gateway:chat:<slug>`、`routes:deploy`、`worker:chat:<slug>`。
+   - 新增接口/功能时同步确认日志覆盖；主程序日志会进入环形缓冲供前端 SSE「处理过程日志」展示，勿绕过日志器另写输出。
 
 ## Skills 按需索引（低频，不常驻上下文）
 
