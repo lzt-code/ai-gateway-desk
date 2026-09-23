@@ -45,6 +45,15 @@ const SLOTS = {
 
 const MAC_SERVICE = 'ai-gateway-desk'
 
+// ─── 槽位读取缓存：以文件 mtimeMs 为失效依据 ───────────────
+// 避免每次请求都拉起 PowerShell/security 子进程解密；槽位仅在本进程
+// writeSlot/clearSlot 或外部改文件（mtime 变化）后才重新解密。
+const slotCache = new Map() // slot → { mtimeMs, value }
+
+function invalidateSlotCache(slot) {
+  slotCache.delete(slot)
+}
+
 // ─── Windows: DPAPI 加密 ─────────────────────────────────
 
 function winScript(action) {
@@ -180,6 +189,29 @@ function resolveEntry(name) {
   return { tokenPath, macAccount: macAccountForName(name) }
 }
 
+/**
+ * 按存储名判断凭证是否已保存（不解密，无子进程开销）。
+ * Windows/Linux 直接查文件是否存在；macOS 仍需查 Keychain。
+ * @param {string} name - 相对存储名，可含子路径
+ * @returns {boolean}
+ */
+export function secretExists(name) {
+  const { tokenPath, macAccount } = resolveEntry(name)
+  try {
+    const p = getPlatform()
+    if (p === 'win32' || p === 'linux') return fs.existsSync(tokenPath)
+    if (p === 'darwin') {
+      execFileSync('security', ['find-generic-password', '-a', macAccount, '-s', MAC_SERVICE], {
+        stdio: 'ignore',
+      })
+      return true
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
 /** 按存储名读取，失败 / 未保存返回 null */
 function readEntryByName(name) {
   const { tokenPath, macAccount } = resolveEntry(name)
@@ -216,14 +248,25 @@ function deleteEntryByName(name) {
 function readSlot(slot) {
   const { file, macAccount } = SLOTS[slot]
   const tokenPath = path.join(STORE_DIR, file)
+  let mtimeMs = 0
+  try {
+    mtimeMs = fs.existsSync(tokenPath) ? fs.statSync(tokenPath).mtimeMs : 0
+  } catch {
+    mtimeMs = 0
+  }
+  const cached = slotCache.get(slot)
+  if (cached && cached.mtimeMs === mtimeMs) return cached.value
+  let value
   try {
     const p = getPlatform()
-    if (p === 'win32') return winRead(tokenPath)
-    if (p === 'darwin') return macRead(macAccount)
-    return linuxRead(tokenPath)
+    if (p === 'win32') value = winRead(tokenPath)
+    else if (p === 'darwin') value = macRead(macAccount)
+    else value = linuxRead(tokenPath)
   } catch {
-    return null
+    value = null
   }
+  if (mtimeMs > 0 && value) slotCache.set(slot, { mtimeMs, value })
+  return value
 }
 
 /** 写入指定槽位，失败时抛出（调用方应捕获并提示） */
@@ -231,9 +274,13 @@ function writeSlot(slot, token) {
   const { file, macAccount } = SLOTS[slot]
   const tokenPath = path.join(STORE_DIR, file)
   const p = getPlatform()
-  if (p === 'win32') return winWrite(token, tokenPath)
-  if (p === 'darwin') return macWrite(token, macAccount)
-  return linuxWrite(token, tokenPath)
+  try {
+    if (p === 'win32') return winWrite(token, tokenPath)
+    if (p === 'darwin') return macWrite(token, macAccount)
+    return linuxWrite(token, tokenPath)
+  } finally {
+    invalidateSlotCache(slot)
+  }
 }
 
 /** 清除指定槽位 */
@@ -241,9 +288,13 @@ function clearSlot(slot) {
   const { file, macAccount } = SLOTS[slot]
   const tokenPath = path.join(STORE_DIR, file)
   const p = getPlatform()
-  if (p === 'win32') return winClear(tokenPath)
-  if (p === 'darwin') return macClear(macAccount)
-  return linuxClear(tokenPath)
+  try {
+    if (p === 'win32') return winClear(tokenPath)
+    if (p === 'darwin') return macClear(macAccount)
+    return linuxClear(tokenPath)
+  } finally {
+    invalidateSlotCache(slot)
+  }
 }
 
 // ─── 导出接口：Gateway 槽位（cfut_xxx，绑定单 gateway）───

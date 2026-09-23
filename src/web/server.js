@@ -1978,33 +1978,8 @@ export function createApp({
     }
   }
 
-  // GET /api/gateway/overview — 网关总览（gateway.json 端口 + 进程状态 + Worker 地址自动发现 + 凭证状态）
-  app.get('/api/gateway/overview', async (c) => {
-    const op = 'gateway:overview'
-    const start = Date.now()
-    const gwConfig = depsAll.readGatewayConfig()
-    const config = configStore.load()
-    const providers = Array.isArray(config.providers) ? config.providers : []
-
-    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
-    const accountId = config.gateway?.accountId || ''
-    const endpointPromise = mgmtToken && accountId
-      ? depsAll.discoverWorkerEndpoints(mgmtToken, accountId)
-      : Promise.resolve({
-          workersDev: '',
-          customDomains: [],
-          routes: [],
-          error: mgmtToken
-            ? 'providers.json 缺少 gateway.accountId，请先完成 setup'
-            : '本地未配置管理 API Token，请先运行 aigd setup',
-        })
-
-    const [{ running, health }, workerEndpoints] = await Promise.all([
-      probeGateway(gwConfig.port),
-      endpointPromise,
-    ])
-
-    const providerRows = providers.map((p) => {
+  function buildProviderRows(providers) {
+    return providers.map((p) => {
       const slug = gatewaySlug(p)
       let keySaved = false
       try {
@@ -2021,10 +1996,41 @@ export function createApp({
         needsReEntry: !keySaved && p?.type === 'byok',
       }
     })
+  }
+
+  // GET /api/gateway/overview — 网关总览（gateway.json 端口 + 进程状态 + 凭证状态）
+  // scope=local：仅返回本地数据（workerEndpoints=null），云端 Worker 地址改由
+  // /api/gateway/worker-endpoints 异步拉取，页面先渲染本地状态再补云端卡片。
+  app.get('/api/gateway/overview', async (c) => {
+    const op = 'gateway:overview'
+    const start = Date.now()
+    const localOnly = c.req.query('scope') === 'local'
+    const gwConfig = depsAll.readGatewayConfig()
+    const config = configStore.load()
+    const providers = Array.isArray(config.providers) ? config.providers : []
+    const providerRows = buildProviderRows(providers)
+
+    let workerEndpoints = null
+    if (!localOnly) {
+      const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+      const accountId = config.gateway?.accountId || ''
+      workerEndpoints = mgmtToken && accountId
+        ? await depsAll.discoverWorkerEndpoints(mgmtToken, accountId)
+        : {
+            workersDev: '',
+            customDomains: [],
+            routes: [],
+            error: mgmtToken
+              ? 'providers.json 缺少 gateway.accountId，请先完成 setup'
+              : '本地未配置管理 API Token，请先运行 aigd setup',
+          }
+    }
+
+    const { running, health } = await probeGateway(gwConfig.port)
 
     ioLogResult(op, {
       ok: true,
-      message: `local=${running ? 'up' : 'down'} providers=${providerRows.length}`,
+      message: `local=${running ? 'up' : 'down'} providers=${providerRows.length}${localOnly ? ' scope=local' : ''}`,
       elapsedMs: Date.now() - start,
       extra: workerEndpoints?.error ? workerEndpoints.error : '',
     })
@@ -2038,6 +2044,35 @@ export function createApp({
       baseUrl: `http://127.0.0.1:${gwConfig.port}/v1`,
       providers: providerRows,
     })
+  })
+
+  // GET /api/gateway/worker-endpoints — 仅云端 Worker 地址发现（多组 Cloudflare REST）
+  app.get('/api/gateway/worker-endpoints', async (c) => {
+    const op = 'gateway:endpoints'
+    const start = Date.now()
+    const config = configStore.load()
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    const accountId = config.gateway?.accountId || ''
+    let workerEndpoints
+    if (mgmtToken && accountId) {
+      workerEndpoints = await depsAll.discoverWorkerEndpoints(mgmtToken, accountId)
+    } else {
+      workerEndpoints = {
+        workersDev: '',
+        customDomains: [],
+        routes: [],
+        error: mgmtToken
+          ? 'providers.json 缺少 gateway.accountId，请先完成 setup'
+          : '本地未配置管理 API Token，请先运行 aigd setup',
+      }
+    }
+    ioLogResult(op, {
+      ok: !workerEndpoints.error,
+      message: workerEndpoints.error || `workersDev=${workerEndpoints.workersDev ? 'on' : 'off'} domains=${workerEndpoints.customDomains.length} routes=${workerEndpoints.routes.length}`,
+      elapsedMs: Date.now() - start,
+    })
+    if (isDebugEnabled()) ioLogRequest(op, { method: 'GET', path: '/api/gateway/worker-endpoints' })
+    return c.json({ ok: true, workerEndpoints })
   })
 
   // POST /api/gateway/backfill-keys — custom-provider 完整 key 云端回填

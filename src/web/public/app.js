@@ -663,7 +663,7 @@ export function setModelPageButtonsDisabled(disabled) {
 // 用 body.init-blocking 类兜底未来新增按钮（CSS pointer-events），JS 负责当前按钮的 disabled 态。
 export function setInitOperationButtonsDisabled(disabled) {
   if (typeof document === 'undefined') return
-  const sels = ['#view-providers', '#view-models', '#view-routes', '#view-workers', '#view-account', '#side-actions', '#model-side-actions', '#routes-side-actions']
+  const sels = ['#view-providers', '#view-models', '#view-routes', '#view-account', '#side-actions', '#model-side-actions', '#routes-side-actions']
   const collect = () => {
     const els = []
     for (const sel of sels) {
@@ -5460,6 +5460,18 @@ export function buildLocalGatewayCard(overview) {
 // 云端 Worker 卡片：自动发现的地址 + 直连说明
 export function buildCloudWorkerCard(overview) {
   const o = overview || {}
+  if (o.workerEndpoints == null) {
+    return (
+      `<div class="panel gateway-box cloud-worker-card">` +
+      `<h3>云端 Worker</h3>` +
+      `<p class="slot-note">走 Cloudflare AI Gateway 时，让 Agent 的 Base URL 直接指向该 Worker，不经本地网关</p>` +
+      `<div class="baseurl-row"><span class="v muted">正在发现 Worker 地址…</span></div>` +
+      `<div class="toolbar">` +
+      `<button class="btn btn-primary btn-deploy-worker" type="button">部署 Worker</button>` +
+      `</div>` +
+      `</div>`
+    )
+  }
   const ep = o.workerEndpoints || {}
   const workersDev = typeof ep.workersDev === 'string' ? ep.workersDev.trim() : ''
   const customDomains = Array.isArray(ep.customDomains) ? ep.customDomains.filter((d) => typeof d === 'string' && d.trim()) : []
@@ -5709,10 +5721,36 @@ export function renderWorkersView(container) {
     root.innerHTML = buildGatewayView(overview)
   }
 
+  async function refreshEndpoints() {
+    try {
+      const res = await api('/api/gateway/worker-endpoints')
+      if (overview) {
+        overview.workerEndpoints = res.workerEndpoints
+        render()
+        const ep = res.workerEndpoints || {}
+        logActivity(
+          `Worker 地址发现完成：默认域名 ${ep.workersDev ? '1' : '0'} / 自定义域名 ${ep.customDomains.length} / 路由 ${ep.routes.length}`,
+          ep.error ? 'warn' : 'ok',
+        )
+      }
+    } catch (err) {
+      if (overview) {
+        overview.workerEndpoints = {
+          workersDev: '',
+          customDomains: [],
+          routes: [],
+          error: err.message,
+        }
+        render()
+      }
+      logActivity(`Worker 地址发现失败：${err.message}`, 'err')
+    }
+  }
+
   async function refresh() {
     logActivity('获取网关状态…', 'info')
     try {
-      overview = await withBusy('正在获取网关状态…', api('/api/gateway/overview'))
+      overview = await withBusy('正在获取网关状态…', api('/api/gateway/overview?scope=local'))
       render()
       const saved = Array.isArray(overview.providers)
         ? overview.providers.filter((p) => p.keySaved).length
@@ -5721,6 +5759,7 @@ export function renderWorkersView(container) {
         `网关状态：${overview.running ? '运行中' : '未运行'} / 凭证 ${saved} 个已保存`,
         'ok',
       )
+      refreshEndpoints()
     } catch (err) {
       flash(err.message, 'err')
       logActivity(`获取网关状态失败：${err.message}`, 'err')
@@ -5728,7 +5767,6 @@ export function renderWorkersView(container) {
   }
 
   async function backfill() {
-    if (guardInitBlocked('从云端回填 Key')) return
     logActivity('从云端回填 custom-provider Key…', 'info')
     try {
       const res = await withBlocking(
@@ -5750,7 +5788,6 @@ export function renderWorkersView(container) {
   }
 
   async function deployWorker() {
-    if (guardInitBlocked('部署 Worker')) return
     logActivity('开始部署 Worker…', 'info')
     try {
       const res = await withBlocking(

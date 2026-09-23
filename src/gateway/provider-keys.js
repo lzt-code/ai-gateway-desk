@@ -10,7 +10,7 @@
 // macOS Keychain / Linux 0600 文件），测试经 AI_GW_TEST_DIR 隔离。
 // ============================================================
 
-import { readSecret, writeSecret, deleteSecret } from '../core/token-store.js'
+import { readSecret, writeSecret, deleteSecret, secretExists } from '../core/token-store.js'
 
 const PREFIX = 'provider-keys'
 
@@ -77,5 +77,5 @@ export function deleteProviderHeaders(slug) {
  * @returns {boolean}
  */
 export function hasProviderKey(slug) {
-  return readProviderHeaders(slug) !== null
+  return secretExists(entryName(slug))
 }
