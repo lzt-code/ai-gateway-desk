@@ -663,7 +663,7 @@ export function setModelPageButtonsDisabled(disabled) {
 // 用 body.init-blocking 类兜底未来新增按钮（CSS pointer-events），JS 负责当前按钮的 disabled 态。
 export function setInitOperationButtonsDisabled(disabled) {
   if (typeof document === 'undefined') return
-  const sels = ['#view-providers', '#view-models', '#view-routes', '#view-account', '#side-actions', '#model-side-actions', '#routes-side-actions']
+  const sels = ['#view-providers', '#view-models', '#view-routes', '#view-workers', '#view-account', '#side-actions', '#model-side-actions', '#routes-side-actions', '#workers-side-actions']
   const collect = () => {
     const els = []
     for (const sel of sels) {
@@ -1539,6 +1539,8 @@ export function renderView(name) {
   if (modelSideActions) modelSideActions.hidden = name !== 'models'
   const routesSideActions = document.getElementById('routes-side-actions')
   if (routesSideActions) routesSideActions.hidden = name !== 'routes'
+  const workersSideActions = document.getElementById('workers-side-actions')
+  if (workersSideActions) workersSideActions.hidden = name !== 'workers'
   // 切换视图后按当前视图刷新同步进度面板可见性（仅模型页展示，切走即隐藏）
   syncProgressPanelVisibility()
 }
@@ -5529,19 +5531,6 @@ export function buildCloudWorkerCard(overview) {
   )
 }
 
-// 操作按钮
-export function buildGatewayActions(overview) {
-  return (
-    `<div class="panel gateway-mode-panel">` +
-    `<h3>网关操作</h3>` +
-    `<div class="toolbar">` +
-    `<button class="btn btn-default btn-backfill-keys" type="button">从云端回填 Key</button>` +
-    `<button class="btn btn-default btn-refresh-gateway" type="button">刷新</button>` +
-    `</div>` +
-    `</div>`
-  )
-}
-
 // 凭证状态行
 function providerKeyRow(row) {
   const r = row || {}
@@ -5583,7 +5572,6 @@ export function buildProviderKeysTable(overview) {
 export function buildGatewayView(overview) {
   return (
     `<div class="gateway-overview">` +
-    buildGatewayActions(overview) +
     `<div class="gateway-cards-grid">` +
     buildLocalGatewayCard(overview) +
     buildCloudWorkerCard(overview) +
@@ -5626,6 +5614,13 @@ function injectWorkersAccountStyles() {
     .status-item .v.muted { color: var(--muted); }
     .status-item .v.muted::before { background: var(--muted); opacity: 0.5; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+    /* 侧栏操作分组（#workers-side-actions 随视图显隐；与模型页同源，注入一份避免渲染顺序依赖） */
+    .side-group { display: flex; flex-direction: column; gap: 0.4rem; }
+    .side-group + .side-group { margin-top: 0.25rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
+    .side-group-title {
+      font-size: 0.68rem; color: var(--muted); font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.09em; margin-bottom: 0.15rem;
+    }
     /* 统一卡片化：顶光渐变 + 发丝线 + 内高光（与 .view 卡片同语言） */
     .account-view .panel {
       background: var(--card-sheen), var(--panel);
@@ -5659,12 +5654,12 @@ function injectWorkersAccountStyles() {
     /* 双网关视图 */
     .gateway-overview { margin-top: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
     .gateway-cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 0.75rem; }
-    .gateway-box, .gateway-mode-panel, .provider-keys-panel {
+    .gateway-box, .provider-keys-panel {
       background: var(--card-sheen), var(--panel);
       border: 1px solid var(--border); border-radius: var(--radius-md);
       padding: 0.75rem 1rem; box-shadow: var(--shadow-1), var(--highlight);
     }
-    .gateway-box h3, .gateway-mode-panel h3, .provider-keys-panel h3 {
+    .gateway-box h3, .provider-keys-panel h3 {
       margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 600;
     }
     .baseurl-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.6rem; flex-wrap: wrap; }
@@ -5886,6 +5881,13 @@ export function renderWorkersView(container) {
       copyWorkerUrl(btn)
     }
   })
+
+  // 右侧提示栏「网关操作」（#workers-side-actions，index.html 静态定义，随视图显隐）；
+  // Node 测试环境无该元素，静默跳过相关交互
+  const sideBackfill = document.getElementById('wbtn-backfill-keys')
+  const sideRefresh = document.getElementById('wbtn-refresh-gateway')
+  if (sideBackfill) sideBackfill.addEventListener('click', () => backfill())
+  if (sideRefresh) sideRefresh.addEventListener('click', () => refresh())
 
   refresh()
 }

@@ -1,13 +1,12 @@
 /**
  * 网关视图纯函数测试：
  * buildLocalGatewayCard / buildCloudWorkerCard /
- * buildGatewayActions / buildProviderKeysTable / buildGatewayView
+ * buildProviderKeysTable / buildGatewayView
  */
 
 import {
   buildLocalGatewayCard,
   buildCloudWorkerCard,
-  buildGatewayActions,
   buildProviderKeysTable,
   buildGatewayView,
 } from '../src/web/public/app.js'
@@ -104,16 +103,7 @@ section('2. buildCloudWorkerCard')
   check(errCard.includes('aigd setup'), '展示发现错误提示')
 }
 
-section('3. buildGatewayActions')
-{
-  const html = buildGatewayActions(overview)
-  check(html.includes('网关操作'), '标题')
-  check(html.includes('btn-backfill-keys'), '回填按钮')
-  check(html.includes('btn-refresh-gateway'), '刷新按钮')
-  check(!html.includes('mode-btn'), '不再有模式按钮')
-}
-
-section('4. buildProviderKeysTable')
+section('3. buildProviderKeysTable')
 {
   const html = buildProviderKeysTable(overview)
   check(html.includes('本地凭证'), '标题')
@@ -127,16 +117,16 @@ section('4. buildProviderKeysTable')
   check(empty.includes('<tbody></tbody>'), '空列表 tbody 为空')
 }
 
-section('5. buildGatewayView 聚合')
+section('4. buildGatewayView 聚合')
 {
   const html = buildGatewayView(overview)
   check(html.includes('本地网关'), '含本地网关卡')
   check(html.includes('云端 Worker'), '含云端 Worker 卡')
-  check(html.includes('网关操作'), '含操作面板')
+  check(!html.includes('网关操作'), '操作面板已移至右侧提示栏，不内联')
   check(html.includes('本地凭证'), '含凭证表')
 }
 
-section('6. XSS 转义')
+section('5. XSS 转义')
 {
   const evil = {
     ...overview,
