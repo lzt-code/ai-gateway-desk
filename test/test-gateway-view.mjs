@@ -64,10 +64,31 @@ section('2. buildCloudWorkerCard')
 {
   const html = buildCloudWorkerCard(overview)
   check(html.includes('云端 Worker'), '标题')
-  check(html.includes('https://ai-gateway-desk-worker.my-sub.workers.dev'), 'workers.dev 地址')
-  check(html.includes('ai.example.com'), '自定义域名')
-  check(html.includes('https://&lt;子域&gt;.laoliu-dev.uk/api/v1'), 'Workers 路由地址（HTML 转义）')
+  check(html.includes('https://ai-gateway-desk-worker.my-sub.workers.dev'), '默认域名地址')
+  check(html.includes('默认域名'), '默认域名标签')
+  check(html.includes('ai.example.com'), '自定义域名地址')
+  check(html.includes('https://&lt;子域&gt;.laoliu-dev.uk/api/v1'), '路由地址（HTML 转义）')
+  check(!html.includes('>域名<'), '行内无「域名」小标签')
+  check(html.includes('>路由<'), '标题后「路由」标签')
+  check(html.includes('endpoint-tag warn">路由<'), '通配符路由标签高亮')
+  check(
+    html.indexOf('>自定义域名<') < html.indexOf('>路由<') &&
+      html.indexOf('>路由<') < html.indexOf('https://&lt;子域&gt;'),
+    '「路由」标签位于标题后、地址前'
+  )
   check(html.includes('替换为真实子域'), '通配符占位提示')
+  {
+    const headCount = (html.match(/endpoint-head/g) || []).length
+    check(headCount === 3, '共 3 个标题行（默认域名/自定义域名/自定义域名+路由）')
+  }
+  {
+    const domainsOnly = buildCloudWorkerCard({
+      workerEndpoints: { workersDev: '', customDomains: ['a.example.com', 'b.example.com'], routes: [], error: '' },
+    })
+    check(!domainsOnly.includes('>路由<'), '仅 Custom Domains 时无「路由」标签')
+    const headCount = (domainsOnly.match(/endpoint-head/g) || []).length
+    check(headCount === 2, '仅 2 个标题行')
+  }
   check(!html.includes('btn-edit-workerurl'), '无编辑按钮')
   check(html.includes('btn-deploy-worker'), '部署按钮')
   check(html.includes('btn-copy-worker-url'), '地址复制按钮')

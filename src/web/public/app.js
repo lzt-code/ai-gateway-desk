@@ -5466,29 +5466,49 @@ export function buildCloudWorkerCard(overview) {
   const routeUrls = Array.isArray(ep.routes) ? ep.routes.filter((d) => typeof d === 'string' && d.trim()) : []
   const error = typeof ep.error === 'string' ? ep.error.trim() : ''
 
-  const endpointRow = (label, url, hint) =>
-    `<div class="baseurl-row"><span class="k">${label}</span>` +
+  const headRow = (label, tag, tagCls) =>
+    `<div class="endpoint-head"><span class="k">${label}</span>` +
+    (tag ? `<span class="endpoint-tag${tagCls || ''}">${tag}</span>` : '') +
+    `</div>`
+
+  const urlRow = (url, hint) =>
+    `<div class="baseurl-row">` +
     `<code class="baseurl-code"${hint ? ` title="${escapeHtml(hint)}"` : ''}>${escapeHtml(url)}</code>` +
     `<button class="btn btn-default btn-copy-worker-url" type="button" data-url="${escapeHtml(url)}">复制</button></div>` +
     (hint ? `<p class="gateway-hint warn">${escapeHtml(hint)}</p>` : '')
+
+  const textRow = (text) => `<div class="baseurl-row"><span class="v warn">${text}</span></div>`
+
+  const hasWildcard = routeUrls.some((d) => d.includes('<子域>'))
+  const wildcardHint = '通配符路由：请将 <子域> 替换为真实子域（该子域需有代理到 Cloudflare 的 DNS 记录）'
+
+  const defaultBlock =
+    headRow('默认域名') +
+    (workersDev
+      ? urlRow(workersDev)
+      : textRow('未开启'))
+
+  let customBlock = ''
+  if (customDomains.length) {
+    customBlock += headRow('自定义域名') + customDomains.map((d) => urlRow(d)).join('')
+  }
+  if (routeUrls.length) {
+    customBlock +=
+      headRow('自定义域名', '路由', hasWildcard ? ' warn' : '') +
+      routeUrls
+        .map((d) => (d.includes('<子域>') ? urlRow(d, wildcardHint) : urlRow(d)))
+        .join('')
+  }
+  if (!customBlock) {
+    customBlock = headRow('自定义域名') + textRow('未绑定')
+  }
 
   return (
     `<div class="panel gateway-box cloud-worker-card">` +
     `<h3>云端 Worker</h3>` +
     `<p class="slot-note">走 Cloudflare AI Gateway 时，让 Agent 的 Base URL 直接指向该 Worker，不经本地网关</p>` +
-    (workersDev
-      ? endpointRow('workers.dev', workersDev)
-      : `<div class="status-item"><span class="k">workers.dev</span><span class="v warn">未开启</span></div>`) +
-    (customDomains.length
-      ? customDomains.map((d) => endpointRow('自定义域名', d)).join('')
-      : `<div class="status-item"><span class="k">自定义域名</span><span class="v warn">未绑定</span></div>`) +
-    (routeUrls.length
-      ? routeUrls.map((d) =>
-          d.includes('<子域>')
-            ? endpointRow('Workers 路由', d, '通配符路由：请将 <子域> 替换为真实子域（该子域需有代理到 Cloudflare 的 DNS 记录）')
-            : endpointRow('Workers 路由', d)
-        ).join('')
-      : '') +
+    defaultBlock +
+    customBlock +
     (error ? `<p class="gateway-hint warn">${escapeHtml(error)}</p>` : '') +
     `<div class="toolbar">` +
     `<button class="btn btn-primary btn-deploy-worker" type="button">部署 Worker</button>` +
@@ -5637,6 +5657,16 @@ function injectWorkersAccountStyles() {
     }
     .baseurl-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.6rem; flex-wrap: wrap; }
     .baseurl-row .k { color: var(--muted); font-size: 0.85rem; }
+    .endpoint-head {
+      display: flex; align-items: center; gap: 0.5rem;
+      margin-top: 0.7rem; font-size: 0.85rem;
+    }
+    .endpoint-tag {
+      flex: none; font-size: 0.75rem; line-height: 1; padding: 0.25rem 0.4rem;
+      color: var(--muted); background: var(--panel);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+    }
+    .endpoint-tag.warn { color: var(--warn); background: var(--warn-soft); border-color: var(--warn-border); }
     .baseurl-code {
       flex: 1; min-width: 0; background: var(--panel);
       border: 1px solid var(--border); border-radius: var(--radius-sm);
