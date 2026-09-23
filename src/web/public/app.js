@@ -5761,6 +5761,30 @@ export function renderWorkersView(container) {
     }
   }
 
+  // 回填跳过/失败明细：逐条列出原因。无法回填的 provider 多为其 Key 直接在
+  // Cloudflare 配置（dashboard 创建 / BYOK），云端只存掩码或无可读 headers，
+  // 需在凭证表中手工「录入」。
+  function showBackfillFailures(res) {
+    const items = []
+    for (const it of Array.isArray(res.skipped) ? res.skipped : []) {
+      items.push(
+        `<li><code>${escapeHtml(it.slug || '(unknown)')}</code>：${escapeHtml(it.reason || '跳过')}</li>`,
+      )
+    }
+    for (const it of Array.isArray(res.errors) ? res.errors : []) {
+      items.push(
+        `<li><code>${escapeHtml(it.slug || '(unknown)')}</code>：${escapeHtml(it.error || '失败')}</li>`,
+      )
+    }
+    showDialog({
+      title: '部分 Provider 未能回填 Key',
+      body:
+        `<p class="slot-note">以下 Provider 无法从云端回填：</p>` +
+        `<ul>${items.join('')}</ul>` +
+        `<p class="slot-note">若其 Key 是直接在 Cloudflare 配置的（dashboard 创建 / BYOK），云端不会返回完整 Key，请在上表对应 Provider 点「录入」手工补录。</p>`,
+    })
+  }
+
   async function backfill() {
     logActivity('从云端回填 custom-provider Key…', 'info')
     try {
@@ -5775,6 +5799,7 @@ export function renderWorkersView(container) {
         flash(`回填 ${n} 个 / 跳过 ${s} / 失败 ${e}`, e ? 'err' : 'ok')
         logActivity(`Key 回填完成：${n} 成功 / ${s} 跳过 / ${e} 失败`, e ? 'err' : 'ok')
         refresh()
+        if (s > 0 || e > 0) showBackfillFailures(res)
       }
     } catch (err) {
       flash(err.message, 'err')

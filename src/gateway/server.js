@@ -231,7 +231,12 @@ export function createGatewayApp(options = {}) {
       }
       const headers = parseCloudHeaders(item.headers)
       if (!headers) {
-        skipped.push({ slug, reason: 'headers 缺失或无法解析' })
+        // custom-provider 的完整 key 内联在 headers 字段；直接在 Cloudflare 配置的
+        // provider（dashboard 无 headers 入口 / BYOK 仅存掩码）不会返回可读 key。
+        const reason = item.headers
+          ? 'headers 无法解析，请手工录入'
+          : '云端未返回可读 Key（多为此 provider 直接在 Cloudflare 配置，密钥无法回填，请手工录入）'
+        skipped.push({ slug, reason })
         continue
       }
       // 云端 custom-provider slug 不带 custom- 前缀，本地按 gatewaySlug 存取
