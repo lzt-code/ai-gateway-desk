@@ -117,7 +117,7 @@ export function buildVendorUrl(baseUrl, pathPrefix) {
  *
  * @param {object} provider - providers.json 中的 provider 条目
  * @returns {string} 厂商 /chat/completions 完整 URL
- * @throws 无法确定 base_url 时抛错（提示补录或让 Agent 直连云端 Worker）
+ * @throws 无法确定 base_url 时抛错（提示补录或让 Agent 直连 Cloudflare 网关）
  */
 export function resolveProviderEndpoint(provider) {
   if (!provider || typeof provider !== 'object') {
@@ -132,6 +132,6 @@ export function resolveProviderEndpoint(provider) {
     if (builtin) return buildVendorUrl(builtin, provider.pathPrefix)
   }
   throw new Error(
-    `provider '${id}' 本地缺少 base_url，无法直发；请补录 base_url，或让 Agent 直连云端 Worker`
+    `provider '${id}' 本地缺少 base_url，无法直发；请补录 base_url，或让 Agent 直连 Cloudflare 网关`
   )
 }

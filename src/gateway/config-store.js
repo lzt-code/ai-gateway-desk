@@ -6,7 +6,7 @@
 //     "port": 8788                    // 本地网关固定端口
 //   }
 //
-// Cloudflare 路线（共享边缘 IP）由 Agent 直连云端 Worker，不经本地网关；
+// Cloudflare 路线（共享边缘 IP）由 Agent 直连 Cloudflare 网关，不经本地网关；
 // Worker 地址由 Cloudflare API 自动发现，不落地存储。
 //
 // 数据目录按 import.meta.url 定位（不依赖 cwd），与其他 src 模块一致；

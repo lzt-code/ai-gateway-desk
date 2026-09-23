@@ -92,10 +92,10 @@ export function indexElements(elements) {
 export function unsupportedNodeError(node) {
   const type = node?.type
   if (type === 'conditional') {
-    return '本地网关不支持 conditional（条件分支）图结构，该结构仅 Cloudflare 支持，请让 Agent 直连云端 Worker'
+    return '本地网关不支持 conditional（条件分支）图结构，该结构仅 Cloudflare 支持，请让 Agent 直连 Cloudflare 网关'
   }
   if (type === 'rate') {
-    return '本地网关不支持 rate（限流）图结构，该结构仅 Cloudflare 支持，请让 Agent 直连云端 Worker'
+    return '本地网关不支持 rate（限流）图结构，该结构仅 Cloudflare 支持，请让 Agent 直连 Cloudflare 网关'
   }
   return null
 }
@@ -183,7 +183,7 @@ export function createFallbackEngine(deps = {}) {
     if (!credentialHeaders) {
       return {
         ok: false,
-        error: `本地缺少 provider '${slug}' 的凭证，请回填 / 录入，或让 Agent 直连云端 Worker`,
+        error: `本地缺少 provider '${slug}' 的凭证，请回填 / 录入，或让 Agent 直连 Cloudflare 网关`,
         status: 400,
       }
     }
@@ -317,7 +317,7 @@ export function createFallbackEngine(deps = {}) {
       if (node.type !== 'model') {
         return fail(
           400,
-          `本地网关不支持 ${node.type} 图结构，该结构仅 Cloudflare 支持，请让 Agent 直连云端 Worker`
+          `本地网关不支持 ${node.type} 图结构，该结构仅 Cloudflare 支持，请让 Agent 直连 Cloudflare 网关`
         )
       }
 

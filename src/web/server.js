@@ -1999,8 +1999,8 @@ export function createApp({
   }
 
   // GET /api/gateway/overview — 网关总览（gateway.json 端口 + 进程状态 + 凭证状态）
-  // scope=local：仅返回本地数据（workerEndpoints=null），云端 Worker 地址改由
-  // /api/gateway/worker-endpoints 异步拉取，页面先渲染本地状态再补云端卡片。
+  // scope=local：仅返回本地数据（workerEndpoints=null），Cloudflare 网关地址改由
+  // /api/gateway/worker-endpoints 异步拉取，页面先渲染本地状态再补 Cloudflare 网关卡。
   app.get('/api/gateway/overview', async (c) => {
     const op = 'gateway:overview'
     const start = Date.now()
@@ -2046,7 +2046,7 @@ export function createApp({
     })
   })
 
-  // GET /api/gateway/worker-endpoints — 仅云端 Worker 地址发现（多组 Cloudflare REST）
+  // GET /api/gateway/worker-endpoints — 仅 Cloudflare 网关地址发现（多组 Cloudflare REST）
   app.get('/api/gateway/worker-endpoints', async (c) => {
     const op = 'gateway:endpoints'
     const start = Date.now()

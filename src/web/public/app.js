@@ -14,7 +14,7 @@ export const VIEWS = {
   PROVIDERS: 'providers',  // 选项卡 1：Provider
   MODELS: 'models',        // 选项卡 2：模型
   ROUTES: 'routes',        // 选项卡 3：动态路由（只读展示 Cloudflare Dynamic Routes fallback 链）
-  GATEWAY: 'workers',      // 选项卡 4：网关（云端 Worker + 本地网关）
+  GATEWAY: 'workers',      // 选项卡 4：网关（Cloudflare 网关 + 本地网关）
   ACCOUNT: 'account',      // 选项卡 5：账户
 }
 
@@ -33,7 +33,7 @@ export const VIEW_HINTS = {
   providers: '云端合并展示 Provider；「隐藏」开关会同步 KV，跨 PC 生效',
   models: 'Provider 侧栏 + 模型表格；space 切换选中/隐藏；同步后保存并部署',
   routes: '动态路由 fallback 链只读展示；数据随「更新模型列表」同步更新，编辑请到 Cloudflare 后台',
-  workers: '本地网关直发厂商（本机 IP）/ cloud 模式走云端 Worker，Agent Base URL 保持不变',
+  workers: '本地网关直发厂商（本机 IP）/ cloud 模式走 Cloudflare 网关，Agent Base URL 保持不变',
   account: '管理 API Token 与 Gateway Token（cfut_xxx）双槽位管理',
 }
 
@@ -5459,13 +5459,13 @@ export function buildLocalGatewayCard(overview) {
   )
 }
 
-// 云端 Worker 卡片：自动发现的地址 + 直连说明
+// Cloudflare 网关卡（转发 Worker）：自动发现的地址 + 直连说明
 export function buildCloudWorkerCard(overview) {
   const o = overview || {}
   if (o.workerEndpoints == null) {
     return (
       `<div class="panel gateway-box cloud-worker-card">` +
-      `<h3>云端 Worker</h3>` +
+      `<h3>Cloudflare 网关</h3>` +
       `<p class="slot-note">走 Cloudflare AI Gateway 时，让 Agent 的 Base URL 直接指向该 Worker，不经本地网关</p>` +
       `<div class="baseurl-row"><span class="v muted">正在发现 Worker 地址…</span></div>` +
       `<div class="toolbar">` +
@@ -5519,7 +5519,7 @@ export function buildCloudWorkerCard(overview) {
 
   return (
     `<div class="panel gateway-box cloud-worker-card">` +
-    `<h3>云端 Worker</h3>` +
+    `<h3>Cloudflare 网关</h3>` +
     `<p class="slot-note">走 Cloudflare AI Gateway 时，让 Agent 的 Base URL 直接指向该 Worker，不经本地网关</p>` +
     defaultBlock +
     customBlock +
@@ -5706,7 +5706,7 @@ export function renderWorkersView(container) {
   // ── DOM 骨架 ────────────────────────────────────────────
   container.innerHTML = `
     <h2 class="view-title">网关</h2>
-    <p class="view-note">本地网关以本机出口 IP 直发厂商；需要 Cloudflare 能力时让 Agent 直连云端 Worker</p>
+    <p class="view-note">本地网关以本机出口 IP 直发厂商；需要 Cloudflare 能力时让 Agent 直连 Cloudflare 网关</p>
     <div id="gateway-root"></div>
   `
 

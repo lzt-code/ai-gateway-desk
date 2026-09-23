@@ -265,7 +265,7 @@ section('9. 不支持的图结构 → 400 明确报错')
   const res = await engine.execute('demo', body)
   const text = await res.text()
   check(res.status === 400, 'conditional → 400')
-  check(text.includes('直连云端 Worker'), '提示直连 Worker')
+  check(text.includes('直连 Cloudflare 网关'), '提示直连 Cloudflare 网关')
 }
 
 section('10. 边界：路由不存在 / 缺 start / 环')

@@ -62,7 +62,7 @@ section('1. buildLocalGatewayCard')
 section('2. buildCloudWorkerCard')
 {
   const html = buildCloudWorkerCard(overview)
-  check(html.includes('云端 Worker'), '标题')
+  check(html.includes('Cloudflare 网关'), '标题')
   check(html.includes('https://ai-gateway-desk-worker.my-sub.workers.dev'), '默认域名地址')
   check(html.includes('默认域名'), '默认域名标签')
   check(html.includes('ai.example.com'), '自定义域名地址')
@@ -121,7 +121,7 @@ section('4. buildGatewayView 聚合')
 {
   const html = buildGatewayView(overview)
   check(html.includes('本地网关'), '含本地网关卡')
-  check(html.includes('云端 Worker'), '含云端 Worker 卡')
+  check(html.includes('Cloudflare 网关'), '含 Cloudflare 网关卡')
   check(!html.includes('网关操作'), '操作面板已移至右侧提示栏，不内联')
   check(html.includes('本地凭证'), '含凭证表')
 }

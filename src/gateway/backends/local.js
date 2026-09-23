@@ -106,7 +106,7 @@ export function createLocalBackend(deps = {}) {
       const credentialHeaders = readProviderHeaders(slug)
       if (!credentialHeaders) {
         const message =
-          `本地缺少 provider '${slug}' 的凭证，请在管理界面回填 / 录入，或让 Agent 直连云端 Worker`
+          `本地缺少 provider '${slug}' 的凭证，请在管理界面回填 / 录入，或让 Agent 直连 Cloudflare 网关`
         logResult(op, { ok: false, message, elapsedMs: Date.now() - start })
         return jsonError(400, message)
       }
