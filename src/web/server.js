@@ -2123,9 +2123,13 @@ export function createApp({
         skipped.push({ slug, reason: 'headers 缺失或无法解析' })
         continue
       }
+      // 云端 custom-provider 的 slug 不带 custom- 前缀（见 providers-sync），
+      // 本地凭证按 gatewaySlug（custom- 前缀）存取，须归一化后再写，否则
+      // 网关 / 总览按 custom-<slug> 查不到回填的 key。
+      const localSlug = gatewaySlug({ id: slug, type: 'custom-provider' })
       try {
-        depsAll.writeProviderKey(slug, headers)
-        backfilled.push(slug)
+        depsAll.writeProviderKey(localSlug, headers)
+        backfilled.push(localSlug)
       } catch (err) {
         errors.push({ slug, error: err instanceof Error ? err.message : String(err) })
       }

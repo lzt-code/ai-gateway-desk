@@ -122,10 +122,10 @@ try {
       writeProviderHeaders: (slug, headers) => keyState.set(slug, headers),
       listCloudCustomProviders: async () => [
         {
-          slug: 'custom-fang-zhou',
+          slug: 'fang-zhou',
           headers: JSON.stringify({ Authorization: 'Bearer sk-full-key' }),
         },
-        { slug: 'custom-noheaders' },
+        { slug: 'noheaders' },
       ],
       readManagementToken: () => 'mgmt-token',
     })
@@ -141,7 +141,7 @@ try {
       '本地加密存储写入完整 key'
     )
     check(
-      body.skipped.some((s) => s.slug === 'custom-noheaders'),
+      body.skipped.some((s) => s.slug === 'noheaders'),
       '无 headers 条目进入 skipped'
     )
 

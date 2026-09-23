@@ -234,9 +234,11 @@ export function createGatewayApp(options = {}) {
         skipped.push({ slug, reason: 'headers 缺失或无法解析' })
         continue
       }
+      // 云端 custom-provider slug 不带 custom- 前缀，本地按 gatewaySlug 存取
+      const localSlug = gatewaySlug({ id: slug, type: 'custom-provider' })
       try {
-        writeHeaders(slug, headers)
-        backfilled.push(slug)
+        writeHeaders(localSlug, headers)
+        backfilled.push(localSlug)
       } catch (err) {
         errors.push({ slug, error: err instanceof Error ? err.message : String(err) })
       }

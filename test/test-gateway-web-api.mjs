@@ -218,7 +218,7 @@ try {
         readManagementToken: () => 'mgmt-token',
         listCloudCustomProviders: async () => [
           {
-            slug: 'custom-fang-zhou',
+            slug: 'fang-zhou',
             headers: JSON.stringify({ Authorization: 'Bearer sk-cloud' }),
           },
           { slug: 'bad', headers: 'not-json' },
