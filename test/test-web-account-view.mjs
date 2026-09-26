@@ -139,6 +139,16 @@ check(a3.includes('尚未初始化'), 'gateway 未配置 → 含「尚未初始�
 check(a1.includes('绝不分发'), 'management 卡含「绝不分发」说明文案')
 check(a1.includes('cfut_xxx'), 'gateway 卡含「cfut_xxx」说明文案')
 
+// 8b：管理 API Token 卡 Cloudflare 外链（添加 / 编辑入口，仅 management 卡出现一次）
+check(a1.includes('dash.cloudflare.com/profile/api-tokens'), 'management 卡含 Cloudflare API Tokens 外链')
+check(
+  a1.includes('href="https://dash.cloudflare.com/profile/api-tokens"') &&
+    a1.includes('target="_blank"') &&
+    a1.includes('rel="noopener noreferrer"'),
+  '外链为新窗口打开且带 rel=noopener noreferrer',
+)
+check(a1.split('dash.cloudflare.com/profile/api-tokens').length - 1 === 1, '外链仅在 management 卡出现一次')
+
 // ── 9：slotLabel ──────────────────────────────────────────
 section('slotLabel')
 check(slotLabel('management') === '管理 API Token', "management → '管理 API Token'")

@@ -61,6 +61,12 @@ export function buildCfGatewayLogsUrl(accountId, gatewayId) {
   return `https://dash.cloudflare.com/${enc(accountId)}/ai/ai-gateway/gateways/${enc(gatewayId)}/logs`
 }
 
+// ── Cloudflare API Tokens（管理令牌）外部入口 ──────────
+// 账户页「管理 API Token」卡「在 Cloudflare 中添加 / 编辑 ↗」链接：
+// 管理令牌是账户级 user 令牌，统一在 profile 的 API Tokens 页创建/编辑；
+// Cloudflare 不提供 token 详情直达 URL，故始终指向该列表页（与 setup.js 第 1 步一致）。
+export const CF_API_TOKENS_URL = 'https://dash.cloudflare.com/profile/api-tokens'
+
 // ── 动态路由视图：路由收集（纯函数，Node 测试可直接 import）──────
 // 从 /api/state 全集中收集动态路由条目（modelId 以 dynamic/ 开头），
 // 归一化 fallback 链供 renderRoutesView 展示。保持 state 插入顺序（即同步顺序）。
@@ -5411,6 +5417,11 @@ export function buildAccountStatusView(tokens, gateway) {
   const slotCards = ['management', 'gateway']
     .map((slot) => {
       const e = t[slot] || {}
+      // 管理 API Token 卡附「在 Cloudflare 中添加 / 编辑 ↗」外链（cloudflare.com/profile/api-tokens）
+      const cfLink =
+        slot === 'management'
+          ? `<a class="slot-cf-link" href="${CF_API_TOKENS_URL}" target="_blank" rel="noopener noreferrer">在 Cloudflare 中添加 / 编辑 ↗</a>`
+          : ''
       return (
         `<div class="panel slot-card" data-slot="${slot}">` +
         `<h3>${escapeHtml(slotLabel(slot))}</h3>` +
@@ -5418,6 +5429,7 @@ export function buildAccountStatusView(tokens, gateway) {
         `<div class="slot-status">${escapeHtml(slotStatusLine(e))}</div>` +
         `<button class="btn-update" type="button" data-slot="${slot}">更新</button>` +
         `<button class="btn-clear" type="button" data-slot="${slot}">清除</button>` +
+        cfLink +
         `</div>`
       )
     })
@@ -5651,6 +5663,12 @@ function injectWorkersAccountStyles() {
     .slot-card .btn-clear:hover {
       background: var(--err-soft); color: var(--err); border-color: var(--err-border);
     }
+    /* 管理 API Token 卡外链：紧贴按钮组，低调强调色，↗ 表示新窗口打开 */
+    .slot-card .slot-cf-link {
+      display: block; margin-top: 0.55rem;
+      color: var(--accent); font-size: 0.82rem; text-decoration: none;
+    }
+    .slot-card .slot-cf-link:hover { text-decoration: underline; }
     /* 双网关视图 */
     .gateway-overview { margin-top: 0.75rem; display: flex; flex-direction: column; gap: 0.75rem; }
     .gateway-cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 0.75rem; }
