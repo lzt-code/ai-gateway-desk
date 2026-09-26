@@ -285,6 +285,8 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 
 优先级：环境变量（`CLOUDFLARE_API_TOKEN` / `GATEWAY_TOKEN`）> 本地安全存储。管理 Token 账户级凭证不可分发；`cfut_xxx` 泄露影响面仅限其绑定的 gateway。
 
+> 账户页对管理 Token 做自检：`/user/tokens/verify` 取当前令牌 id，`/user/tokens`（需 `User → API Tokens → Read`）取名称与 policies，逐条比对所需权限（AI Gateway / Workers Scripts / KV Edit 等）并列出缺失项。所需权限清单为静态数据（由 `/api/account/status` 返回），未配置令牌或权限读取失败时表格仍完整展示，用户据此创建/补充。
+
 ### 6.1 Provider 厂商 Key 的两种存储方式
 
 > 2026-08-22 补充。本工具（aigd）与 Cloudflare 网页对 provider key 的写入路径不同，**存储后端不一致**——两者都落在 Cloudflare 云端，但一个存进 Secrets Store、一个内联在 provider_configs / custom-provider 的 `headers` 里。因此「在 Cloudflare 管理界面能否看到 key」取决于配置来源。
@@ -412,7 +414,7 @@ aigd setup
 | Provider | 云端 Provider 列表（合并本地缓存）：编辑（slug 只读 / name 可改 / api key 仅覆盖不查看 / 云端启用 / 本地参与发现）、删除（云端 + 本地同步）、刷新 |
 | 模型 | 模型表格（模型ID / Provider / 上下文 / 状态 四列）：Provider 侧栏与关键字筛选、状态切换、同步云端、保存并提交 |
 | Worker | 部署状态面板（KV namespace / data/models.json / KV key 三态），一键部署 Worker |
-| 账户 | 双 token 槽位管理（管理 API Token / Gateway Token）+ gateway 信息，初始化向导入口 |
+| 账户 | 双 token 槽位管理（管理 API Token / Gateway Token）+ 管理 Token 名称与所需权限自检 + gateway 信息，初始化向导入口 |
 
 > 管理 Token 获取顺序：环境变量 `CLOUDFLARE_API_TOKEN` > 本地安全存储；缺失时 Provider 拉取降级为只读本地缓存。
 

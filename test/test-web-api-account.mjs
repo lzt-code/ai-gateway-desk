@@ -100,6 +100,18 @@ function makeDeps(overrides = {}, spawnResult = {}) {
     loadModelsJsonState: () => ({ exists: true, count: 12 }),
     readToken: () => 'cfut-local',
     readManagementToken: () => 'mgt-local',
+    fetchManagementTokenInfo: async (token) => {
+      calls.push(['token-info', token])
+      return {
+        ok: true,
+        configured: true,
+        tokenId: 't1',
+        status: 'active',
+        name: 'Mgt Token',
+        permissions: [],
+        permissionsReadable: true,
+      }
+    },
     // KV REST 读写 no-op：模型 toggle（即时写 hidden-models）与 provider 可见性读取
     // 走 DEFAULT_DEPS 会拿 mock token 发真实网络请求，注入 no-op 杜绝触网
     readKvVisibility: async () => ({}),
@@ -271,6 +283,14 @@ section('GET /api/account/status')
   check(res.status === 200 && data.ok === true, '测试 8: account/status 200 ok')
   check(data.tokens.gateway.source === 'local', '测试 8: gateway 槽位 source local')
   check(data.tokens.management.source === 'local', '测试 8: management 槽位 source local')
+  check(
+    Array.isArray(data.requiredPermissions) && data.requiredPermissions.length > 0,
+    '测试 8: 返回所需权限静态清单（供表格先渲染）'
+  )
+  check(
+    data.requiredPermissions.some((p) => p.id === 'api-tokens-read'),
+    '测试 8: 静态清单含 API Tokens · Read'
+  )
 }
 
 {
@@ -300,6 +320,60 @@ section('GET /api/account/status')
     res.status === 200 && data.gateway.accountId === '未配置' && data.gateway.gatewayId === '未配置',
     '测试 10: gateway 未配置 → 未配置文案，不抛错'
   )
+}
+
+// ── 令牌自检（管理 API Token 名称 + 所需权限）────────────
+
+section('GET /api/account/token-info')
+
+{
+  clearEnv()
+  const deps = makeDeps()
+  const { app } = makeApp(deps)
+  const res = await app.request('/api/account/token-info')
+  const data = await res.json()
+  check(res.status === 200 && data.ok === true && data.name === 'Mgt Token', '测试 19: token-info 200 透传名称')
+  check(Array.isArray(data.permissions), '测试 19: 始终返回权限清单（前端据此回填表格）')
+  const call = deps.calls.find((c) => c[0] === 'token-info')
+  check(call && call[1] === 'mgt-local', '测试 19: 以本地管理 Token 调用自检')
+}
+
+{
+  clearEnv()
+  const deps = makeDeps({ readManagementToken: () => null })
+  const { app } = makeApp(deps)
+  const res = await app.request('/api/account/token-info')
+  const data = await res.json()
+  check(res.status === 200 && data.configured === false, '测试 20: 未配置管理 Token → configured false')
+  check(!deps.calls.some((c) => c[0] === 'token-info'), '测试 20: 未配置时短路，不触发自检')
+}
+
+{
+  clearEnv()
+  process.env.CLOUDFLARE_API_TOKEN = 'env-mgt'
+  try {
+    const deps = makeDeps()
+    const { app } = makeApp(deps)
+    const res = await app.request('/api/account/token-info')
+    await res.json()
+    const call = deps.calls.find((c) => c[0] === 'token-info')
+    check(call && call[1] === 'env-mgt', '测试 21: env 管理 Token 优先')
+  } finally {
+    delete process.env.CLOUDFLARE_API_TOKEN
+  }
+}
+
+{
+  clearEnv()
+  const deps = makeDeps({
+    fetchManagementTokenInfo: async () => {
+      throw new Error('boom')
+    },
+  })
+  const { app } = makeApp(deps)
+  const res = await app.request('/api/account/token-info')
+  const data = await res.json()
+  check(res.status === 200 && data.ok === false && data.error === 'boom', '测试 22: 自检异常 → 200 { ok:false, error }')
 }
 
 // ── Token 更新 ───────────────────────────────────────────

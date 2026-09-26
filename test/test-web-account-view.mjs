@@ -14,6 +14,7 @@ const mod = await import('../src/web/public/app.js')
 const {
   buildWorkersStatusView,
   buildAccountStatusView,
+  buildManagementTokenInfo,
   slotLabel,
   api,
   registerViewRenderer,
@@ -149,6 +150,115 @@ check(
 )
 check(a1.split('dash.cloudflare.com/profile/api-tokens').length - 1 === 1, '外链仅在 management 卡出现一次')
 
+// 8c：令牌自检区块（名称 + 所需权限表格）经第 3/4 参数注入 management 卡
+const manifestFixture = [
+  { id: 'ai-gateway-edit', label: 'AI Gateway · Edit', reason: '创建网关 / 存厂商 Key / 管理动态路由', required: true },
+  { id: 'workers-kv-edit', label: 'Workers KV Storage · Edit', reason: '创建 KV namespace', required: true },
+  { id: 'zone-read', label: 'Zone · Read', reason: '列出可用 Zone（可选）', required: false },
+]
+const permsFixture = [
+  { ...manifestFixture[0], granted: true },
+  { ...manifestFixture[1], granted: false },
+  { ...manifestFixture[2], granted: false },
+]
+const a1Info = buildAccountStatusView(
+  {
+    management: { source: 'local', hasLocal: true, label: '本地已存', mark: '●' },
+    gateway: { source: 'none', hasLocal: false, label: '未配置', mark: '○' },
+  },
+  gatewayReady,
+  { ok: true, configured: true, name: 'My Token', status: 'active', permissions: permsFixture, permissionsReadable: true },
+  manifestFixture,
+)
+check(a1Info.includes('My Token'), 'management 已配置 → 卡内渲染令牌名称')
+check(a1Info.includes('token-perms-table'), 'management 已配置 → 卡内渲染权限表格')
+const a3Info = buildAccountStatusView(
+  {
+    management: { source: 'none', hasLocal: false, label: '未配置', mark: '○' },
+    gateway: { source: 'none', hasLocal: false, label: '未配置', mark: '○' },
+  },
+  gatewayNone,
+  { ok: true, configured: false },
+  manifestFixture,
+)
+check(a3Info.includes('尚未配置管理 Token'), 'management 未配置 → 提示按表创建令牌')
+check(a3Info.includes('token-perms-table'), 'management 未配置 → 仍展示所需权限表格')
+check(!a3Info.includes('Token 名称'), 'management 未配置 → 不显示令牌名称行')
+
+// ── 8d：buildManagementTokenInfo ──────────────────────────
+section('buildManagementTokenInfo')
+// tokenInfo 未返回但有静态清单 → 先渲染表格（状态未获取），不依赖 Cloudflare 调用成功
+const tiLoading = buildManagementTokenInfo(undefined, manifestFixture)
+check(tiLoading.includes('token-perms-table'), '未获取 tokenInfo → 仍渲染所需权限表格')
+check(tiLoading.includes('— 未获取') && tiLoading.includes('检查中'), '未获取 → 状态「未获取」+ 检查中提示')
+check(
+  buildManagementTokenInfo(undefined, undefined).includes('正在获取所需权限清单'),
+  '清单与 tokenInfo 均缺 → 获取清单占位',
+)
+const tiNotConfigured = buildManagementTokenInfo({ configured: false }, manifestFixture)
+check(
+  tiNotConfigured.includes('尚未配置管理 Token') && tiNotConfigured.includes('token-perms-table'),
+  '未配置 → 提示 + 仍展示所需权限表格',
+)
+check(!tiNotConfigured.includes('Token 名称'), '未配置 → 不显示令牌名称行')
+// ok:false：仍展示表格 + 失败提示（用户仍知道需要哪些权限）
+const tiErr = buildManagementTokenInfo(
+  {
+    ok: false,
+    configured: true,
+    error: '401: invalid token',
+    permissions: manifestFixture.map((p) => ({ ...p, granted: null })),
+    permissionsReadable: false,
+  },
+  manifestFixture,
+)
+check(tiErr.includes('令牌检查失败') && tiErr.includes('401'), 'ok:false → 失败提示含 error')
+check(tiErr.includes('token-perms-table'), 'ok:false → 表格仍在（用户仍知道需要什么权限）')
+// 正常：名称 + 状态 + 表格状态回填
+const ti = buildManagementTokenInfo(
+  { ok: true, configured: true, name: 'My Token', status: 'active', permissions: permsFixture, permissionsReadable: true },
+  manifestFixture,
+)
+check(ti.includes('My Token'), '显示令牌名称')
+check(ti.includes('active'), '显示令牌状态')
+check(ti.includes('✓ 已具备'), '已授予 → ✓ 已具备')
+check(ti.includes('✗ 缺失'), '必需缺失 → ✗ 缺失')
+check(ti.includes('○ 未配置'), '可选缺失 → ○ 未配置')
+check(ti.includes('缺少 1 项必需权限'), '汇总缺少必需权限数')
+check(ti.includes('<th>权限</th>') && ti.includes('<th>必需</th>'), '表格含表头')
+const tiOk = buildManagementTokenInfo(
+  { ok: true, configured: true, name: 'Full', permissions: [{ ...manifestFixture[0], granted: true }] },
+  manifestFixture,
+)
+check(tiOk.includes('必需权限齐全'), '全部满足 → 齐全提示')
+// 不可读：表格仍在 + 提示用户补充（403 时明确点名 API Tokens · Read）
+const unreadablePerms = [
+  ...manifestFixture.map((p) => ({ ...p, granted: null })),
+  { id: 'api-tokens-read', label: 'API Tokens · Read', reason: '读取本令牌名称与权限（本卡自检依赖此权限）', required: true, granted: false },
+]
+const tiUnreadable = buildManagementTokenInfo(
+  {
+    ok: true,
+    configured: true,
+    permissions: unreadablePerms,
+    permissionsReadable: false,
+    error: '403: Forbidden',
+  },
+  manifestFixture,
+)
+check(tiUnreadable.includes('未能读取令牌名称与权限'), '权限不可读 → 提示')
+check(tiUnreadable.includes('User → API Tokens → Read'), '提示明确点名所需权限')
+check(tiUnreadable.includes('token-perms-table') && tiUnreadable.includes('AI Gateway · Edit'), '不可读时仍渲染所需权限表格')
+check(tiUnreadable.includes('API Tokens · Read') && tiUnreadable.includes('✗ 缺失'), '403 时 api-tokens-read 显示缺失')
+check(buildManagementTokenInfo({ ok: true, configured: true, name: null, permissions: [] }, manifestFixture).includes('未知'), '名称缺失 → 未知')
+// 每个状态都附「权限来源」说明（verify 免权限 / user-tokens 需 API Tokens · Read）
+check(ti.includes('token-info-note') && ti.includes('/user/tokens'), '表格附权限来源说明')
+// 附「网关页地址发现」权限来源说明（Workers Scripts / Zone · Read / Workers Routes · Read）
+check(
+  ti.includes('Cloudflare 网关') && ti.includes('自定义域名') && ti.includes('Workers Routes'),
+  '表格附网关页自定义域名所需权限说明',
+)
+
 // ── 9：slotLabel ──────────────────────────────────────────
 section('slotLabel')
 check(slotLabel('management') === '管理 API Token', "management → '管理 API Token'")
@@ -157,7 +267,7 @@ check(slotLabel('foo') === 'foo', '非法值 → 原值透传')
 
 // ── 10-11：导出存在性 + 回归 ──────────────────────────────
 section('导出存在性')
-for (const fn of [buildWorkersStatusView, buildAccountStatusView, slotLabel]) {
+for (const fn of [buildWorkersStatusView, buildAccountStatusView, buildManagementTokenInfo, slotLabel]) {
   check(typeof fn === 'function', `新纯函数 ${fn.name} 已导出`)
 }
 for (const fn of [api, registerViewRenderer, buildModelTableRows, buildProviderTableRows]) {

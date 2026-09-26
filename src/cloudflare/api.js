@@ -782,3 +782,34 @@ export async function listWorkerRoutes(
     .filter((r) => r?.script === scriptName && typeof r?.pattern === 'string')
     .map((r) => r.pattern)
 }
+
+// ─── 用户 API Token 自检（账户页「管理 API Token」卡）─────
+
+/**
+ * 验证当前令牌并返回其 id / 状态（GET /user/tokens/verify）
+ *
+ * 任意有效令牌均可调用（无需特殊权限），用于定位「本地存的是哪一个令牌」。
+ * @param {string} apiToken - 管理 API Token
+ * @returns {Promise<{ id?: string, status?: string, not_before?: string, expires_on?: string }>}
+ */
+export async function verifyUserToken(apiToken) {
+  guard(apiToken, 'apiToken')
+  const payload = await request(apiToken, '/user/tokens/verify')
+  return payload?.result ?? {}
+}
+
+/**
+ * 列出当前用户的所有 API Token（GET /user/tokens，含 name 与 policies）
+ *
+ * 需令牌具备 User → API Tokens → Read 权限，否则 Cloudflare 返回 403（权限不足）。
+ * @param {string} apiToken - 管理 API Token
+ * @param {object} [options]
+ * @param {number} [options.perPage=50] - 单页数量（令牌数量超出时仅取第一页）
+ * @returns {Promise<Array<object>>} 令牌对象数组（含 id / name / status / policies）
+ */
+export async function listUserTokens(apiToken, { perPage = 50 } = {}) {
+  guard(apiToken, 'apiToken')
+  const query = new URLSearchParams({ per_page: String(perPage) })
+  const payload = await request(apiToken, `/user/tokens?${query.toString()}`)
+  return Array.isArray(payload?.result) ? payload.result : []
+}

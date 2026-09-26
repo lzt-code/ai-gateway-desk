@@ -38,6 +38,7 @@ import {
   listCustomProviders,
 } from '../cloudflare/api.js'
 import { discoverWorkerEndpoints } from '../cloudflare/worker-endpoints.js'
+import { fetchManagementTokenInfo, REQUIRED_PERMISSIONS } from '../cloudflare/token-info.js'
 import {
   toggleStatus,
   deleteModel,
@@ -204,6 +205,8 @@ const DEFAULT_DEPS = {
   clearSlotToken,
   buildWorkersStatus,
   checkKVKey,
+  // 账户页「管理 API Token」卡自检（令牌名称 + 所需权限）
+  fetchManagementTokenInfo,
   loadModelsJsonState,
   setDebugFlag,
   spawnFn: spawn,
@@ -2170,6 +2173,8 @@ export function createApp({
   })
 
   // GET /api/account/status — 账户状态（双 token 槽位汇总 + gateway 信息）
+  // requiredPermissions：所需权限清单（静态，不触网）——账户页先用它渲染权限表格，
+  // 再由 /api/account/token-info 回填「已具备/缺失」，避免权限拉取失败时表格整块消失。
   app.get('/api/account/status', async (c) => {
     const tokens = depsAll.summarizeTokenStatus({
       envManagement: process.env.CLOUDFLARE_API_TOKEN,
@@ -2178,7 +2183,36 @@ export function createApp({
       localGateway: depsAll.readToken(),
     })
     const gateway = depsAll.summarizeGatewayInfo(configStore.load().gateway)
-    return c.json({ ok: true, tokens, gateway })
+    return c.json({ ok: true, tokens, gateway, requiredPermissions: REQUIRED_PERMISSIONS })
+  })
+
+  // GET /api/account/token-info — 管理 API Token 自检（令牌名称 + 所需权限）
+  // 依赖 Cloudflare：/user/tokens/verify（任意有效令牌）+ /user/tokens（需 API Tokens · Read）。
+  // 未配置管理 Token 时返回 { ok:true, configured:false }，不发任何网络请求。
+  app.get('/api/account/token-info', async (c) => {
+    const op = 'account:token-info'
+    const start = Date.now()
+    const token = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    if (!token) {
+      ioLogResult(op, { ok: true, message: 'skipped (未配置管理 Token)', elapsedMs: Date.now() - start })
+      return c.json({ ok: true, configured: false })
+    }
+    try {
+      const info = await depsAll.fetchManagementTokenInfo(token)
+      const perms = Array.isArray(info.permissions) ? info.permissions : []
+      const missingRequired = perms.filter((p) => p.required && p.granted === false).length
+      const message = info.ok === false
+        ? `令牌验证失败：${info.error || '未知错误'}`
+        : !info.permissionsReadable
+          ? `未读取到名称/权限${info.error ? '：' + info.error : ''}`
+          : `name=${info.name || '(无名称)'} 缺必需权限 ${missingRequired} 项`
+      ioLogResult(op, { ok: info.ok !== false, message, elapsedMs: Date.now() - start })
+      return c.json(info)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      ioLogResult(op, { ok: false, message: msg, elapsedMs: Date.now() - start })
+      return c.json({ ok: false, configured: true, error: msg })
+    }
   })
 
   // POST /api/account/update-token — 更新 Token 槽位（结果透传 updateToken 语义）

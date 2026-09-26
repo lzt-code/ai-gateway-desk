@@ -37,6 +37,7 @@ const TESTS = [
   'test-web-api-sync.mjs',      // 任务 27：同步 + 保存部署 API（SSE 进度 + 编排 mock）
   'test-web-api-providers.mjs', // 任务 28：Provider 管理 API（云端合并 + 编辑 + 删除，全 mock）
   'test-web-api-account.mjs',   // 任务 29：Worker + 账户管理 API（状态 + 部署 + Token，全 mock）
+  'test-token-info.mjs',        // 账户页管理 Token 自检（名称/权限比对纯函数 + 编排，全 mock）
   'test-web-frontend.mjs',      // 任务 30：前端骨架（结构断言 + app.js 纯函数单测）
   'test-web-models-view.mjs',   // 任务 31：前端模型视图纯函数（表格行/SSE 解析/进度状态/筛选/dirty）
   'test-web-providers-view.mjs', // 任务 32：前端 Provider 视图纯函数（行/字段/变更组装）
