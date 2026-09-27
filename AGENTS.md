@@ -24,13 +24,3 @@ AI Gateway 模型管理工具（本地 Web 界面）+ 转发封装 Worker。
    - 操作名采用 `域:动作[:目标]` 风格，如 `gateway:chat:<slug>`、`routes:deploy`、`worker:chat:<slug>`。
    - 新增接口/功能时同步确认日志覆盖；主程序日志会进入环形缓冲供前端 SSE「处理过程日志」展示，勿绕过日志器另写输出。
 
-## Skills 按需索引（低频，不常驻上下文）
-
-> 低频、大正文的 skill 仅在此表登记，LLM 按需 `read` 对应 `SKILL.md`，并避免污染上下文。
-
-| Skill | 功能 | 路径 | 触发词 |
-|-------|------|------|--------|
-| npm-publish | npm 四步发布：前置核验 → publish → tag+push → 验证 | `~/workspace/laoliu-skills/skills/npm-publish/SKILL.md` | 发布 npm / 打 tag / 发版 / publish / tag |
-
-
-* 按需加载示例：`read ~/workspace/laoliu-skills/skills/npm-publish/SKILL.md`
