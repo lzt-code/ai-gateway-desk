@@ -101,6 +101,17 @@ section('2. buildCloudWorkerCard')
     workerEndpoints: { workersDev: '', customDomains: [], routes: [], error: '本地未配置管理 API Token，请先运行 aigd setup' },
   })
   check(errCard.includes('aigd setup'), '展示发现错误提示')
+
+  const noteCard = buildCloudWorkerCard({
+    workerEndpoints: {
+      workersDev: '',
+      customDomains: [],
+      routes: ['https://<子域>.a.com/v1'],
+      notes: ['路由 *.a.com/v1/*：未找到已代理（橙云）的 DNS 记录'],
+      error: '',
+    },
+  })
+  check(noteCard.includes('未找到已代理'), '展示路由降级提示（notes）')
 }
 
 section('3. buildProviderKeysTable')

@@ -5496,7 +5496,7 @@ export function buildManagementTokenInfo(tokenInfo, requiredPermissions) {
     `<div class="token-info-note muted">说明：令牌「状态 / ID」来自 verify 接口，任何有效令牌均可读取（无需额外权限）；「名称 / 权限列表」来自 /user/tokens 接口，需要 “API Tokens · Read” 权限。</div>`,
   )
   rows.push(
-    `<div class="token-info-note muted">网关页「Cloudflare 网关」卡地址：workers.dev 默认域名 / 绑定自定义域名由 <b>Workers Scripts</b> 读取；路由形式的自定义域名（<code>&lt;子域&gt;.域名</code>）由 <b>Zone · Read</b>（作用域 Zone → 权限组 “Zone”，不是 “DNS Read”）+ <b>Workers Routes · Read</b> 读取。</div>`,
+    `<div class="token-info-note muted">网关页「Cloudflare 网关」卡地址：workers.dev 默认域名 / 绑定自定义域名由 <b>Workers Scripts</b> 读取；路由形式的自定义域名由 <b>Zone · Read</b>（作用域 Zone → 权限组 “Zone”，不是 “DNS Read”）+ <b>Workers Routes · Read</b> 读取；通配符路由（<code>&lt;子域&gt;.域名</code>）自动解析真实子域另需 <b>Zone → DNS · Read</b>。</div>`,
   )
   return `<div class="token-info">${rows.join('')}</div>`
 }
@@ -5589,6 +5589,7 @@ export function buildCloudWorkerCard(overview) {
   const workersDev = typeof ep.workersDev === 'string' ? ep.workersDev.trim() : ''
   const customDomains = Array.isArray(ep.customDomains) ? ep.customDomains.filter((d) => typeof d === 'string' && d.trim()) : []
   const routeUrls = Array.isArray(ep.routes) ? ep.routes.filter((d) => typeof d === 'string' && d.trim()) : []
+  const notes = Array.isArray(ep.notes) ? ep.notes.filter((n) => typeof n === 'string' && n.trim()) : []
   const error = typeof ep.error === 'string' ? ep.error.trim() : ''
 
   const headRow = (label, tag, tagCls) =>
@@ -5634,6 +5635,7 @@ export function buildCloudWorkerCard(overview) {
     `<p class="slot-note">走 Cloudflare AI Gateway 时，让 Agent 的 Base URL 直接指向该 Worker，不经本地网关</p>` +
     defaultBlock +
     customBlock +
+    notes.map((n) => `<p class="gateway-hint warn">${escapeHtml(n)}</p>`).join('') +
     (error ? `<p class="gateway-hint warn">${escapeHtml(error)}</p>` : '') +
     `<div class="toolbar">` +
     `<button class="btn btn-primary btn-deploy-worker" type="button">部署 Worker</button>` +

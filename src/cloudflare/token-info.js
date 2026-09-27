@@ -35,6 +35,7 @@ export const REQUIRED_PERMISSIONS = Object.freeze([
   { id: 'workers-kv-edit', resource: 'Workers KV Storage', access: 'Edit', required: true, label: 'Workers KV Storage · Edit', reason: '创建 KV namespace、写入 models.json 等运行时数据（Worker 页 → 保存并提交）' },
   { id: 'api-tokens-read', resource: 'API Tokens', access: 'Read', required: true, label: 'API Tokens · Read', reason: '账户页读取本令牌名称与所需权限（本卡自检依赖）' },
   { id: 'zone-read', resource: 'Zone', access: 'Read', required: false, label: 'Zone · Read', reason: '列出账号下 Zone（作用域 Zone → 权限组 “Zone”，不是 “DNS Read”），供网关页「Cloudflare 网关」卡发现路由形式的自定义域名' },
+  { id: 'dns-read', resource: 'DNS', access: 'Read', required: false, label: 'DNS · Read', reason: '读取 Zone 内已代理 DNS 记录，把网关页「Cloudflare 网关」卡通配符路由（<子域>.域名）自动解析为真实子域' },
   { id: 'workers-routes-read', resource: 'Workers Routes', access: 'Read', required: false, label: 'Workers Routes · Read', reason: '读取 Zone 下 Workers 路由，推导网关页「Cloudflare 网关」卡的自定义域名（<子域>.域名）地址' },
   { id: 'ai-gateway-run', resource: 'AI Gateway', access: 'Run', required: false, label: 'AI Gateway · Run', reason: '经 Cloudflare 网关发起推理请求（仅运行时用；本工具的管理操作不需要）' },
 ])

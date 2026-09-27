@@ -65,7 +65,7 @@ const TESTS = [
   'test-gateway-fallback.mjs',        // 本地 fallback 链 / 重试 / percentage / 异常结构
   'test-gateway-web-api.mjs',         // 管理服务网关 API（overview/backfill/key）
   'test-gateway-view.mjs',            // 前端网关视图纯函数（操作/双卡片/凭证表/转义）
-  'test-worker-endpoints.mjs',        // Worker 地址自动发现（workers.dev/domains/routes/容错）
+  'test-worker-endpoints.mjs',        // Worker 地址自动发现（workers.dev/domains/routes/通配符 DNS 解析/容错）
 ]
 
 const results = []

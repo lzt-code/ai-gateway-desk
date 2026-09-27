@@ -759,6 +759,54 @@ export async function listZones(apiToken, accountId) {
 }
 
 /**
+ * 列出 zone 下已代理（橙云）的 DNS 记录
+ *
+ * 用于把 Workers Route 通配符 host（如 `*.example.com/api/*`）中的 `<子域>`
+ * 占位解析为真实子域：只有 `proxied=true` 的记录才会把流量引到 Cloudflare
+ * 边缘，进而被 Workers Route 命中。
+ *
+ * 分页拉取（默认每页 100、最多 5 页），避免大 zone 下漏掉候选记录。
+ * 需管理 API Token 具备 Zone → DNS → Read 权限，否则返回 403。
+ *
+ * @param {string} apiToken - 管理 API Token
+ * @param {string} zoneId - zone ID
+ * @param {object} [options]
+ * @param {number} [options.perPage=100] - 单页数量
+ * @param {number} [options.maxPages=5] - 最多拉取页数
+ * @returns {Promise<Array<{ name: string, type: string, proxied: boolean }>>}
+ *   已代理 DNS 记录（name 为完整主机名，如 "aigw.example.com" / "*.example.com"）
+ */
+export async function listDnsRecords(apiToken, zoneId, { perPage = 100, maxPages = 5 } = {}) {
+  guard(zoneId, 'zoneId')
+
+  const rows = []
+  for (let page = 1; page <= maxPages; page++) {
+    const query = new URLSearchParams({
+      proxied: 'true',
+      per_page: String(perPage),
+      page: String(page),
+    })
+    const payload = await request(
+      apiToken,
+      `/zones/${encodeURIComponent(zoneId)}/dns_records?${query.toString()}`
+    )
+    const pageRows = Array.isArray(payload?.result) ? payload.result : []
+    rows.push(...pageRows)
+    const totalPages = payload?.result_info?.total_pages
+    if (pageRows.length < perPage) break
+    if (typeof totalPages === 'number' && page >= totalPages) break
+  }
+
+  return rows
+    .map((r) => ({
+      name: typeof r?.name === 'string' ? r.name.trim() : '',
+      type: typeof r?.type === 'string' ? r.type : '',
+      proxied: r?.proxied === true,
+    }))
+    .filter((r) => r.name && r.proxied)
+}
+
+/**
  * 列出 zone 上绑定到指定 Worker 的路由（Workers Routes）
  * @param {string} apiToken - 管理 API Token（需 Workers Routes Read）
  * @param {string} zoneId - zone ID

@@ -2023,6 +2023,7 @@ export function createApp({
             workersDev: '',
             customDomains: [],
             routes: [],
+            notes: [],
             error: mgmtToken
               ? 'providers.json 缺少 gateway.accountId，请先完成 setup'
               : '本地未配置管理 API Token，请先运行 aigd setup',
@@ -2064,6 +2065,7 @@ export function createApp({
         workersDev: '',
         customDomains: [],
         routes: [],
+        notes: [],
         error: mgmtToken
           ? 'providers.json 缺少 gateway.accountId，请先完成 setup'
           : '本地未配置管理 API Token，请先运行 aigd setup',
