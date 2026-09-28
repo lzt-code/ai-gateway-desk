@@ -99,7 +99,7 @@ Hono 应用，`createApp` 支持依赖注入（测试可 mock stateStore / confi
 | 健康/心跳 | `GET /api/health`、`POST /api/heartbeat` |
 | 模型 | `GET /api/state`、`GET /api/models/filtered`、`POST /api/models/{toggle,set-status,remove,batch-toggle,batch-remove,edit,add}` |
 | Provider | `GET /api/providers`、`/api/providers/{list,refresh,update,create,delete}` |
-| 同步 | `GET /api/sync/progress`（SSE）、`POST /api/sync`、`POST /api/save`、`POST /api/save-deploy` |
+| 同步 | `GET /api/sync/progress`（SSE）、`POST /api/sync`、`POST /api/sync/consistency`（第一层一致性同步：只对齐 KV 真相，不 discover）、`POST /api/save`、`POST /api/save-deploy` |
 | 调试 | `GET /api/settings/debug`、`POST /api/settings/debug`（详细日志开关，持久化到 providers.json 顶层 `debug` 字段） |
 | Worker | `GET /api/workers/status`、`POST /api/workers/deploy` |
 | 双网关视图 | `GET /api/gateway/overview`、`POST /api/gateway/{mode,cloud-url,backfill-keys,provider-key}`（见 §4.12） |
@@ -311,7 +311,18 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 1. provider 同步：云端的 Custom Provider / BYOK 变更合并进本地配置（无管理 Token 则跳过）
 2. discover：遍历 provider 拉取模型列表
 3. merge：策略 A 合并，产生新增/消失/变更摘要
-4. enrich：OpenRouter 补全新模型缺失字段 → 保存 state → 生成 models.json
+4. enrich：OpenRouter 补全新模型缺失字段 → 应用 KV 真相（手工/隐藏/已部署）→ 保存 state → 生成 models.json
+
+**分层启动（打开页面时）**：为避免重型 discover 全局阻塞启动，前端启动链拆为两层——
+
+- **第一层「一致性同步」**（`POST /api/sync/consistency`，秒级）：只读 KV 四键
+  （visibility / hidden-models / manual-models / models）应用到 state 与 provider enabled，
+  不重拉模型；完成后即解锁 UI。跨 PC「用户决策」冲突面全部在这一层收敛。
+- **第二层「发现刷新」**（`POST /api/sync`，后台非阻塞）：受前端 TTL（`DEFAULT_DISCOVER_TTL_MS`，
+  默认 30 分钟，记录于 localStorage）约束，距上次成功发现过久才自动跑；运行期间 UI 可继续操作。
+- **本地优先合并**：`/api/sync` 记录同步起点的 `stateVersion` 与状态快照；若发现期间用户改过
+  模型（状态/元数据/新增/删除），同步结束前把窗口内的本地改动重放到合并结果之上，避免被
+  discover/KV 结果覆盖（改动随后由自动部署统一收敛）。
 
 ### 7.2 部署（`POST /api/workers/deploy` 或 `npm run deploy`）
 

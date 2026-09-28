@@ -102,12 +102,16 @@ let _modelsAutoSyncDone = false
 let _startupModelSyncTriggered = false
 let _globalModelSyncFn = null
 let _pendingStartupSync = false
+// pending 触发时携带的选项（如 { background: true }），视图注册后按原样补触发
+let _pendingStartupSyncOpts = null
 export function registerGlobalModelSync(fn) {
   _globalModelSyncFn = fn
   // 若 Provider 刷新已完成但模型视图当时未就绪，延迟到注册时补触发
   if (_pendingStartupSync && !_startupModelSyncTriggered && !_modelsAutoSyncDone) {
     _pendingStartupSync = false
-    triggerGlobalModelSync()
+    const opts = _pendingStartupSyncOpts
+    _pendingStartupSyncOpts = null
+    triggerGlobalModelSync(opts || undefined)
   }
 }
 export function isModelsAutoSyncDone() { return _modelsAutoSyncDone }
@@ -135,8 +139,31 @@ export function triggerGlobalModelSync(opts) {
   }
   // 仍无执行器：标记 pending，待视图注册时重试
   _pendingStartupSync = true
+  _pendingStartupSyncOpts = opts || null
   return false
 }
+
+// ── 分层启动第二层：启动发现刷新 TTL ───────────────────────
+// 启动时先做「一致性同步」（KV 真相，秒级）并解锁 UI；随后仅在距上次成功发现
+// 超过 TTL 时才后台触发重型 discover，避免每次打开页面都全量拉取。
+// TTL 记录在 localStorage（每台 PC / 浏览器独立），无记录 / 读取失败按「需要刷新」。
+export const DEFAULT_DISCOVER_TTL_MS = 30 * 60 * 1000
+const DISCOVER_TS_KEY = 'aigd:lastDiscoveredAt'
+export function isDiscoveryStale(now = Date.now(), ttlMs = DEFAULT_DISCOVER_TTL_MS) {
+  try {
+    const ts = Number(localStorage.getItem(DISCOVER_TS_KEY))
+    return !Number.isFinite(ts) || ts <= 0 || now - ts > ttlMs
+  } catch {
+    return true
+  }
+}
+export function markDiscovered(now = Date.now()) {
+  try { localStorage.setItem(DISCOVER_TS_KEY, String(now)) } catch { /* 隐私模式等静默 */ }
+}
+
+// 模型视图刷新钩子：后台发现完成后刷新表格内存态（视图尚未渲染时为空，进入视图会自加载）
+let _modelViewRefreshFn = null
+export function registerModelViewRefresh(fn) { _modelViewRefreshFn = fn }
 
 // ── 初始化全局阻塞（步骤 5）：Provider→模型串行初始化期间仅允许查看 ──
 let _initInProgress = false
@@ -921,7 +948,7 @@ function _globalFinishSync() {
   updateShowDiffButton()
 }
 
-export function runGlobalModelSync({ providerFilter } = {}) {
+export function runGlobalModelSync({ providerFilter, background = false } = {}) {
   if (_globalSyncing) return false
   if (typeof document !== 'undefined' && typeof EventSource === 'undefined') {
     flash('当前环境不支持 EventSource', 'err')
@@ -937,14 +964,24 @@ export function runGlobalModelSync({ providerFilter } = {}) {
   _globalFinished = false
   _globalDeployReleased = false
   _globalProgressDismissed = false
-  if (isInitializing()) {
-    updateInitBusyMessage(isOne ? `正在初始化… 拉取 ${titleFilter}…` : '正在初始化… 模型同步中…')
-    setInitOperationButtonsDisabled(true)
-  } else {
-    setModelPageButtonsDisabled(true)
+  // 后台发现（分层启动第二层）：UI 已解锁，不再全局禁用按钮 / 进入初始化阻塞，
+  // 仅展示进度面板与处理过程日志，用户可继续操作（服务端以「本地优先」合并保障）。
+  if (!background) {
+    if (isInitializing()) {
+      updateInitBusyMessage(isOne ? `正在初始化… 拉取 ${titleFilter}…` : '正在初始化… 模型同步中…')
+      setInitOperationButtonsDisabled(true)
+    } else {
+      setModelPageButtonsDisabled(true)
+    }
   }
   _globalShowProgress(isOne ? `拉取 ${titleFilter}…` : '同步中…')
-  logActivity(isOne ? `开始拉取 ${titleFilter} 模型…` : '开始同步（Provider 同步 → 发现模型 → 合并 → 富化 → 部署 KV）…', 'info')
+  logActivity(
+    isOne
+      ? `开始拉取 ${titleFilter} 模型…`
+      : (background ? '后台更新模型列表（Provider 同步 → 发现模型 → 合并 → 富化 → 部署 KV）…'
+        : '开始同步（Provider 同步 → 发现模型 → 合并 → 富化 → 部署 KV）…'),
+    'info',
+  )
   _globalEs = new EventSource('/api/sync/progress')
   const streamEvents = []
   const collect = (evtName) => (e) => {
@@ -974,17 +1011,23 @@ export function runGlobalModelSync({ providerFilter } = {}) {
       if (hasSyncDiff(doneData.details)) renderSyncDiffToPanel(doneData.details)
       else clearSyncDiffPanel()
     }
+    // 成功发现一次 → 记录时间戳，供下次启动 TTL 判定。发现出错（summary.errors 非空）
+    // 不记录，避免一次网络抖动就把下次自动刷新推迟整个 TTL。
+    if (!(doneData && doneData.summary && Array.isArray(doneData.summary.errors) && doneData.summary.errors.length)) {
+      markDiscovered()
+    }
     _globalFinishSync()
-    // 尝试刷新模型视图内存态（若已渲染，触发其刷新；否则仅提示）
+    // 尝试刷新模型视图内存态（若已渲染，触发其刷新；否则进入视图时会自加载最新数据）
     // 延迟刷新：给服务端一点时间完成文件落盘
     setTimeout(async () => {
       try {
-        // 若模型视图已注册，其内部会通过事件或轮询感知；此处仅保证全局提示
-        // 尝试触发模型视图的刷新回调（由视图注册）
-        if (typeof _globalModelSyncFn === 'function' && _globalModelSyncFn !== runGlobalModelSync) {
-          // 模型视图已存在，下次进入会加载最新数据，此处不额外操作
+        if (typeof _modelViewRefreshFn === 'function') {
+          try { await _modelViewRefreshFn() } catch {}
+        } else if (background) {
+          flash('模型列表已后台更新', 'ok')
+        } else {
+          flash('同步完成', 'ok')
         }
-        flash('同步完成', 'ok')
       } catch {}
     }, 300)
   })
@@ -3024,7 +3067,7 @@ export function renderModelsView(container) {
   //   - POST /api/sync 带 body { provider } 指定只拉取该 provider
   //   - 日志/进度文案区分单 Provider 与全量；拉取阶段全局禁用按钮，进入
   //     KV 部署时即放开（部署为服务端异步写 KV，不影响前端操作）
-  function startSync({ providerFilter } = {}) {
+  function startSync({ providerFilter, background = false } = {}) {
     if (syncing || _globalSyncing) {
       flash('同步已在进行', 'warn')
       return
@@ -3041,11 +3084,14 @@ export function renderModelsView(container) {
     // 清空上一次同步的新增高亮：done 事件到达后由 refreshAfterSync 重新填充
     newModelIds = new Set()
     appState().set('modelsSyncing', true)
-    if (isInitializing()) {
-      updateInitBusyMessage(isOne ? `正在初始化… 拉取 ${providerName}…` : '正在初始化… 模型同步中…')
-      setInitOperationButtonsDisabled(true)
-    } else {
-      setModelPageButtonsDisabled(true)
+    // 后台发现（分层启动第二层）：UI 已解锁，不再阻塞按钮，仅展示进度与日志
+    if (!background) {
+      if (isInitializing()) {
+        updateInitBusyMessage(isOne ? `正在初始化… 拉取 ${providerName}…` : '正在初始化… 模型同步中…')
+        setInitOperationButtonsDisabled(true)
+      } else {
+        setModelPageButtonsDisabled(true)
+      }
     }
     showProgress(isOne ? `拉取 ${providerName}…` : '同步中…')
     logActivity(
@@ -3085,6 +3131,9 @@ export function renderModelsView(container) {
       let doneData = null
       try { doneData = JSON.parse(e.data) } catch { /* 坏 data */ }
       collect('done')(e)
+      if (!(doneData && doneData.summary && Array.isArray(doneData.summary.errors) && doneData.summary.errors.length)) {
+        markDiscovered()
+      }
       finishSync()
       refreshAfterSync(doneData)
     })
@@ -3117,6 +3166,12 @@ export function renderModelsView(container) {
 
   // 注册到全局启动链：Provider 刷新完成后若未同步过，可直接触发本视图的同步
   registerGlobalModelSync(startSync)
+  // 后台发现完成后刷新本视图表格内存态（用缓存的同步明细重绘，避免抹掉高亮/明细）
+  registerModelViewRefresh(() => {
+    let details = null
+    try { details = appState().get('lastSyncDetails') || null } catch {}
+    return refreshAfterSync({ details })
+  })
 
   // ── 事件绑定 ────────────────────────────────────────────
   sidebar.addEventListener('click', (e) => {
@@ -3285,6 +3340,8 @@ export function renderModelsView(container) {
       return
     }
     // 首次进入自动同步（会话级一次性；Token 未就绪则跳过，依赖面板内手动同步）
+    // 受启动发现 TTL 约束：启动链（第一层一致性同步 + 第二层后台发现）已处理过
+    // 则 _modelsAutoSyncDone 已置位直接返回；否则仅在发现数据过期时才同步。
     if (_modelsAutoSyncDone) return
     if (typeof EventSource === 'undefined') {
       _modelsAutoSyncDone = true
@@ -3293,7 +3350,7 @@ export function renderModelsView(container) {
     _modelsAutoSyncDone = true
     try {
       const r = await api('/api/sync/ready')
-      if (r && r.ready) startSync()
+      if (r && r.ready && isDiscoveryStale()) startSync()
     } catch {
       // 探测失败静默（不阻断本地已渲染的列表）
     }
@@ -5015,7 +5072,8 @@ export function renderProvidersView(container) {
   }
 
   async function refreshProviders(force) {
-    // 初始化阶段（force=false）需全局阻塞：仅允许查看/切页，其余拉取/提交操作禁用直至模型同步完成
+    // 初始化阶段（force=false）第一层阻塞：本地快照 + 云端 Provider + KV 一致性同步
+    // 期间仅允许查看/切页；一致性同步完成即解锁（重型 discover 转入非阻塞后台）
     if (force && isInitializing()) {
       guardInitBlocked('更新 Provider 列表')
       return
@@ -5042,7 +5100,6 @@ export function renderProvidersView(container) {
       else { btnRefresh.disabled = true; btnRefresh.textContent = '更新中…' }
       const controller = new AbortController()
       const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT)
-      let modelSyncTriggered = false
       try {
         const fetchPromise = api('/api/providers', {
           method: 'GET',
@@ -5062,32 +5119,38 @@ export function renderProvidersView(container) {
           degradedReason: res.degradedReason,
         })
         for (const l of logs) logActivity(l.text, l.type)
-        if (!_startupModelSyncTriggered && !_modelsAutoSyncDone) {
-          try {
-            const r = await api('/api/sync/ready')
-            if (r && r.ready) {
-              logActivity('Provider 列表更新完成，自动开始更新模型列表…', 'info')
-              if (shouldEnterInit) updateInitBusyMessage('正在初始化… 模型同步中…')
-              const ok = triggerGlobalModelSync()
-              modelSyncTriggered = ok || _pendingStartupSync
-            }
-          } catch {
-            // 探测失败静默（不阻断 Provider 已渲染的列表）
-          }
-        }
       } catch (err) {
         flash(err.message, 'err')
         for (const l of buildProviderDetailLogs({ force, ok: false, error: err.message })) logActivity(l.text, l.type)
       } finally {
         clearTimeout(timer)
         btnRefresh.textContent = prevText
-        if (!shouldEnterInit) {
-          btnRefresh.disabled = false
-        } else if (!modelSyncTriggered) {
-          leaveInitBlocking()
-        } else {
-          updateInitBusyMessage('正在初始化… 模型同步中…')
-          setInitOperationButtonsDisabled(true)
+        if (!shouldEnterInit) btnRefresh.disabled = false
+      }
+      // ③ 第一层「一致性同步」：只对齐 KV 跨 PC 真相（可见性 / 隐藏 / 采用 / 手工模型），
+      //    轻量秒级、不重拉模型。完成即解锁 UI，不再等待重型 discover（分层启动核心）。
+      try {
+        const cr = await api('/api/sync/consistency', { method: 'POST' })
+        if (cr && cr.changed) logActivity('已对齐云端隐藏 / 采用 / 手工模型状态', 'ok')
+      } catch {
+        // 静默降级：本地列表已渲染，一致性对齐可在后续同步时收敛
+      }
+      if (shouldEnterInit) leaveInitBlocking()
+      // ④ 第二层「后台发现」：非阻塞，受 TTL 约束——距上次成功发现过久才自动跑，
+      //    避免每次打开页面都全量拉取；用户可随时在模型页手动「同步」。
+      if (!_startupModelSyncTriggered && !_modelsAutoSyncDone) {
+        try {
+          const r = await api('/api/sync/ready')
+          if (r && r.ready) {
+            if (isDiscoveryStale()) {
+              logActivity('距上次更新较久，后台开始更新模型列表（不影响其它操作）…', 'info')
+              triggerGlobalModelSync({ background: true })
+            } else {
+              logActivity('模型列表近期已更新，跳过启动刷新', 'info')
+            }
+          }
+        } catch {
+          // 探测失败静默（不阻断 Provider 已渲染的列表）
         }
       }
       return

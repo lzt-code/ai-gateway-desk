@@ -580,6 +580,77 @@ export function createApp({
   }
 
   /**
+   * 读取 KV 跨 PC 真相（provider-visibility / hidden-models / manual-models / models）。
+   * 一致性语义：这些是「用户决策」的真相源，与模型发现（discover）无关，读取轻量
+   * （4 次 REST 读）。分层启动的第一层「一致性同步」即基于它，秒级完成即可解锁 UI。
+   * flush=true 时先冲刷本地未部署的隐藏决策，避免随后 applySelectedModels 的
+   * 取消隐藏归位误伤本地刚到但尚未部署的隐藏操作。
+   * 任一读取失败 → 该项为 null，调用方按「读取失败跳过」降级（不中断）。
+   * flush 默认 false：仅在本地存在「已隐藏但尚未部署」的变更（autoDeployPending）时
+   * 才由调用方显式传 true，避免无谓全量重写 hidden-models 键而抹掉远端隐藏决策。
+   * @param {{ flush?: boolean }} [options]
+   * @returns {Promise<{ kvReady: boolean, visibilityMap: object|null, hiddenModelsMap: object|null,
+   *   manualModelsMap: object|null, kvModelsList: Array|null }>}
+   */
+  const readKvTruths = async ({ flush = false } = {}) => {
+    const config = configStore.load()
+    const gateway = config.gateway || {}
+    const namespaceId = config.kv?.namespaceId || ''
+    const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
+    const kvReady = Boolean(mgmtToken && gateway.accountId && namespaceId)
+    const out = { kvReady, visibilityMap: null, hiddenModelsMap: null, manualModelsMap: null, kvModelsList: null }
+    if (!kvReady) return out
+    if (flush) await flushHiddenModelsKv()
+    try {
+      out.visibilityMap = await depsAll.readKvVisibility(mgmtToken, gateway.accountId, namespaceId)
+    } catch { out.visibilityMap = null }
+    try {
+      out.hiddenModelsMap = await depsAll.readKvHiddenModels(mgmtToken, gateway.accountId, namespaceId)
+    } catch { out.hiddenModelsMap = null }
+    try {
+      out.manualModelsMap = await depsAll.readKvManualModels(mgmtToken, gateway.accountId, namespaceId)
+    } catch { out.manualModelsMap = null }
+    try {
+      // 已部署模型列表（跨 PC 采用真相）：pending 提升与取消隐藏归位的依据
+      out.kvModelsList = await depsAll.readKvModels(
+        mgmtToken, gateway.accountId, namespaceId, config.kv?.key || MODELS_KV_KEY
+      )
+    } catch { out.kvModelsList = null }
+    return out
+  }
+
+  /**
+   * 以 KV 可见性为准回写本地 provider enabled（供 discover 离线降级一致），有变化才写。
+   * @param {object|null} visibilityMap - KV provider-visibility（null = 读取失败，跳过）
+   * @returns {boolean} 是否改写了 providers.json
+   */
+  const applyKvVisibility = (visibilityMap) => {
+    if (!visibilityMap) return false
+    const config = configStore.load()
+    if (!Array.isArray(config.providers)) return false
+    const next = depsAll.applyVisibility(config.providers, visibilityMap)
+    if (next.some((p, i) => p.enabled !== config.providers[i].enabled)) {
+      try { depsAll.writeProvidersConfigFile(next) } catch { /* 写盘失败静默：下次同步/刷新收敛 */ }
+      return true
+    }
+    return false
+  }
+
+  /**
+   * 将 KV 真相应用到给定 state：手工模型重建 → 隐藏态（KV 优先）→ 已部署列表
+   * （pending → selected 提升 + 取消隐藏归位）。纯函数式：不改入参 state。
+   * @param {object} baseState - 合并后（或当前）的 model-states
+   * @param {{ manualModelsMap: object|null, hiddenModelsMap: object|null, kvModelsList: Array|null }} truths
+   * @returns {{ state: object, changed: boolean }}
+   */
+  const applyKvTruthsToState = (baseState, truths) => {
+    const manual = depsAll.applyManualModels(baseState, truths.manualModelsMap)
+    const hidden = depsAll.applyHiddenModels(manual.state, truths.hiddenModelsMap)
+    const selected = depsAll.applySelectedModels(hidden.state, truths.kvModelsList, truths.hiddenModelsMap)
+    return { state: selected.state, changed: manual.changed || hidden.changed || selected.changed }
+  }
+
+  /**
    * 闲置自动部署（防抖）：toggle / set-status / batch-toggle 变更后不再即时写
    * hidden-models KV，统一进入 idle 防抖（autoDeployIdleMs，默认 20s，0 禁用）。
    * 闲置到期一次性执行 saveAndDeploy（models.json → models KV）+ hidden/manual
@@ -1038,44 +1109,21 @@ export function createApp({
     const providerFilter = body && typeof body.provider === 'string' && body.provider.trim()
       ? body.provider.trim() : null
     syncing = true
+    // 分层启动：discover 为后台重型任务，期间 UI 已解锁，用户可能修改模型。
+    // 记录同步起点版本与快照，结束后按「本地优先」原则重放窗口内的本地改动。
+    const syncStartVersion = stateVersion
+    const localSnapshotBeforeSync = structuredClone(state)
     try {
       const config = configStore.load()
-      // 读取 KV 可见性 + 隐藏模型 + 手工模型（跨 PC 真相）：失败静默降级（用本地）
-      const gateway = config.gateway || {}
-      const namespaceId = config.kv?.namespaceId || ''
-      const kvReady = Boolean(mgmtToken && gateway.accountId && namespaceId)
+      // 读取 KV 可见性 + 隐藏模型 + 手工模型 + 已部署列表（跨 PC 真相）：失败静默降级（用本地）
       // 同步前冲刷待自动部署的隐藏决策：取消隐藏归位（applySelectedModels）据 KV
       // 隐藏集合判断，不冲刷会把本地刚隐藏（尚未自动部署）的模型归位回 selected
-      if (autoDeployPending) await flushHiddenModelsKv()
-      let visibilityMap = null
-      let hiddenModelsMap = null
-      let manualModelsMap = null
-      let kvModelsList = null
-      if (kvReady) {
-        try {
-          visibilityMap = await depsAll.readKvVisibility(mgmtToken, gateway.accountId, namespaceId)
-        } catch {
-          visibilityMap = null
-        }
-        try {
-          hiddenModelsMap = await depsAll.readKvHiddenModels(mgmtToken, gateway.accountId, namespaceId)
-        } catch {
-          hiddenModelsMap = null
-        }
-        try {
-          manualModelsMap = await depsAll.readKvManualModels(mgmtToken, gateway.accountId, namespaceId)
-        } catch {
-          manualModelsMap = null
-        }
-        try {
-          // 已部署模型列表（跨 PC 采用真相）：pending 提升与取消隐藏归位的依据
-          kvModelsList = await depsAll.readKvModels(
-            mgmtToken, gateway.accountId, namespaceId, config.kv?.key || MODELS_KV_KEY
-          )
-        } catch {
-          kvModelsList = null
-        }
-      }
+      const gateway = config.gateway || {}
+      const namespaceId = config.kv?.namespaceId || ''
+      const truths = await readKvTruths({ flush: autoDeployPending })
+      const kvReady = truths.kvReady
+      const { visibilityMap } = truths
+
       const result = await runSyncFlow({
         config,
         gatewayToken,
@@ -1087,27 +1135,33 @@ export function createApp({
         onEvent: emitEvent,
       })
       // 以 KV 为准回写本地 enabled（供 discover 离线降级一致），有变化才写
-      if (visibilityMap && Array.isArray(config.providers)) {
-        const next = depsAll.applyVisibility(config.providers, visibilityMap)
-        if (next.some((p, i) => p.enabled !== config.providers[i].enabled)) {
-          depsAll.writeProvidersConfigFile(next)
-        }
-      }
+      applyKvVisibility(visibilityMap)
       // 应用 KV 手工模型（重建跨 PC 添加的手工模型）+ 隐藏模型（KV 隐藏态优先）
       // + 已部署列表（pending → selected 提升 + 取消隐藏归位）
-      const manualResult = depsAll.applyManualModels(result.state, manualModelsMap)
-      const hiddenResult = depsAll.applyHiddenModels(manualResult.state, hiddenModelsMap)
-      const selectedResult = depsAll.applySelectedModels(hiddenResult.state, kvModelsList, hiddenModelsMap)
-      result.state = selectedResult.state
+      const kvApplied = applyKvTruthsToState(result.state, truths)
+      result.state = kvApplied.state
+      // 本地优先：发现是后台重型任务，期间 UI 已不再全局阻塞，用户可能改了模型
+      // （状态 / 元数据 / 新增 / 删除）。以同步起点快照为基线，把窗口内的本地改动
+      // 重放到合并结果之上，避免被 discover 结果覆盖；这些改动随后由自动部署统一收敛。
+      // 无本地改动时完全跳过（零额外比较开销）。
+      const localEdited = stateVersion !== syncStartVersion
+      if (localEdited) {
+        const merged = result.state
+        for (const [id, cur] of Object.entries(state)) {
+          if (JSON.stringify(localSnapshotBeforeSync[id]) !== JSON.stringify(cur)) merged[id] = cur
+        }
+        for (const id of Object.keys(localSnapshotBeforeSync)) {
+          if (!(id in state)) delete merged[id]
+        }
+      }
       // 同步完成后统一写盘一次（不逐模型写，与 TUI「合并后统一 dirty」一致）
       // 有变更（同步 discover + KV 手工/隐藏/采用应用）才落盘
       const hasChanges =
         (result.summary.newModels && result.summary.newModels.length > 0) ||
         (result.summary.updatedModels && result.summary.updatedModels.length > 0) ||
         (result.summary.removedModels && result.summary.removedModels.length > 0) ||
-        manualResult.changed ||
-        hiddenResult.changed ||
-        selectedResult.changed
+        kvApplied.changed ||
+        localEdited
       // 部署触发条件：只看「KV 部署投影」是否变化（models / hidden-models / manual-models 三键）：
       //   - 纯新增 pending 模型：不进任何 KV 键（generate 只取 selected），不再触发部署
       //   - 排除「前后均为 hidden 的纯 metadata 变化」：隐藏模型不写入 models.json，
@@ -1116,9 +1170,8 @@ export function createApp({
       // 注意：此时 state 仍为同步前旧对象（下一行才赋值），result.state 为合并后新对象。
       const hasDeployChanges =
         (result.summary.removedModels && result.summary.removedModels.length > 0) ||
-        manualResult.changed ||
-        hiddenResult.changed ||
-        selectedResult.changed ||
+        kvApplied.changed ||
+        localEdited ||
         (result.summary.updatedModels || []).some((modelId) => {
           const newEntry = result.state[modelId]
           const oldEntry = state[modelId]
@@ -1193,6 +1246,34 @@ export function createApp({
     } finally {
       syncing = false
     }
+  })
+
+  // POST /api/sync/consistency — 第一层「一致性同步」：只对齐 KV 跨 PC 真相
+  // （provider-visibility / hidden-models / manual-models / models 已部署列表），
+  // 不重拉模型。轻量（4 次 KV 读），启动流程先跑它即可解锁 UI，避免被重型
+  // discover 全局阻塞。与 /api/sync 共用 readKvTruths / applyKvTruthsToState，语义一致。
+  // 发现进行中 → 跳过（该次同步结束时自会应用同一批真相，无需并发）。
+  app.post('/api/sync/consistency', async (c) => {
+    if (syncing) return c.json({ ok: true, skipped: true, reason: 'sync in progress' })
+    const start = Date.now()
+    const op = 'sync:consistency'
+    const truths = await readKvTruths({ flush: autoDeployPending })
+    if (!truths.kvReady) {
+      return c.json({ ok: true, kvReady: false, changed: false })
+    }
+    const visibilityChanged = applyKvVisibility(truths.visibilityMap)
+    const kv = applyKvTruthsToState(state, truths)
+    if (kv.changed) {
+      state = kv.state
+      stateVersion++
+      stateStore.save(state)
+    }
+    ioLogResult(op, {
+      ok: true,
+      message: kv.changed || visibilityChanged ? '已对齐云端真相' : '无需变更',
+      elapsedMs: Date.now() - start,
+    })
+    return c.json({ ok: true, kvReady: true, changed: kv.changed || visibilityChanged })
   })
 
   // POST /api/save-deploy — 保存并提交（saveState → writeModelsJson → deployToKV → 写 hidden/manual KV）

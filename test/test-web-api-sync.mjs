@@ -1783,6 +1783,120 @@ section('测试 46: batch-toggle 目标状态推导 + 防抖排期')
   }
 }
 
+// ── 测试 47：POST /api/sync/consistency —— 第一层一致性同步（KV 真相对齐，不 discover）──
+section('测试 47: 一致性同步应用 KV 真相（不触网发现）')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const initial = {
+      'custom-agnes/agnes': { status: 'selected', provider: 'custom-agnes', metadata: {} },
+      'custom-agnes/pending-m': { status: 'pending', provider: 'custom-agnes', metadata: {} },
+    }
+    const deps = makeDeps({
+      kvHiddenModels: { 'custom-agnes/agnes': { status: 'hidden', provider: 'custom-agnes', metadata: {} } },
+      kvManualModels: {
+        'custom-manual/m1': { status: 'selected', provider: 'custom-manual', manual: true, metadata: { name: 'M1' } },
+      },
+      kvModels: [{ id: 'custom-agnes/pending-m' }],
+    })
+    const store = makeStore(initial)
+    const app = createTestApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfigWithKv },
+      deps,
+    })
+    const res = await app.request('/api/sync/consistency', { method: 'POST' })
+    const body = await res.json()
+    check(res.status === 200 && body.ok === true, 'HTTP 200 ok')
+    check(body.kvReady === true && body.changed === true, 'kvReady/changed 为 true')
+    check(!deps.calls.includes('discover'), '不调用 discover（轻量一致性同步）')
+    const st = (await (await app.request('/api/state')).json()).state
+    check(st['custom-agnes/agnes']?.status === 'hidden', 'KV hidden → 本地 hidden')
+    check(st['custom-agnes/pending-m']?.status === 'selected', 'KV 已部署列表 → pending 提升 selected')
+    check(!!st['custom-manual/m1'] && st['custom-manual/m1'].manual === true, 'KV 手工模型重建')
+    check(store.saves.length === 1, '有变更落盘一次')
+    check(deps.kvWrites.length === 0, '无待自动部署 → 不写 hidden/manual KV（避免抹掉远端决策）')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 48：一致性同步无 KV 配置 → 降级（kvReady:false，不写盘）──
+section('测试 48: 一致性同步无 KV 配置降级')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const store = makeStore({ 'custom-agnes/agnes': { status: 'selected', provider: 'custom-agnes', metadata: {} } })
+    const deps = makeDeps()
+    const app = createTestApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfig }, // 无 kv 字段
+      deps,
+    })
+    const res = await app.request('/api/sync/consistency', { method: 'POST' })
+    const body = await res.json()
+    check(res.status === 200 && body.ok === true, 'HTTP 200 ok')
+    check(body.kvReady === false && body.changed === false, 'kvReady:false not changed')
+    check(store.saves.length === 0, '无 KV 不写盘')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 49：/api/sync 本地优先 —— 同步窗口内（enrich 阶段）的本地改动不被覆盖 ──
+// 分层启动后 UI 不再全局阻塞，用户可能在 discover/enrich 期间修改模型。服务端以
+// 同步起点快照为基线重放窗口内的本地改动，避免被 merge/KV 结果覆盖。
+section('测试 49: 同步窗口内本地改动本地优先')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    const initial = {
+      'custom-agnes/agnes': { status: 'selected', provider: 'custom-agnes', metadata: { name: 'Agnes' } },
+    }
+    const deps = makeDeps({ kvHiddenModels: {}, kvManualModels: {} })
+    // merge 在 enrich 前执行并快照当时的 state（此时用户尚未改动）
+    deps.mergeDiscovery = (state, _d) => ({
+      state: structuredClone(state),
+      newModels: [],
+      updatedModels: ['custom-agnes/agnes'],
+      removedModels: [],
+    })
+    // enrich 挂起，制造「用户改动发生在 merge 之后」的窗口
+    let releaseEnrich
+    let enrichEnteredResolve
+    const enrichGate = new Promise((r) => { releaseEnrich = r })
+    const enrichEntered = new Promise((r) => { enrichEnteredResolve = r })
+    deps.enrichModel = async (_id, meta) => {
+      enrichEnteredResolve()
+      await enrichGate
+      return meta
+    }
+    const store = makeStore(initial)
+    const app = createTestApp({
+      stateStore: store,
+      configStore: { load: () => fakeConfigWithKv },
+      deps,
+    })
+    const syncPromise = app.request('/api/sync', { method: 'POST' })
+    await enrichEntered // 同步已进入 enrich（merge 已完成）
+    // 用户在同步窗口内隐藏该模型
+    const editRes = await app.request('/api/models/set-status', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ modelId: 'custom-agnes/agnes', status: 'hidden' }),
+    })
+    check(editRes.status === 200, '窗口内 set-status → 200')
+    releaseEnrich()
+    const syncRes = await syncPromise
+    check(syncRes.status === 200, '同步完成 200')
+    const st = (await (await app.request('/api/state')).json()).state
+    check(st['custom-agnes/agnes']?.status === 'hidden', '窗口内本地改动被保留（本地优先，未被 merge 覆盖）')
+    check(deps.calls.includes('deployToKV'), '本地改动计入 changes → 触发自动部署收敛')
+  } finally {
+    restoreEnv()
+  }
+}
+
 console.log(`\n${'='.repeat(56)}`)
 console.log(`测试汇总: ${checks} 项检查, ${failures} 项失败`)
 process.exit(failures ? 1 : 0)
