@@ -44,7 +44,7 @@ Worker 本身保持零依赖、无状态，无需为本地网关做任何改动�
 
 1. 不做本地网关到云端 Worker 的转发 / 隧道。
 2. 不做按 Provider 粒度的路由分流（本地 / 云端二选一，由 Agent Base URL 决定）。
-3. 不在 web UI 中启停 / 托管网关进程（v1 由独立终端启动）。
+3. ~~不在 web UI 中启停 / 托管网关进程（v1 由独立终端启动）~~ → v2 起支持：管理界面「网关」页可一键启动 / 关闭网关。网关始终是独立进程（detached spawn，见 §11.3），管理界面只做编排与状态探测，不做托管。
 4. 不监听局域网、不做远程多 PC 共用。
 5. 不复制 Cloudflare 的 analytics / 缓存 / 预算限流。
 6. 不集成 Portkey（理由见 §10）。
@@ -91,7 +91,8 @@ ai-gateway-desk/
 ├── src/
 │   ├── bin/aigd.js                 # gateway 子命令
 │   ├── gateway/
-│   │   ├── server.js               # Hono app 工厂 + 启动器
+│   │   ├── server.js               # Hono app 工厂 + 启动器 + /api/gateway/shutdown
+│   │   ├── process.js              # 管理界面侧进程编排（detached spawn / 就绪等待 / 关闭）
 │   │   ├── config-store.js         # data/gateway.json 读写（仅 port）
 │   │   ├── router.js               # slug 解析/剥离、厂商 URL 构造
 │   │   ├── provider-keys.js        # 厂商凭证本地加密存储
@@ -99,10 +100,11 @@ ai-gateway-desk/
 │   │   ├── backends/local.js       # LocalBackend
 │   │   └── fallback.js             # 本地动态路由引擎
 │   └── web/
-│       ├── server.js               # 网关视图 API（overview/backfill/key）
+│       ├── server.js               # 网关视图 API（overview/start/stop/backfill/key）
 │       └── public/app.js           # 「网关」视图
 ├── data/
 │   ├── gateway.json                # gitignore：{ port }
+│   ├── gateway.log                 # gitignore：网关子进程 stdout/stderr（每次启动重置）
 │   └── gateway.example.json        # 提交：模板
 └── test/
     ├── run-all.mjs
@@ -121,9 +123,12 @@ ai-gateway-desk/
 | `/v1/models` | GET | 读本地 `data/models.json`，包装为 `{ object:'list', data }` |
 | `/health` | GET | 网关进程存活 + backend 健康 |
 | `/api/gateway/status` | GET | 端口、各 provider 本地凭证状态 |
+| `/api/gateway/shutdown` | POST | 管理界面关闭本进程（先应答再优雅退出；拒绝带 `Origin` 的浏览器请求） |
 | `/api/gateway/backfill-keys` | POST | 从云端拉 custom-provider 完整 key 回填本地 |
 
 EADDRINUSE 返回友好提示。
+
+`/api/gateway/shutdown` 的关闭钩子由 `startGateway` 在 server 就绪后注入（关 server → `process.exit(0)`，2s 兜底强退）；未注册钩子（如测试直接 `createGatewayApp`）返回 501。
 
 ## 7. 凭证策略
 
@@ -223,10 +228,23 @@ aigd gateway [--port 8788]
 
 ### 11.2 Web UI「网关」视图
 
-- 操作面板：从云端回填 Key、刷新。
-- 两张卡片：本地网关（运行状态、监听地址、Base URL 复制）、云端 Worker（地址、部署 / 编辑，直连说明）。
+- 操作面板（右侧提示栏）：从云端回填 Key、刷新。
+- 两张卡片：本地网关（运行状态、监听地址、Base URL 复制、**启动 / 关闭按钮**）、云端 Worker（地址、部署，直连说明）。
 - 各 provider 本地凭证状态表；BYOK 标记「需重新录入」。
-- v1 不在 UI 中启停网关进程。
+
+### 11.3 管理界面启停网关 — `src/gateway/process.js`
+
+管理界面与本地网关是两个进程，二者唯一耦合是 `data/gateway.json` 的端口：
+
+| 动作 | 实现 |
+|------|------|
+| 启动 | 管理界面 detached + `unref()` spawn `node src/bin/aigd.js gateway --port <port>`（新进程组、`windowsHide`），再轮询 `/health` 直至就绪；子进程提前退出（如端口被占用）立即失败并回读 `data/gateway.log` 尾部作为错误详情 |
+| 关闭 | `POST /api/gateway/shutdown`（不带 `Origin`），网关先应答 200 再关 server + 退出（2s 兜底强退）；管理界面轮询 `/health` 确认端口已释放 |
+| 探测 | `GET /health`，且仅认 `{ ok:true, backend:{...} }` 结构（端口被其他程序占用 → 视为未运行） |
+
+- 网关进程脱离管理界面：关闭 / 重启管理界面（含终端 Ctrl+C）不影响网关；管理界面重启后按 `gateway.json` 端口重新探测即可恢复运行状态。
+- 不做 PID 文件管理（避免 PID 复用误杀），只在管理界面已有 PID 之外通过 HTTP 关闭；网关若由终端 `aigd gateway` 启动，UI 同样能探测并关闭。
+- 管理界面 API：`POST /api/gateway/start`（已运行 → 幂等 `alreadyRunning`）、`POST /api/gateway/stop`（未运行 → 幂等 `alreadyStopped`）；业务失败（端口占用 / 就绪超时 / 关闭超时）仍 200，带 `error` 字段。
 
 ## 12. 测试
 
@@ -238,9 +256,10 @@ aigd gateway [--port 8788]
 | `test-gateway-provider-keys.mjs` | 按 slug 读写 / 覆盖 / 删除 headers |
 | `test-gateway-router.mjs` | slug 解析 / 剥离、URL 构造 |
 | `test-gateway-backend-local.mjs` | LocalBackend 直发、流式、错误归类 |
-| `test-gateway-server.mjs` | API 端点（chat / models / health / status / backfill） |
+| `test-gateway-server.mjs` | API 端点（chat / models / health / status / shutdown / backfill） |
+| `test-gateway-process.mjs` | 进程编排（argv、就绪 / 提前退出 / 超时、关闭成功 / 403 / 异常 / 超时，全 mock） |
 | `test-gateway-fallback.mjs` | fallback 链、重试、percentage、异常结构 |
-| `test-gateway-web-api.mjs` | 管理服务网关 API |
+| `test-gateway-web-api.mjs` | 管理服务网关 API（overview / start / stop / backfill / key） |
 | `test-gateway-view.mjs` | 前端视图纯函数 |
 
 全部注册进 `test/run-all.mjs`，`prepublishOnly` 绑定 `npm test`。
@@ -254,6 +273,7 @@ aigd gateway [--port 8788]
 | Key 落本地的攻击面 | 本地需持有真实厂商 Key | 系统级加密，仅当前用户可解密 |
 | 流式中途失败 | 200 后 SSE 报错无法回退 | 文档注明，与 CF 一致 |
 | 双写一致性 | 云端成功本地失败（或反之） | 本地失败显式告警，提供回填 / 重试 |
+| 网关成为孤儿进程 | 网关刻意独立于管理界面，管理界面退出后它仍占用端口 | 属预期：UI「关闭网关」或终端 Ctrl+C 结束；重启管理界面仍能探测到并关闭它 |
 
 ## 14. 默认约定
 

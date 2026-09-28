@@ -11,6 +11,7 @@
 //   GET  /v1/models               读本地 data/models.json
 //   GET  /health                  进程存活 + backend 健康
 //   GET  /api/gateway/status      端口 / 各 provider 凭证状态
+//   POST /api/gateway/shutdown    管理界面优雅关闭本进程
 //   POST /api/gateway/backfill-keys  custom-provider 完整 key 云端回填
 // ============================================================
 
@@ -89,6 +90,7 @@ function parseCloudHeaders(rawHeaders) {
  * @param {Function} [options.writeProviderHeaders] - (slug, headers) => void
  * @param {Function} [options.listCloudCustomProviders] - (token, accountId) => 数组
  * @param {Function} [options.readManagementToken] - () => token | null
+ * @param {Function} [options.requestShutdown] - 收到关闭请求时调用的钩子（缺省未注册）
  * @returns {Hono}
  */
 export function createGatewayApp(options = {}) {
@@ -102,6 +104,8 @@ export function createGatewayApp(options = {}) {
   const listCloudCustomProviders =
     options.listCloudCustomProviders || listCustomProviders
   const readMgmtToken = options.readManagementToken || defaultReadManagementToken
+  const requestShutdown =
+    typeof options.requestShutdown === 'function' ? options.requestShutdown : null
 
   const app = new Hono()
 
@@ -189,6 +193,32 @@ export function createGatewayApp(options = {}) {
       port: gatewayConfig.port,
       providers: providerKeys,
     })
+  })
+
+  // POST /api/gateway/shutdown — 管理界面关闭本进程（先应答再异步退出）
+  // 仅接受非浏览器发起的本机请求：浏览器跨源请求必带 Origin，直接拒绝，
+  // 避免任意网页 POST 关闭本机网关。进程未注册钩子（非 startGateway 启动）→ 501。
+  app.post('/api/gateway/shutdown', (c) => {
+    const op = 'gateway:shutdown'
+    const start = Date.now()
+    if (c.req.header('Origin')) {
+      logResult(op, { ok: false, message: '拒绝携带 Origin 的请求', elapsedMs: Date.now() - start })
+      return c.json({ error: '拒绝来自浏览器的关闭请求' }, 403)
+    }
+    if (!requestShutdown) {
+      logResult(op, { ok: false, message: '进程未注册关闭钩子', elapsedMs: Date.now() - start })
+      return c.json({ error: '当前进程未注册关闭钩子' }, 501)
+    }
+    logResult(op, { ok: true, message: '收到关闭请求', elapsedMs: Date.now() - start })
+    // 先让 200 送达，再由关闭钩子（startGateway）关 server + 退出进程
+    setTimeout(() => {
+      try {
+        requestShutdown()
+      } catch {
+        // 关闭钩子异常不应影响已发出的响应
+      }
+    }, 0)
+    return c.json({ ok: true })
   })
 
   // POST /api/gateway/backfill-keys — 云端 custom-provider 完整 headers 回填本地
@@ -280,7 +310,13 @@ export function startGateway(options = {}) {
   const initialConfig = defaultLoadGatewayConfig()
   const port = options.port || initialConfig.port
 
-  const app = createGatewayApp()
+  // /api/gateway/shutdown 的关闭钩子：server 就绪后注入（未就绪 → 端点返回 501）
+  let requestShutdown = null
+  const app = createGatewayApp({
+    requestShutdown: () => {
+      if (requestShutdown) requestShutdown()
+    },
+  })
 
   return new Promise((resolve, reject) => {
     const server = serve({ fetch: app.fetch, port, hostname }, (info) => {
@@ -290,12 +326,17 @@ export function startGateway(options = {}) {
         })
 
       const shutdown = async () => {
+        // 兜底：进行中的长连接（如流式请求）可能阻塞 close()，2s 后强制退出
+        const force = setTimeout(() => process.exit(0), 2000)
         try {
           await close()
         } finally {
+          clearTimeout(force)
           process.exit(0)
         }
       }
+
+      requestShutdown = shutdown
 
       if (installSignalHandlers) {
         process.on('SIGINT', shutdown)

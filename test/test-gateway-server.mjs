@@ -172,6 +172,50 @@ try {
       '动态回显请求头'
     )
   }
+
+  section('7. POST /api/gateway/shutdown（管理界面关闭本进程）')
+  {
+    // 未注册钩子（非 startGateway 启动）→ 501
+    const noHookApp = createGatewayApp({
+      loadConfig: () => currentConfig,
+      backendFactory: () => makeMockBackend(),
+      readModels: () => [],
+      hasProviderKey: () => false,
+    })
+    let res = await noHookApp.request('/api/gateway/shutdown', { method: 'POST' })
+    check(res.status === 501, '未注册关闭钩子 → 501')
+
+    // 已注册钩子：200 且异步触发钩子
+    let shutdowns = 0
+    const hookApp = createGatewayApp({
+      loadConfig: () => currentConfig,
+      backendFactory: () => makeMockBackend(),
+      readModels: () => [],
+      hasProviderKey: () => false,
+      requestShutdown: () => {
+        shutdowns++
+      },
+    })
+    res = await hookApp.request('/api/gateway/shutdown', { method: 'POST' })
+    check(res.status === 200, '200')
+    check((await res.json()).ok === true, '响应 { ok:true }')
+    check(shutdowns === 0, '响应先于关闭（同 tick 内不调用钩子）')
+    await new Promise((r) => setTimeout(r, 5))
+    check(shutdowns === 1, '异步触发关闭钩子')
+
+    // 浏览器发起的请求（带 Origin）→ 403，不触发钩子
+    res = await hookApp.request('/api/gateway/shutdown', {
+      method: 'POST',
+      headers: { Origin: 'https://evil.example' },
+    })
+    check(res.status === 403, '带 Origin → 403')
+    await new Promise((r) => setTimeout(r, 5))
+    check(shutdowns === 1, '拒绝时未触发关闭钩子')
+
+    // 非 POST → 404
+    res = await hookApp.request('/api/gateway/shutdown', { method: 'GET' })
+    check(res.status === 404, 'GET → 404')
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true })
 }

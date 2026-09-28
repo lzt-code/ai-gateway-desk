@@ -82,6 +82,10 @@ import {
   loadGatewayConfig,
 } from '../gateway/config-store.js'
 import {
+  startGatewayProcess,
+  stopGatewayProcess,
+} from '../gateway/process.js'
+import {
   SLOTS,
   summarizeTokenStatus,
   summarizeGatewayInfo,
@@ -176,6 +180,8 @@ const DEFAULT_DEPS = {
   // 网关视图（探测本地网关 + Worker 地址自动发现）
   gatewayFetch: (url, init) => fetch(url, init),
   readGatewayConfig: () => loadGatewayConfig(),
+  startGatewayProcess,
+  stopGatewayProcess,
   listCloudCustomProviders: listCustomProviders,
   discoverWorkerEndpoints,
   readKvVisibility: async (apiToken, accountId, namespaceId) =>
@@ -1975,7 +1981,10 @@ export function createApp({
         method: 'GET',
       })
       if (!res.ok) return { running: false, health: null }
-      return { running: true, health: await res.json() }
+      // 仅认本网关的健康响应（/health → { ok:true, backend:{...} }）：
+      // 端口被其他程序占用（同为 200 但非该结构）不算「运行中」
+      const health = await res.json().catch(() => null)
+      return { running: health?.ok === true, health }
     } catch {
       return { running: false, health: null }
     }
@@ -2047,6 +2056,70 @@ export function createApp({
       workerEndpoints,
       baseUrl: `http://127.0.0.1:${gwConfig.port}/v1`,
       providers: providerRows,
+    })
+  })
+
+  // POST /api/gateway/start — 在本机后台启动独立网关进程
+  // 已运行（端口可探测到 /health）→ 幂等返回 alreadyRunning，不重复拉起。
+  // 业务失败（端口被占用 / 就绪超时）≠ HTTP 错误，仍 200 透出 error。
+  app.post('/api/gateway/start', async (c) => {
+    const op = 'gateway:start'
+    const start = Date.now()
+    const port = depsAll.readGatewayConfig().port
+    const baseUrl = `http://127.0.0.1:${port}/v1`
+
+    const before = await probeGateway(port)
+    if (before.running) {
+      ioLogResult(op, { ok: true, message: `已在运行 port=${port}`, elapsedMs: Date.now() - start })
+      return c.json({ ok: true, running: true, alreadyRunning: true, port, baseUrl })
+    }
+
+    const r = await depsAll.startGatewayProcess({
+      port,
+      isAlive: async () => (await probeGateway(port)).running,
+    })
+    ioLogResult(op, {
+      ok: r.ok === true,
+      message: r.ok ? `已启动 port=${port}` : String(r.error || '启动失败').slice(0, 300),
+      elapsedMs: Date.now() - start,
+    })
+    return c.json({
+      ok: r.ok === true,
+      running: r.running === true,
+      port,
+      baseUrl,
+      error: r.error ? String(r.error).slice(0, 500) : null,
+    })
+  })
+
+  // POST /api/gateway/stop — 关闭本机网关进程（网关优雅退出，见 process.js）
+  // 未运行 → 幂等返回 alreadyStopped；关闭超时仍 200 透出 error + running:true
+  app.post('/api/gateway/stop', async (c) => {
+    const op = 'gateway:stop'
+    const start = Date.now()
+    const port = depsAll.readGatewayConfig().port
+
+    const before = await probeGateway(port)
+    if (!before.running) {
+      ioLogResult(op, { ok: true, message: `未在运行 port=${port}`, elapsedMs: Date.now() - start })
+      return c.json({ ok: true, running: false, alreadyStopped: true, port })
+    }
+
+    const r = await depsAll.stopGatewayProcess({
+      port,
+      isAlive: async () => (await probeGateway(port)).running,
+      fetchFn: depsAll.gatewayFetch,
+    })
+    ioLogResult(op, {
+      ok: r.ok === true,
+      message: r.ok ? `已关闭 port=${port}` : String(r.error || '关闭失败').slice(0, 300),
+      elapsedMs: Date.now() - start,
+    })
+    return c.json({
+      ok: r.ok === true,
+      running: r.running === true,
+      port,
+      error: r.error ? String(r.error).slice(0, 500) : null,
     })
   })
 

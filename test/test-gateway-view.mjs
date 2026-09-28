@@ -57,6 +57,13 @@ section('1. buildLocalGatewayCard')
   const stopped = buildLocalGatewayCard({ ...overview, running: false })
   check(stopped.includes('未运行'), '未运行状态')
   check(stopped.includes('aigd gateway'), '提示启动命令')
+
+  // 启动 / 关闭按钮：按运行状态二选一（进程独立于管理界面）
+  check(html.includes('btn-stop-gateway') && html.includes('关闭网关'), '运行中显示「关闭网关」')
+  check(!html.includes('btn-start-gateway'), '运行中不显示启动按钮')
+  check(stopped.includes('btn-start-gateway') && stopped.includes('启动网关'), '未运行显示「启动网关」')
+  check(!stopped.includes('btn-stop-gateway'), '未运行不显示关闭按钮')
+  check(html.includes('独立进程'), '说明网关进程独立于管理界面')
 }
 
 section('2. buildCloudWorkerCard')

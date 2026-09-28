@@ -183,7 +183,8 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 
 | 模块 | 职责 |
 |------|------|
-| `server.js` | `createGatewayApp(deps)` Hono 工厂（全依赖注入）+ `startGateway()` 启动器（`@hono/node-server`，仅绑 127.0.0.1、无心跳退出、EADDRINUSE 友好提示） |
+| `server.js` | `createGatewayApp(deps)` Hono 工厂（全依赖注入）+ `startGateway()` 启动器（`@hono/node-server`，仅绑 127.0.0.1、无心跳退出、EADDRINUSE 友好提示、`/api/gateway/shutdown` 关闭钩子） |
+| `process.js` | 管理界面侧进程编排：detached + `unref()` spawn `aigd gateway`（新进程组，脱离管理界面与终端）、轮询 `/health` 等待就绪、请求 `/api/gateway/shutdown` 优雅关闭、回读 `data/gateway.log` 尾部 |
 | `config-store.js` | `data/gateway.json` 读写与校验：仅 `port`（默认 8788） |
 | `router.js` | 纯函数：model slug 解析 / 剥离、base_url + pathPrefix 厂商端点构造；内置常见 BYOK slug 的 OpenAI 兼容 base_url 映射 |
 | `provider-keys.js` | 按 provider slug 在 `~/.ai-gateway-desk/provider-keys/<slug>` 存完整鉴权 headers（复用 token-store 系统级加密；`AI_GW_TEST_DIR` 隔离） |
@@ -193,7 +194,7 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 
 本地引擎语义对齐 Cloudflare：网络失败 / 429 / 5xx 按节点 `retries` 重试，耗尽后走 fallback 边；200 即成功并开始流式返回；4xx（非 429）立即报错不回退。限制：流式开始后中途错误无法回退（与 CF 一致）。
 
-管理端（`src/web/server.js`）网关视图 API 行为：探测网关进程 `/health` 以展示运行状态；回填 / 凭证录入均在管理进程直接写本地加密存储，与网关进程是否在跑无关。Worker 地址由 Cloudflare API 自动发现（workers.dev 默认地址、Workers Domains 自定义域名、Workers Routes zone 路由，聚合在 `GET /api/gateway/overview`），不本地存储。
+管理端（`src/web/server.js`）网关视图 API 行为：探测网关进程 `/health`（仅认 `{ ok:true, backend:{...} }`）以展示运行状态；`POST /api/gateway/start` / `POST /api/gateway/stop` 通过 `process.js` 启停独立网关进程（管理界面重启后按 `gateway.json` 端口重新探测即可恢复状态）；回填 / 凭证录入均在管理进程直接写本地加密存储，与网关进程是否在跑无关。Worker 地址由 Cloudflare API 自动发现（workers.dev 默认地址、Workers Domains 自定义域名、Workers Routes zone 路由，聚合在 `GET /api/gateway/overview`），不本地存储。
 
 ## 5. 数据模型
 
@@ -413,7 +414,7 @@ aigd setup
 |------|------|
 | Provider | 云端 Provider 列表（合并本地缓存）：编辑（slug 只读 / name 可改 / api key 仅覆盖不查看 / 云端启用 / 本地参与发现）、删除（云端 + 本地同步）、刷新 |
 | 模型 | 模型表格（模型ID / Provider / 上下文 / 状态 四列）：Provider 侧栏与关键字筛选、状态切换、同步云端、保存并提交 |
-| Worker | 部署状态面板（KV namespace / data/models.json / KV key 三态），一键部署 Worker |
+| 网关 | 本地网关卡（运行状态 / 监听地址 / Base URL 复制 / 启动 · 关闭按钮）+ Cloudflare Worker 卡（自动发现地址、部署 Worker）+ 各 Provider 本地凭证表（回填 / 录入 / 覆盖） |
 | 账户 | 双 token 槽位管理（管理 API Token / Gateway Token）+ 管理 Token 名称与所需权限自检 + gateway 信息，初始化向导入口 |
 
 > 管理 Token 获取顺序：环境变量 `CLOUDFLARE_API_TOKEN` > 本地安全存储；缺失时 Provider 拉取降级为只读本地缓存。
@@ -541,8 +542,18 @@ npm test   # 聚合运行 test/ 下全部测试（test/run-all.mjs）
 | `test-routes-store.mjs` | data/routes.json 读写 + upsert/remove 纯函数 |
 | `test-routes-deploy.mjs` | 动态路由 REST 部署编排（创建/版本/部署，全 mock） |
 | `test-web-api-routes.mjs` | 动态路由配置 API 端点（保存/部署/删除/刷新，全 mock） |
+| `test-gateway-config-store.mjs` | `data/gateway.json` 端口读写 / 校验 / 默认值 |
+| `test-gateway-provider-keys.mjs` | 本地凭证加密存储（`AI_GW_TEST_DIR` 隔离） |
+| `test-gateway-router.mjs` | slug 解析 / 剥离、厂商 URL 构造 |
+| `test-gateway-backend-local.mjs` | LocalBackend 直发、流式、错误归类 |
+| `test-gateway-server.mjs` | 网关端点（chat / models / health / status / shutdown / backfill） |
+| `test-gateway-process.mjs` | 管理界面托管网关进程（spawn 参数 / 就绪 / 立即退出 / 关闭，全 mock） |
+| `test-gateway-fallback.mjs` | 本地 fallback 链 / 重试 / percentage / 异常结构 |
+| `test-gateway-web-api.mjs` | 管理服务网关 API（overview / start / stop / backfill / key） |
+| `test-gateway-view.mjs` | 前端网关视图纯函数 |
+| `test-worker-endpoints.mjs` | Worker 地址自动发现（workers.dev / 自定义域名 / 路由 / 容错） |
 
-> 当前共 37 个测试文件（新增动态路由配置 5 个：校验 / spec 互转 / 存储 / 部署编排 / API 端点）。
+> 当前共 49 个测试文件（`test/run-all.mjs` 依次串行执行）。
 
 ## 14. 开源与仓库约定
 

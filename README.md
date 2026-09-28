@@ -70,6 +70,14 @@ aigd gateway --port 8788
 - 本地网关解析模型的 provider slug → 取本机加密凭证 → 本机出口 IP 直连厂商，支持动态路由 fallback 链。
 - 走 Cloudflare 时，Agent 的 Base URL 直接填云端 Worker 地址（见下方「部署转发 Worker」）。
 
+### 在管理界面启停
+
+「网关」视图的本地网关卡提供**启动网关 / 关闭网关**按钮，无需回到终端：
+
+- 网关是**独立进程**（管理界面以 detached 方式拉起）：关闭或重启管理界面都不会停掉它；管理界面重启后按 `data/gateway.json` 的端口重新探测，仍能显示「运行中」并可直接关闭。
+- 网关子进程输出写入 `data/gateway.log`（每次启动重置）；启动失败（如端口被占用）时错误详情即取自该日志。
+- 终端 `aigd gateway` 启动的网关同样能被界面探测到并关闭。
+
 ### 凭证从哪来
 
 - **Custom Provider**：云端管理 API 可读回完整 headers，点击「从云端回填 Key」自动写入本机系统级加密存储（Windows DPAPI / macOS Keychain / Linux 0600 文件），无需重填。

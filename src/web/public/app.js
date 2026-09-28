@@ -5546,7 +5546,7 @@ export function buildAccountStatusView(tokens, gateway, tokenInfo, requiredPermi
 
 // ── 网关视图：纯函数 HTML 构造（Node 可直接测试）────────────
 
-// 本地网关卡片：运行状态 / 监听地址 / 统一 Base URL
+// 本地网关卡片：运行状态 / 监听地址 / 统一 Base URL + 启动/关闭（进程独立于管理界面）
 export function buildLocalGatewayCard(overview) {
   const o = overview || {}
   const running = o.running === true
@@ -5554,6 +5554,12 @@ export function buildLocalGatewayCard(overview) {
   const runCls = running ? 'ok' : 'warn'
   const listen = `127.0.0.1:${o.port || 8788}`
   const baseUrl = o.baseUrl || `http://${listen}/v1`
+  const actionBtn = running
+    ? `<button class="btn btn-default btn-stop-gateway" type="button">关闭网关</button>`
+    : `<button class="btn btn-primary btn-start-gateway" type="button">启动网关</button>`
+  const hint = running
+    ? '网关运行在独立进程：关闭本管理界面不影响它（本界面重启后按端口重新探测状态）'
+    : '网关未运行：点「启动网关」在本机后台启动（也可在终端执行 <code>aigd gateway</code>）'
   return (
     `<div class="panel gateway-box local-gateway-card">` +
     `<h3>本地网关</h3>` +
@@ -5565,7 +5571,8 @@ export function buildLocalGatewayCard(overview) {
     `<code class="baseurl-code">${escapeHtml(baseUrl)}</code>` +
     `<button class="btn btn-default btn-copy-baseurl" type="button" data-baseurl="${escapeHtml(baseUrl)}">复制</button>` +
     `</div>` +
-    (running ? '' : `<p class="gateway-hint warn">网关未运行：请在终端执行 <code>aigd gateway</code> 启动（配置会在启动时生效）</p>`) +
+    `<div class="toolbar">${actionBtn}</div>` +
+    `<p class="gateway-hint${running ? '' : ' warn'}">${hint}</p>` +
     `</div>`
   )
 }
@@ -5928,6 +5935,54 @@ export function renderWorkersView(container) {
     })
   }
 
+  // 启动 / 关闭本地网关：管理界面在后台拉起独立进程（关闭本界面不影响网关），
+  // 关闭走网关 /api/gateway/shutdown 优雅退出；结果透传后刷新状态。
+  async function startGateway() {
+    logActivity('启动本地网关…', 'info')
+    try {
+      const res = await withBlocking(
+        '正在启动本地网关…',
+        api('/api/gateway/start', { method: 'POST' }),
+      )
+      if (res && res.running === true) {
+        const text = res.alreadyRunning ? '本地网关已在运行' : '本地网关已启动（独立进程）'
+        flash(text, 'ok')
+        logActivity(text, 'ok')
+        refresh()
+      } else {
+        const msg = String((res && res.error) || '未知错误')
+        flash(`启动失败：${msg.slice(0, 200)}`, 'err')
+        logActivity(`本地网关启动失败：${msg.slice(0, 200)}`, 'err')
+      }
+    } catch (err) {
+      flash(err.message, 'err')
+      logActivity(`本地网关启动失败：${err.message}`, 'err')
+    }
+  }
+
+  async function stopGateway() {
+    logActivity('关闭本地网关…', 'info')
+    try {
+      const res = await withBlocking(
+        '正在关闭本地网关…',
+        api('/api/gateway/stop', { method: 'POST' }),
+      )
+      if (res && res.running === false) {
+        const text = res.alreadyStopped ? '本地网关未在运行' : '本地网关已关闭'
+        flash(text, 'ok')
+        logActivity(text, 'ok')
+        refresh()
+      } else {
+        const msg = String((res && res.error) || '未知错误')
+        flash(`关闭失败：${msg.slice(0, 200)}`, 'err')
+        logActivity(`本地网关关闭失败：${msg.slice(0, 200)}`, 'err')
+      }
+    } catch (err) {
+      flash(err.message, 'err')
+      logActivity(`本地网关关闭失败：${err.message}`, 'err')
+    }
+  }
+
   async function backfill() {
     logActivity('从云端回填 custom-provider Key…', 'info')
     try {
@@ -6039,6 +6094,10 @@ export function renderWorkersView(container) {
       backfill()
     } else if (btn.classList.contains('btn-refresh-gateway')) {
       refresh()
+    } else if (btn.classList.contains('btn-start-gateway')) {
+      startGateway()
+    } else if (btn.classList.contains('btn-stop-gateway')) {
+      stopGateway()
     } else if (btn.classList.contains('btn-deploy-worker')) {
       deployWorker()
     } else if (btn.classList.contains('btn-rekey')) {

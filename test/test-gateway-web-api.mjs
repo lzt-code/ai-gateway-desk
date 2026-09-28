@@ -267,6 +267,126 @@ try {
     })
     check(res.status === 400, '缺 apiKey → 400')
   }
+
+  section('8. POST /api/gateway/start：未运行 → 拉起独立进程')
+  {
+    const { fetchFn } = makeGatewayFetch(false)
+    const spawns = []
+    const app = createTestApp({
+      deps: {
+        gatewayFetch: fetchFn,
+        readGatewayConfig: () => ({ port: 8788 }),
+        startGatewayProcess: async ({ port, isAlive }) => {
+          spawns.push({ port, isAlive: typeof isAlive })
+          return { ok: true, running: true, port }
+        },
+      },
+    })
+    const res = await app.request('/api/gateway/start', { method: 'POST' })
+    const body = await res.json()
+    check(res.status === 200 && body.ok === true && body.running === true, '启动成功')
+    check(body.port === 8788 && body.baseUrl === 'http://127.0.0.1:8788/v1', '回显端口与 Base URL')
+    check(!body.alreadyRunning, '非幂等分支')
+    check(spawns.length === 1 && spawns[0].isAlive === 'function', '调用 startGatewayProcess（传 isAlive）')
+  }
+
+  section('9. POST /api/gateway/start：已在运行 → 幂等，不重复拉起')
+  {
+    const { fetchFn } = makeGatewayFetch(true)
+    let called = 0
+    const app = createTestApp({
+      deps: {
+        gatewayFetch: fetchFn,
+        readGatewayConfig: () => ({ port: 8788 }),
+        startGatewayProcess: async () => {
+          called++
+          return { ok: true, running: true, port: 8788 }
+        },
+      },
+    })
+    const res = await app.request('/api/gateway/start', { method: 'POST' })
+    const body = await res.json()
+    check(body.ok === true && body.alreadyRunning === true && body.running === true, 'alreadyRunning')
+    check(called === 0, '未重复拉起进程')
+  }
+
+  section('10. POST /api/gateway/start：启动失败 → 200 + error')
+  {
+    const { fetchFn } = makeGatewayFetch(false)
+    const app = createTestApp({
+      deps: {
+        gatewayFetch: fetchFn,
+        readGatewayConfig: () => ({ port: 8788 }),
+        startGatewayProcess: async () => ({
+          ok: false,
+          running: false,
+          port: 8788,
+          error: '网关进程启动后立即退出：端口 8788 已被占用',
+        }),
+      },
+    })
+    const res = await app.request('/api/gateway/start', { method: 'POST' })
+    const body = await res.json()
+    check(res.status === 200, '业务失败仍 200')
+    check(body.ok === false && body.running === false && /已被占用/.test(body.error), '透出错误详情')
+  }
+
+  section('11. POST /api/gateway/stop：运行中 → 关闭；未运行 → 幂等')
+  {
+    const { fetchFn: upFetch } = makeGatewayFetch(true)
+    const stops = []
+    const runningApp = createTestApp({
+      deps: {
+        gatewayFetch: upFetch,
+        readGatewayConfig: () => ({ port: 8788 }),
+        stopGatewayProcess: async ({ port, fetchFn }) => {
+          stops.push({ port, fetchFn: typeof fetchFn })
+          return { ok: true, running: false, port }
+        },
+      },
+    })
+    let res = await runningApp.request('/api/gateway/stop', { method: 'POST' })
+    let body = await res.json()
+    check(body.ok === true && body.running === false && !body.alreadyStopped, '关闭成功')
+    check(stops.length === 1 && stops[0].fetchFn === 'function', '调用 stopGatewayProcess（传 fetchFn）')
+
+    const { fetchFn: downFetch } = makeGatewayFetch(false)
+    let called = 0
+    const stoppedApp = createTestApp({
+      deps: {
+        gatewayFetch: downFetch,
+        readGatewayConfig: () => ({ port: 8788 }),
+        stopGatewayProcess: async () => {
+          called++
+          return { ok: true, running: false, port: 8788 }
+        },
+      },
+    })
+    res = await stoppedApp.request('/api/gateway/stop', { method: 'POST' })
+    body = await res.json()
+    check(body.ok === true && body.alreadyStopped === true && body.running === false, 'alreadyStopped')
+    check(called === 0, '未运行时不调用 stopGatewayProcess')
+  }
+
+  section('12. 端口被其他程序占用（200 但非本网关 /health 结构）→ 视为未运行')
+  {
+    const app = createTestApp({
+      configStore: makeStore(providersConfig),
+      deps: {
+        gatewayFetch: async () =>
+          new Response(JSON.stringify({ hello: 'world' }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        readGatewayConfig: () => ({ port: 8788 }),
+        readManagementToken: () => null,
+        discoverWorkerEndpoints: async () => discovered,
+      },
+    })
+    const res = await app.request('/api/gateway/overview?scope=local')
+    const body = await res.json()
+    check(body.running === false, '非本网关响应 → running=false')
+  }
 } finally {
   if (tmpDir) rmSync(tmpDir, { recursive: true, force: true })
 }
