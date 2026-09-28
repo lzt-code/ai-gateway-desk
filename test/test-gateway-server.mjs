@@ -5,8 +5,11 @@
 
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import http from 'node:http'
 import path from 'node:path'
+import { serve } from '@hono/node-server'
 import { createGatewayApp } from '../src/gateway/server.js'
+import { createLocalBackend } from '../src/gateway/backends/local.js'
 
 let failures = 0
 let checks = 0
@@ -215,6 +218,77 @@ try {
     // 非 POST → 404
     res = await hookApp.request('/api/gateway/shutdown', { method: 'GET' })
     check(res.status === 404, 'GET → 404')
+  }
+  section('8. 真实 HTTP 链路：上游 404 不被 immutable 吞成 500')
+  {
+    // 报告缺陷（aigd-immutable-bug.md）：@hono/node-server 会用自己的 Response
+    // 覆盖 globalThis.Response，其 immutable guard 会被 new Response(body, res)
+    // 继承，CORS 中间件 set 头遂抛 `TypeError: immutable` → 上游 404 变本地 500。
+    // app.request() 走不到这条链路，故此处起真实回环 HTTP 验证。
+    const upstream = http.createServer((req, res) => {
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end('{"error":{"code":5,"message":"NOT_FOUND"}}')
+    })
+    await new Promise((r) => upstream.listen(0, '127.0.0.1', r))
+    const upstreamPort = upstream.address().port
+
+    const liveApp = createGatewayApp({
+      dataDir: dir,
+      loadConfig: () => currentConfig,
+      backendFactory: () =>
+        createLocalBackend({
+          fetchFn: globalThis.fetch,
+          findProvider: () => ({
+            id: 'fang-zhou',
+            type: 'custom-provider',
+            base_url: `http://127.0.0.1:${upstreamPort}/`,
+          }),
+          readProviderHeaders: () => ({ Authorization: 'Bearer k' }),
+        }),
+    })
+    const server = serve({ fetch: liveApp.fetch, port: 0, hostname: '127.0.0.1' })
+    await new Promise((r) => server.once('listening', r))
+
+    try {
+      const { status, headers, body } = await new Promise((resolve, reject) => {
+        const payload = JSON.stringify({ model: 'custom-fang-zhou/m', messages: [] })
+        const req = http.request(
+          {
+            host: '127.0.0.1',
+            port: server.address().port,
+            path: '/v1/chat/completions',
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'content-length': Buffer.byteLength(payload),
+            },
+          },
+          (res) => {
+            const chunks = []
+            res.on('data', (c) => chunks.push(c))
+            res.on('end', () =>
+              resolve({
+                status: res.statusCode,
+                headers: res.headers,
+                body: Buffer.concat(chunks).toString('utf8'),
+              })
+            )
+          }
+        )
+        req.on('error', reject)
+        req.end(payload)
+      })
+      check(status === 404, `上游 404 原样透传（实际 ${status}）`)
+      check(headers['access-control-allow-origin'] === '*', 'CORS 头补在真实响应上')
+      check(
+        body === '{"error":{"code":5,"message":"NOT_FOUND"}}',
+        '上游错误体未被吞'
+      )
+    } finally {
+      await new Promise((r) => server.close(r))
+      upstream.closeAllConnections?.()
+      await new Promise((r) => upstream.close(r))
+    }
   }
 } finally {
   rmSync(dir, { recursive: true, force: true })

@@ -194,7 +194,82 @@ section('4. 网络错误 / 超时 → 502')
   check(res.status === 502, '超时 abort → 502')
 }
 
-section('5. health')
+section('6. 上游 undici Response（headers guard=immutable）→ 归一化为可写响应')
+{
+  // 真实 fetch() 的 Response headers 不可写；backend 必须重建后再交给 Hono，
+  // 否则 CORS 中间件 set 头抛 `TypeError: immutable`，上游真实状态被 500 吞掉。
+  const { fetchFn } = makeFetch(() =>
+    fetch('data:application/json,%7B%22error%22%3A%7B%22code%22%3A5%7D%7D')
+  )
+  const backend = createLocalBackend({
+    fetchFn,
+    findProvider: () => provider,
+    readProviderHeaders: () => ({ Authorization: 'Bearer k' }),
+  })
+  const res = await backend.chat({
+    bodyText: JSON.stringify({ model: 'custom-fang-zhou/m', messages: [] }),
+  })
+  check(res.status === 200, '状态码透传')
+  check(res.headers.get('content-type') === 'application/json', 'content-type 保留')
+  let setError = null
+  try {
+    res.headers.set('Access-Control-Allow-Origin', '*')
+  } catch (err) {
+    setError = err
+  }
+  check(setError === null, 'headers 可写（CORS 中间件不再抛 immutable）')
+  check((await res.text()) === '{"error":{"code":5}}', '响应体未被消费且原样透传')
+}
+
+section('7. 重建响应时修正响应头（已解压 / 逐跳头）')
+{
+  function backendReturning(response) {
+    return createLocalBackend({
+      fetchFn: async () => response,
+      findProvider: () => provider,
+      readProviderHeaders: () => ({ Authorization: 'Bearer k' }),
+    })
+  }
+  const ask = (backend) =>
+    backend.chat({ bodyText: JSON.stringify({ model: 'custom-fang-zhou/m', messages: [] }) })
+
+  // undici 已解压 body，但仍保留 content-encoding / content-length：
+  // 原样透传会让下游二次解压失败或按压缩后长度等待
+  let res = await ask(
+    backendReturning(
+      new Response('{"a":1}', {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Encoding': 'gzip',
+          'Content-Length': '99',
+          Connection: 'keep-alive',
+          'Transfer-Encoding': 'chunked',
+        },
+      })
+    )
+  )
+  check(res.headers.get('content-encoding') === null, '已解压响应丢弃 content-encoding')
+  check(res.headers.get('content-length') === null, '已解压响应丢弃失真的 content-length')
+  check(res.headers.get('transfer-encoding') === null, '丢弃 transfer-encoding')
+  check(res.headers.get('connection') === null, '丢弃 connection')
+  check(res.headers.get('content-type') === 'application/json', '业务头保留')
+  check((await res.text()) === '{"a":1}', '响应体不变')
+
+  // 未解压（undici 不认识的编码）：原样保留，避免破坏透传
+  res = await ask(
+    backendReturning(
+      new Response('raw', {
+        status: 200,
+        headers: { 'Content-Encoding': 'snappy', 'Content-Length': '3' },
+      })
+    )
+  )
+  check(res.headers.get('content-encoding') === 'snappy', '未知编码保留 content-encoding')
+  check(res.headers.get('content-length') === '3', '未知编码保留 content-length')
+}
+
+section('8. health')
 {
   const backend = createLocalBackend({})
   const h = await backend.health()

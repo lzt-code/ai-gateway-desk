@@ -10,6 +10,7 @@
 // ============================================================
 
 import { parseModelSlug, stripModelSlug, resolveProviderEndpoint } from '../router.js'
+import { toMutableResponse } from '../response-util.js'
 import { findProvider as defaultFindProvider } from '../provider-lookup.js'
 import { readProviderHeaders as defaultReadProviderHeaders } from '../provider-keys.js'
 import { createFallbackEngine } from '../fallback.js'
@@ -143,7 +144,9 @@ export function createLocalBackend(deps = {}) {
           message: `HTTP ${response.status}`,
           elapsedMs: elapsed,
         })
-        return response
+        // 必须归一化：undici fetch 的 Response headers 不可写，直接透传给
+        // Hono 会让 CORS 中间件抛 `TypeError: immutable`（真实上游状态被吞）
+        return toMutableResponse(response)
       } catch (err) {
         const aborted = err?.name === 'AbortError'
         const message = aborted

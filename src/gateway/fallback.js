@@ -27,6 +27,7 @@ import {
   resolveProviderEndpoint,
   stripModelSlug,
 } from './router.js'
+import { toMutableResponse } from './response-util.js'
 import {
   findProvider as defaultFindProvider,
 } from './provider-lookup.js'
@@ -226,7 +227,9 @@ export function createFallbackEngine(deps = {}) {
         elapsedMs: Date.now() - attemptStart,
         meta: attemptMeta,
       })
-      return { ok: true, response }
+      // 归一化：undici Response headers 不可写，直接返回会被 Hono 中间件
+      // set 头时抛 `TypeError: immutable`（200/终态 4xx 两条返回路径都经过这里）
+      return { ok: true, response: toMutableResponse(response) }
     } catch (err) {
       const aborted = err?.name === 'AbortError'
       const error = aborted

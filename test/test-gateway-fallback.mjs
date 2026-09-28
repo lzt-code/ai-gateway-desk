@@ -308,5 +308,25 @@ section('11. 配置问题（缺 provider / 缺凭证）不回退')
   check(res.status === 400, '节点 provider 缺失 → 400，不继续')
 }
 
+section('12. 上游 undici Response（headers guard=immutable）→ 归一化为可写响应')
+{
+  // 与 LocalBackend 同一约定：返回给 Hono 的响应 headers 必须可写，
+  // 否则 CORS 中间件 set 头抛 `TypeError: immutable`，真实状态被 500 吞掉。
+  const store = makeStore([START('m1'), modelNode('m1', 'p1', 'model-a', 'END'), END])
+  const { engine } = makeEngine(store, {
+    nextFetch: () => fetch('data:application/json,%7B%22ok%22%3A1%7D'),
+  })
+  const res = await engine.execute('demo', body)
+  check(res.status === 200, '200 透传')
+  let setError = null
+  try {
+    res.headers.set('Access-Control-Allow-Origin', '*')
+  } catch (err) {
+    setError = err
+  }
+  check(setError === null, 'headers 可写（不抛 immutable）')
+  check((await res.text()) === '{"ok":1}', '响应体未被消费且原样透传')
+}
+
 console.log(`\n通过 ${checks - failures}/${checks}`)
 process.exit(failures ? 1 : 0)
