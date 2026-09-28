@@ -7,6 +7,8 @@
 //     - 厂商模型名：其余全部（自身也可能含 '/'，如 vercel/meta/xxx）
 //   local 模式需剥离 slug，用 provider 的 base_url（+ pathPrefix）拼出
 //   厂商真实 /chat/completions 端点，从本机出口 IP 直连。
+//   custom-provider 无 pathPrefix 时按 Cloudflare Unified API 规则补 /v1
+//   （云端 base_url 仅存根域名，/v1 由网关追加；本地直发需自行补齐）。
 //
 // 本模块全部为纯函数，不触网络 / 不读文件，便于单测。
 // ============================================================
@@ -112,8 +114,17 @@ export function buildVendorUrl(baseUrl, pathPrefix) {
 /**
  * 解析 provider 的本地直发端点。
  *
- * - custom-provider：使用条目 base_url（+ pathPrefix）
- * - byok：优先条目自带 base_url（+ pathPrefix），否则查内置 BYOK_BASE_URLS
+ * base_url 来源：
+ *   - custom-provider：条目 base_url（从 Cloudflare 同步，仅根域名）
+ *   - byok：优先条目自带 base_url，否则查内置 BYOK_BASE_URLS
+ *
+ * 端点路径前缀（对齐 Cloudflare 拼接规则）：
+ *   - 配置了 pathPrefix：非标准路径（如火山方舟 /api/v3），走 provider-specific
+ *     端点 {base_url}{pathPrefix}/chat/completions
+ *   - custom-provider 无 pathPrefix：Cloudflare Unified API 固定请求
+ *     {base_url}/v1/chat/completions（base_url 只存根域名，/v1 由网关追加）。
+ *     本地直发绕过 Cloudflare，需自行补齐该 /v1，否则必然 404。
+ *   - byok 无 pathPrefix：内置 base_url 已含版本段（如 /v1），不再追加
  *
  * @param {object} provider - providers.json 中的 provider 条目
  * @returns {string} 厂商 /chat/completions 完整 URL
@@ -124,14 +135,16 @@ export function resolveProviderEndpoint(provider) {
     throw new Error('provider 条目为空')
   }
   const { id, type } = provider
-  if (provider.base_url) {
-    return buildVendorUrl(provider.base_url, provider.pathPrefix)
+
+  const baseUrl = provider.base_url || (type === 'byok' ? BYOK_BASE_URLS[id] : undefined)
+  if (!baseUrl) {
+    throw new Error(
+      `provider '${id}' 本地缺少 base_url，无法直发；请补录 base_url，或让 Agent 直连 Cloudflare 网关`
+    )
   }
-  if (type === 'byok') {
-    const builtin = BYOK_BASE_URLS[id]
-    if (builtin) return buildVendorUrl(builtin, provider.pathPrefix)
-  }
-  throw new Error(
-    `provider '${id}' 本地缺少 base_url，无法直发；请补录 base_url，或让 Agent 直连 Cloudflare 网关`
-  )
+
+  let prefix = normalizePathPrefix(provider.pathPrefix)
+  if (!prefix && type === 'custom-provider') prefix = '/v1'
+
+  return buildVendorUrl(baseUrl, prefix)
 }

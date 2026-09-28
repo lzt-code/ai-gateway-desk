@@ -154,7 +154,7 @@ section('3. 线性链：首节点成功短路')
   const res = await engine.execute('demo', body)
   check(res.status === 200, '成功 → 200')
   check(calls.length === 1, '仅请求首节点')
-  check(calls[0].url === 'https://p1.example.com/chat/completions', '首节点 URL')
+  check(calls[0].url === 'https://p1.example.com/v1/chat/completions', '首节点 URL（无 pathPrefix 补 /v1）')
   const sent = JSON.parse(calls[0].init.body)
   check(sent.model === 'model-a', '发送节点 model 名（无 slug）')
 }

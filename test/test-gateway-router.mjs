@@ -103,7 +103,24 @@ check(
     base_url: 'https://ark.com/',
     pathPrefix: '/api/v3',
   }) === 'https://ark.com/api/v3/chat/completions',
-  'custom-provider 使用 base_url + pathPrefix'
+  'custom-provider 使用 base_url + pathPrefix（非标准路径不补 /v1）'
+)
+check(
+  resolveProviderEndpoint({
+    id: 'mo-da',
+    type: 'custom-provider',
+    base_url: 'https://api-inference.modelscope.cn',
+  }) === 'https://api-inference.modelscope.cn/v1/chat/completions',
+  'custom-provider 无 pathPrefix → 补 /v1（对齐 Cloudflare Unified API）'
+)
+check(
+  resolveProviderEndpoint({
+    id: 'bai',
+    type: 'custom-provider',
+    base_url: 'https://api.b.ai/',
+    pathPrefix: '',
+  }) === 'https://api.b.ai/v1/chat/completions',
+  'custom-provider 空 pathPrefix → 同样补 /v1'
 )
 check(
   resolveProviderEndpoint({ id: 'openrouter', type: 'byok' }) ===
