@@ -29,6 +29,7 @@ const TESTS = [
   'test-provider-view.mjs',     // 任务 20：Provider 视图纯函数 + api update 端点 + 列表项
   'test-account-view.mjs',      // 任务 21：Worker/账户视图纯函数（token 状态汇总 + 编排 + 渲染）
   'test-setup.mjs',             // 任务 11：setup 纯函数 + 假 token 全流程
+  'test-setup-permissions.mjs', // 向导第 1 步权限清单覆盖账户页 REQUIRED_PERMISSIONS（防漏项漂移）
   'test-worker-config.mjs',     // 任务 13：Worker 配置 env 化
   'test-package-meta.mjs',      // 任务 17：npm 发布元数据断言
   'test-web-server.mjs',        // 任务 25：Web 服务器基础（Hono + 静态文件 + 启动器）
