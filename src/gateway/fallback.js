@@ -1,7 +1,7 @@
 // ============================================================
 // 本地动态路由 fallback 引擎
 // ============================================================
-// 双网关方案（docs/DUAL-GATEWAY-PLAN.md §10）：
+// 本地 fallback 引擎（docs/ARCHITECTURE.md §4.12）：
 //   执行 data/routes.json 中的 elements 图，语义对齐 Cloudflare
 //   AI Gateway 平台行为：
 //     1. 从 start 出发，进入首个 model 节点；

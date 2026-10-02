@@ -1,7 +1,7 @@
 // ============================================================
 // 厂商凭证本地加密存储 — 按 provider slug 存完整 headers 对象
 // ============================================================
-// 双网关方案（docs/DUAL-GATEWAY-PLAN.md §8.1）：
+// 本地网关凭证策略（docs/ARCHITECTURE.md §4.12）：
 //   local 模式需要在本机直连厂商，因此按 slug 保存该 provider 的完整
 //   请求头（不止 Bearer，兼容自定义鉴权头），存储路径：
 //     ~/.ai-gateway-desk/provider-keys/<slug>

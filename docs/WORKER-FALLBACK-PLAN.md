@@ -2,7 +2,7 @@
 
 > 本文是「把动态路由 fallback 从 Cloudflare 搬到 Worker 边缘执行」的设计总纲。
 > 源码为唯一真相，本文描述动因、架构、数据模型、行为语义与落地步骤。
-> 配套阅读：[ARCHITECTURE.md](ARCHITECTURE.md)、[DUAL-GATEWAY-PLAN.md](DUAL-GATEWAY-PLAN.md)。
+> 配套阅读：[ARCHITECTURE.md](ARCHITECTURE.md)（§4.10 Worker、§4.12 本地网关）。
 >
 > 创建：2026-09-28。状态：**设计待实现**。
 

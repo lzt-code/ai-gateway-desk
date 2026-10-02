@@ -82,7 +82,7 @@ ai-gateway-desk/
 
 ### 4.1 CLI 入口 — `src/bin/aigd.js`
 
-子命令：`web`（默认，启动本地 Web 界面）、`gateway`（启动本地长驻网关，OpenAI 兼容端点，仅绑 `127.0.0.1:8788`，支持 `--port` / `--mode`）、`setup`（终端初始化向导）。`sync` / `deploy` 为规划占位（Web 界面内已实现同功能）。
+子命令：`web`（默认，启动本地 Web 界面）、`gateway`（启动本地长驻网关，OpenAI 兼容端点，仅绑 `127.0.0.1:8788`，支持 `--port` / 环境变量 `AIGD_GATEWAY_PORT`）、`setup`（终端初始化向导）。`sync` / `deploy` 为规划占位（Web 界面内已实现同功能）。
 
 ### 4.2 初始化向导 — `src/setup.js`
 
@@ -102,7 +102,7 @@ Hono 应用，`createApp` 支持依赖注入（测试可 mock stateStore / confi
 | 同步 | `GET /api/sync/progress`（SSE）、`POST /api/sync`、`POST /api/sync/consistency`（第一层一致性同步：只对齐 KV 真相，不 discover）、`POST /api/save`、`POST /api/save-deploy` |
 | 调试 | `GET /api/settings/debug`、`POST /api/settings/debug`（详细日志开关，持久化到 providers.json 顶层 `debug` 字段） |
 | Worker | `GET /api/workers/status`、`POST /api/workers/deploy` |
-| 双网关视图 | `GET /api/gateway/overview`、`POST /api/gateway/{mode,cloud-url,backfill-keys,provider-key}`（见 §4.12） |
+| 网关视图 | `GET /api/gateway/overview`、`POST /api/gateway/{start,stop,backfill-keys,provider-key}`（见 §4.12） |
 | 账户 | `GET /api/account/status`、`POST /api/account/{update-token,clear-token,setup}` |
 | 动态路由配置 | `GET /api/routes/config`、`POST /api/routes/{save,deploy,delete,refresh}`（本地编辑 + REST 部署，见 §4.11） |
 
@@ -113,7 +113,7 @@ Vanilla JS 单页（`app.js` / `index.html` / `style.css`），五个视图 tab�
 - **Provider**：云端+本地合并列表，编辑/隐藏/删除，同步刷新
 - **模型**：模型表格 + Provider 侧栏 + 关键字筛选，状态切换（selected/pending/hidden）、编辑、手动添加、批量删除
 - **动态路由**：路由表格（fallback 链 / 状态 / 操作），表单化编辑（模板 + 「provider/模型」下拉建议）→ 一键部署（REST），「拉取云端路由」同步展示层
-- **网关**：本地网关 / 云端 Worker 双状态卡片、全局模式开关（热切换）、各 provider 本地凭证状态与「从云端回填 Key」、统一 Base URL 一键复制、手工录入 BYOK Key、部署 Worker
+- **网关**：本地网关 / Cloudflare 网关双状态卡片、本地网关「启动 / 关闭」按钮、各 provider 本地凭证状态与「从云端回填 Key」、统一 Base URL 一键复制、手工录入 BYOK Key、部署 Worker
 - **账户**：双 token 槽位管理 + gateway 信息 + 初始化向导入口
 
 ### 4.5 Cloudflare REST 封装 — `src/cloudflare/`
@@ -179,22 +179,185 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 
 ### 4.12 本地网关 — `src/gateway/`（本机出口 IP 直发）
 
-本地网关把请求从用户本机出口 IP 直发厂商，绕开 Cloudflare 边缘共享 IP（降低共享 IP 触发的 429）。需要 Cloudflare 路线时 Agent 直连云端 Worker，不经本地网关。
+默认调用链走 Cloudflare：
+
+```
+Agent → 云端 Worker（ai-gateway-desk-worker）→ Cloudflare AI Gateway → AI 厂商
+```
+
+Cloudflare AI Gateway 的出口 IP 在其全球边缘节点，是大量用户共享的 IP 段。部分 AI Provider 会对这类共享 IP 做风控，导致高频调用时容易收到 `429 Too Many Requests`，即使自身 Key 额度充足也会被误伤。**本地网关**让请求从用户本机出口 IP 直发厂商，绕开共享 IP，降低 429 概率。
+
+#### 4.12.1 两条路线如何共存（决策）
+
+| 路线 | Agent Base URL | 出口 IP | 适用 |
+|------|----------------|---------|------|
+| 本地网关 | `http://127.0.0.1:8788/v1` | 用户本机 IP | 规避共享 IP 的 429 |
+| Cloudflare | 云端 Worker 地址（直连） | Cloudflare 边缘共享 IP | 需要 analytics / 缓存 / 预算限流，或本机网络无法直连厂商 |
+
+**关键决策**：Cloudflare 路线由 Agent **直接指向 Worker URL**，本地网关不再充当转发跳。早期曾设计「cloud 模式下本地网关作为隧道」，但该跳不带来协议增益（不解决 429、不改善 workers.dev 可达性），Agent 本可直连 Worker，故移除。本地网关只做一件事：本机出口 IP 直发。Worker 本身保持零依赖、无状态，无需为本地网关做任何改动。
+
+#### 4.12.2 目标与非目标
+
+目标：
+
+1. 提供 `aigd gateway` 长驻进程，对外提供 OpenAI 兼容端点（仅绑 `127.0.0.1`）。
+2. 解析模型的 provider slug → 取本机加密凭证 → 本机出口 IP 直连厂商，流式透传。
+3. 支持本地动态路由 fallback 链（复用 `data/routes.json`）。
+4. 与 Cloudflare 路线共用同一套 Provider / 模型 / 路由配置，凭证可云端回填。
+
+非目标：
+
+1. 不做本地网关到云端 Worker 的转发 / 隧道。
+2. 不做按 Provider 粒度的路由分流（本地 / 云端二选一，由 Agent Base URL 决定）。
+3. 不监听局域网、不做远程多 PC 共用。
+4. 不复制 Cloudflare 的 analytics / 缓存 / 预算限流。
+5. 不集成 Portkey（理由见 §4.12.9）。
+
+> 早期（v1）网关仅由独立终端 `aigd gateway` 启动；当前管理界面「网关」页可一键启动 / 关闭，但网关始终是**独立进程**（detached spawn，见 §4.12.7），界面只做编排与状态探测，不做托管。
+
+#### 4.12.3 整体架构与请求流
+
+```
+                          ┌──────────────────────────────────────────┐
+   本地路线 Agent         │  aigd gateway（长驻，127.0.0.1:8788）      │
+ base_url 127.0.0.1:8788 ►│  OpenAI 兼容端点 + 网关管理 API            │
+                          └───────────────┬──────────────────────────┘
+                                          ▼
+                          ┌──────────────────────┐
+                          │ LocalBackend          │
+                          │ 本地 key（加密存储）   │
+                          │ 本机出口 IP 直发厂商   │
+                          │ + 本地 fallback 引擎  │
+                          └──────────┬───────────┘
+                                     ▼
+                               AI 厂商直连
+
+   Cloudflare 路线 Agent ──直连──► 云端 Worker → CF AI Gateway → 厂商
+```
+
+```
+Agent → 本地 gateway
+  → 解析 body.model 中的 provider slug（要求 model 形如 '<slug>/<模型名>'）
+  → 从本地加密存储取该 provider 的凭证 headers
+  → 取 providers.json 中该 provider 的 base_url（+ pathPrefix）
+  → 构造厂商真实端点，本机出口 IP 直连
+  → 流式透传响应
+若 model 为 dynamic/<name> → 进入本地 fallback 引擎（见 §4.12.5）
+```
+
+#### 4.12.4 模块与端点
 
 | 模块 | 职责 |
 |------|------|
 | `server.js` | `createGatewayApp(deps)` Hono 工厂（全依赖注入）+ `startGateway()` 启动器（`@hono/node-server`，仅绑 127.0.0.1、无心跳退出、EADDRINUSE 友好提示、`/api/gateway/shutdown` 关闭钩子） |
 | `process.js` | 管理界面侧进程编排：detached + `unref()` spawn `aigd gateway`（新进程组，脱离管理界面与终端）、轮询 `/health` 等待就绪、请求 `/api/gateway/shutdown` 优雅关闭、回读 `data/gateway.log` 尾部 |
-| `config-store.js` | `data/gateway.json` 读写与校验：仅 `port`（默认 8788） |
+| `config-store.js` | `data/gateway.json` 读写与校验：仅 `port`（默认 8788）；读取时忽略旧 `mode` / `cloudWorkerUrl` 字段 |
 | `router.js` | 纯函数：model slug 解析 / 剥离、base_url + pathPrefix 厂商端点构造；内置常见 BYOK slug 的 OpenAI 兼容 base_url 映射 |
 | `provider-keys.js` | 按 provider slug 在 `~/.ai-gateway-desk/provider-keys/<slug>` 存完整鉴权 headers（复用 token-store 系统级加密；`AI_GW_TEST_DIR` 隔离） |
 | `provider-lookup.js` | gateway slug → `providers.json` 条目查找 |
 | `backends/local.js` | `LocalBackend`：取本地凭证 → 本机出口 IP 直发厂商，超时控制、流式透传；`dynamic/*` 委托 fallback 引擎 |
 | `fallback.js` | 本地动态路由引擎：执行 `routes.json` elements——线性 fallback 链 + `percentage` 权重；`conditional` / `rate` 明确报错（该结构仅 Cloudflare 支持，请直连 Worker） |
+| `response-util.js` | 上游响应归一化：把 undici 的 `headers.guard=immutable` 响应转为可写响应，修正已解压 / 逐跳响应头，供 CORS 中间件安全补头 |
 
-本地引擎语义对齐 Cloudflare：网络失败 / 429 / 5xx 按节点 `retries` 重试，耗尽后走 fallback 边；200 即成功并开始流式返回；4xx（非 429）立即报错不回退。限制：流式开始后中途错误无法回退（与 CF 一致）。
+网关端点（`server.js`）：
 
-管理端（`src/web/server.js`）网关视图 API 行为：探测网关进程 `/health`（仅认 `{ ok:true, backend:{...} }`）以展示运行状态；`POST /api/gateway/start` / `POST /api/gateway/stop` 通过 `process.js` 启停独立网关进程（管理界面重启后按 `gateway.json` 端口重新探测即可恢复状态）；回填 / 凭证录入均在管理进程直接写本地加密存储，与网关进程是否在跑无关。Worker 地址由 Cloudflare API 自动发现（workers.dev 默认地址、Workers Domains 自定义域名、Workers Routes zone 路由，聚合在 `GET /api/gateway/overview`），不本地存储。
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/v1/chat/completions` | POST | 进入 `LocalBackend` |
+| `/v1/models` | GET | 读本地 `data/models.json`，包装为 `{ object:'list', data }` |
+| `/health` | GET | 网关进程存活 + backend 健康 |
+| `/api/gateway/status` | GET | 端口、各 provider 本地凭证状态 |
+| `/api/gateway/shutdown` | POST | 管理界面关闭本进程（先应答再优雅退出；拒绝带 `Origin` 的浏览器请求） |
+| `/api/gateway/backfill-keys` | POST | 从云端拉 custom-provider 完整 key 回填本地 |
+
+CORS 与 Worker 一致，动态回显预检所需头。`/api/gateway/shutdown` 的关闭钩子由 `startGateway` 在 server 就绪后注入（关 server → `process.exit(0)`，2s 兜底强退）；未注册钩子（如测试直接 `createGatewayApp`）返回 501。
+
+#### 4.12.5 本地动态路由 fallback 引擎 — `src/gateway/fallback.js`
+
+执行语义（对齐 Cloudflare）：
+
+1. 从 `start` 进入首个 `model` 节点。
+2. 每个 `model` 节点按 `timeout` / `retries` 调用对应 provider 的本地直发。
+3. 可重试错误（网络失败 / 429 / 5xx）重试耗尽后走 `fallback` 边。
+4. 收到 200 即成功并开始流式返回；4xx（非 429）立即报错。
+5. 支持 `percentage` 随机权重。
+6. `conditional` / `rate` / 组合节点返回明确错误：该结构仅 Cloudflare 支持，请让 Agent 直连 Worker。
+
+限制：**流式开始后无法回退**（上游 200 后 SSE 中途出错不能切换，Cloudflare 同理）。
+
+#### 4.12.6 凭证策略
+
+- 存储：复用 `src/core/token-store.js` 系统级加密原语（Windows DPAPI / macOS Keychain / Linux 0600 文件），在 `~/.ai-gateway-desk/provider-keys/<slug>` 存完整 headers 对象（兼容自定义鉴权头）。测试通过 `AI_GW_TEST_DIR` 隔离。
+
+| 类型 | 云端可读回完整 key | 处理 |
+|------|--------------------|------|
+| custom-provider | **可以**：`listCustomProviders` 的 `headers` 为完整未脱敏字符串 | 自动回填，用户无感 |
+| byok | **不可以**：仅返回 `secret_preview` 掩码 | UI 重新录入一次 |
+
+自动回填前置：本地存有管理 API Token；无 Token 时 UI 降级提示手工录入。新增 / 覆盖 / 删除 Provider 时，在写云端之外同步写 / 删本地加密存储（录入即双写）；本地写失败需明确告警但不阻断云端结果。
+
+#### 4.12.7 管理界面启停 — `src/gateway/process.js`
+
+管理界面与本地网关是两个进程，二者唯一耦合是 `data/gateway.json` 的端口：
+
+| 动作 | 实现 |
+|------|------|
+| 启动 | 管理界面 detached + `unref()` spawn `node src/bin/aigd.js gateway --port <port>`（新进程组、`windowsHide`），再轮询 `/health` 直至就绪；子进程提前退出（如端口被占用）立即失败并回读 `data/gateway.log` 尾部作为错误详情 |
+| 关闭 | `POST /api/gateway/shutdown`（不带 `Origin`），网关先应答 200 再关 server + 退出（2s 兜底强退）；管理界面轮询 `/health` 确认端口已释放 |
+| 探测 | `GET /health`，且仅认 `{ ok:true, backend:{...} }` 结构（端口被其他程序占用 → 视为未运行） |
+
+- 网关进程脱离管理界面：关闭 / 重启管理界面（含终端 Ctrl+C）不影响网关；管理界面重启后按 `gateway.json` 端口重新探测即可恢复运行状态。
+- 不做 PID 文件管理（避免 PID 复用误杀），只在管理界面已有 PID 之外通过 HTTP 关闭；网关若由终端 `aigd gateway` 启动，UI 同样能探测并关闭。
+- 管理界面 API：`POST /api/gateway/start`（已运行 → 幂等 `alreadyRunning`）、`POST /api/gateway/stop`（未运行 → 幂等 `alreadyStopped`）；业务失败（端口占用 / 就绪超时 / 关闭超时）仍 200，带 `error` 字段。
+- 回填 / 凭证录入均在管理进程直接写本地加密存储，与网关进程是否在跑无关。
+
+#### 4.12.8 Cloudflare 地址发现
+
+由「网关」视图通过 Cloudflare API 自动发现（`discoverWorkerEndpoints`，聚合在 `GET /api/gateway/overview`），覆盖三类绑定：
+
+- workers.dev 默认地址：账户子域（`GET /workers/subdomain`）+ 脚本开关（`GET /workers/scripts/{name}/subdomain`）；
+- Custom Domains：`GET /workers/domains`；
+- Workers Routes（zone 路由）：`GET /zones` + `GET /zones/{id}/workers/routes`，路由模式（如 `*.example.com/api/*`）转换为 Agent Base URL；host 含通配符时以 `<子域>` 占位提示替换。
+
+地址仅用于展示与引导 Agent 直连，本地网关不会请求，也不本地存储（旧 `gateway.workerUrl` 字段不再读取）。
+
+**Workers Routes 的 `<子域>` 自动解析**：路由模式 host 含通配符（如 `*.example.com/api/*`）时，会进一步调用 `GET /zones/{id}/dns_records?proxied=true` 自动解析真实子域：
+
+- 管理 Token 需具备 **Zone → DNS → Read**（列 zone 仍用 Zone → Zone → Read）；
+- 有具体已代理（橙云）子域记录 → 逐个给出可用 Base URL（替换 `<子域>`）；
+- 仅有 `*` 通配代理记录 → 保留 `<子域>` 占位并提示「任意子域可用」；
+- 无匹配记录 → 保留占位并提示先添加代理 DNS 记录；
+- DNS 接口 403（Token 无权限）→ 保留占位并提示补充 DNS Read 权限。
+
+提示经 `discoverWorkerEndpoints` 的 `notes` 字段返回、在前端网关卡以警告展示；单点失败不中断其他发现，也不计入 `error`。Token 权限只能在 Cloudflare 面板手动编辑（API 无法自改），Token 字符串不变。
+
+#### 4.12.9 为什么不集成 Portkey
+
+1. `@portkey-ai/gateway` 仅暴露 `bin`，未导出可 import 的 app 入口；源码集成需 TS 工具链或维护 fork。
+2. 带来 14 个依赖（ioredis、avsc、smithy、ws 等）与 `patch-package`，与克制的依赖风格冲突。
+3. 现有 provider 均为 OpenAI 兼容，Portkey 的多协议转换 / guardrails 大部分用不上。
+
+核心诉求是换出口 IP，自建薄层即可满足。
+
+#### 4.12.10 默认约定与风险
+
+| 项 | 约定 |
+|----|------|
+| 监听 | `127.0.0.1`（不对外、不鉴权） |
+| 默认端口 | `8788`（避开 wrangler 默认 8787） |
+| 本地 Agent 配置 | Base URL `http://127.0.0.1:8788/v1` |
+| Cloudflare Agent 配置 | Base URL 直连 Worker |
+| 模型列表 | 读本地 `data/models.json` |
+| 凭证目录 | `~/.ai-gateway-desk/provider-keys/<slug>` |
+
+| 风险 | 说明 | 应对 |
+|------|------|------|
+| 厂商 base_url 约定不一 | 部分已含 `/v1`，拼接可能重复或缺失 | router 统一归一化 |
+| 本机网络无法直连 | 原靠 CF 边缘访问的厂商本地不通 | 属预期；Agent 改直连 Worker |
+| Key 落本地的攻击面 | 本地需持有真实厂商 Key | 系统级加密，仅当前用户可解密 |
+| 流式中途失败 | 200 后 SSE 报错无法回退 | 文档注明，与 CF 一致 |
+| 双写一致性 | 云端成功本地失败（或反之） | 本地失败显式告警，提供回填 / 重试 |
+| 网关成为孤儿进程 | 网关刻意独立于管理界面，管理界面退出后它仍占用端口 | 属预期：UI「关闭网关」或终端 Ctrl+C 结束；重启管理界面仍能探测到并关闭它 |
 
 ## 5. 数据模型
 
@@ -267,15 +430,13 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 
 ### 5.5 `data/gateway.json`（私有，gitignore）
 
-本地网关模式配置（模板 `data/gateway.example.json`）：
+本地网关运行配置（模板 `data/gateway.example.json`）：
 
 ```json
-{
-  "mode": "local",
-  "port": 8788,
-  "cloudWorkerUrl": "https://ai-gateway-desk-worker.<子域>.workers.dev"
-}
+{ "port": 8788 }
 ```
+
+`port`：正整数 1–65535，默认 8788。旧文件中的 `mode` / `cloudWorkerUrl` 字段在读取时被忽略（本地网关不再有「模式」概念，Cloudflare 路线由 Agent 直连 Worker）。
 
 ## 6. 凭证架构
 
@@ -283,6 +444,7 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 |------|--------|------|------|
 | 管理 API Token | 账户级 | 建 gateway、存 BYOK、建 KV、部署 | `token.management` 槽位 |
 | 网关 token（`cfut_xxx`） | 单 gateway | 模型发现 + 分发给各 PC | `token` 槽位 |
+| 本地 provider 鉴权 headers | 本机 | 本地网关直发厂商（完整请求头，兼容自定义鉴权） | `~/.ai-gateway-desk/provider-keys/<slug>` |
 
 优先级：环境变量（`CLOUDFLARE_API_TOKEN` / `GATEWAY_TOKEN`）> 本地安全存储。管理 Token 账户级凭证不可分发；`cfut_xxx` 泄露影响面仅限其绑定的 gateway。
 
@@ -344,6 +506,7 @@ POST /api/routes/delete   本地必删；cloud=true 且有 cloudId 时同步删�
 |------|------|
 | Worker 零依赖、无凭证 | 部署即用，泄露 URL 也无凭证可拿；真鉴权在 AI Gateway 层（可设日预算/限流） |
 | 本地管理工具 + Worker 解耦 | 管理工具只通过 KV namespace id 与 Worker 关联，可独立演进 |
+| 本地网关只直发、不做隧道 | Cloudflare 路线 Agent 直连 Worker，中转无协议增益；本地网关专注换出口 IP，Worker 无需改动（见 §4.12.1） |
 | model-states.json 唯一真相源 | 元数据首次填充后永久保留，重新发现不丢失手动编辑 |
 | 策略 A（provider 永远覆盖） | provider 更新（如上下文窗口扩大）是正常现象，手动覆盖被覆盖可接受 |
 | wrangler.toml 占位符 + 部署时注入 | 真实值唯一存放于 gitignore 的 providers.json，git 永远干净 |
