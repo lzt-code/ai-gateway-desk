@@ -152,9 +152,9 @@ check(a1.split('dash.cloudflare.com/profile/api-tokens').length - 1 === 1, '外�
 
 // 8c：令牌自检区块（名称 + 所需权限表格）经第 3/4 参数注入 management 卡
 const manifestFixture = [
-  { id: 'ai-gateway-edit', label: 'AI Gateway · Edit', reason: '创建网关 / 存厂商 Key / 管理动态路由', required: true },
-  { id: 'workers-kv-edit', label: 'Workers KV Storage · Edit', reason: '创建 KV namespace', required: true },
-  { id: 'zone-read', label: 'Zone · Read', reason: '列出可用 Zone（可选）', required: false },
+  { id: 'ai-gateway-edit', scope: 'Account', label: 'AI Gateway · Edit', reason: '创建网关 / 存厂商 Key / 管理动态路由', required: true },
+  { id: 'workers-kv-edit', scope: 'Account', label: 'Workers KV Storage · Edit', reason: '创建 KV namespace', required: true },
+  { id: 'zone-read', scope: 'Zone', label: 'Zone · Read', reason: '列出可用 Zone（可选）', required: false },
 ]
 const permsFixture = [
   { ...manifestFixture[0], granted: true },
@@ -172,6 +172,7 @@ const a1Info = buildAccountStatusView(
 )
 check(a1Info.includes('My Token'), 'management 已配置 → 卡内渲染令牌名称')
 check(a1Info.includes('token-perms-table'), 'management 已配置 → 卡内渲染权限表格')
+check(a1Info.includes('Account · AI Gateway · Edit'), '权限列含作用域（Account · 资源 · 级别）')
 const a3Info = buildAccountStatusView(
   {
     management: { source: 'none', hasLocal: false, label: '未配置', mark: '○' },

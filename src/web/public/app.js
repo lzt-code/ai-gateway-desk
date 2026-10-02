@@ -5545,7 +5545,7 @@ export function buildManagementTokenInfo(tokenInfo, requiredPermissions) {
           }
           return (
             `<tr>` +
-            `<td class="token-perm-name">${escapeHtml(p.label || '')}</td>` +
+            `<td class="token-perm-name">${escapeHtml([p.scope, p.label].filter(Boolean).join(' · '))}</td>` +
             `<td class="${p.required ? '' : 'muted'}">${p.required ? '必需' : '建议'}</td>` +
             `<td class="${statusCls}">${statusText}</td>` +
             `<td class="token-perm-reason">${escapeHtml(p.reason || '')}</td>` +
@@ -5559,7 +5559,7 @@ export function buildManagementTokenInfo(tokenInfo, requiredPermissions) {
     `<div class="token-info-note muted">说明：令牌「状态 / ID」来自 verify 接口，任何有效令牌均可读取（无需额外权限）；「名称 / 权限列表」来自 /user/tokens 接口，需要 “API Tokens · Read” 权限。</div>`,
   )
   rows.push(
-    `<div class="token-info-note muted">网关页「Cloudflare 网关」卡地址：workers.dev 默认域名 / 绑定自定义域名由 <b>Workers Scripts</b> 读取；路由形式的自定义域名由 <b>Zone · Read</b>（作用域 Zone → 权限组 “Zone”，不是 “DNS Read”）+ <b>Workers Routes · Read</b> 读取；通配符路由（<code>&lt;子域&gt;.域名</code>）自动解析真实子域另需 <b>Zone → DNS · Read</b>。</div>`,
+    `<div class="token-info-note muted">网关页「Cloudflare 网关」卡地址：workers.dev 默认域名 / 绑定自定义域名由 <b>Workers Scripts</b> 读取；路由形式的自定义域名由 <b>Zone · Read</b> + <b>Workers Routes · Read</b> 读取；通配符路由（<code>&lt;子域&gt;.域名</code>）自动解析真实子域另需 <b>DNS · Read</b>。</div>`,
   )
   return `<div class="token-info">${rows.join('')}</div>`
 }

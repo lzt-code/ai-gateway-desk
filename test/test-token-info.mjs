@@ -231,9 +231,20 @@ section('REQUIRED_PERMISSIONS')
   check(required.length === 4, '必需项共 4 条')
   check(Object.isFrozen(REQUIRED_PERMISSIONS), '清单为冻结常量')
   check(REQUIRED_PERMISSIONS.every((p) => typeof p.reason === 'string' && p.reason.trim().length > 0), '每项权限都有用途说明')
+  check(
+    REQUIRED_PERMISSIONS.every((p) => ['Account', 'User', 'Zone'].includes(p.scope)),
+    '每项权限都有作用域（Account / User / Zone）',
+  )
+  check(
+    REQUIRED_PERMISSIONS.every((p) => !p.reason.includes('DNS Read') && !p.reason.includes('权限组')),
+    '用途说明不再重复指明具体权限组',
+  )
+  const apiTokens = REQUIRED_PERMISSIONS.find((p) => p.id === 'api-tokens-read')
+  check(apiTokens.scope === 'User', 'API Tokens · Read 作用域为 User')
   const zone = REQUIRED_PERMISSIONS.find((p) => p.id === 'zone-read')
   const routes = REQUIRED_PERMISSIONS.find((p) => p.id === 'workers-routes-read')
   const dns = REQUIRED_PERMISSIONS.find((p) => p.id === 'dns-read')
+  check(zone.scope === 'Zone' && routes.scope === 'Zone' && dns.scope === 'Zone', 'Zone 相关权限作用域均为 Zone')
   check(!!zone && !!routes, '含网关页地址发现所需 Zone / Workers Routes 权限')
   check(!!dns && dns.required === false, '含通配符解析所需 DNS · Read（建议项）')
   check(dns.reason.includes('子域'), 'DNS Read 用途指向通配符子域解析')

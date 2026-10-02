@@ -102,7 +102,7 @@ const G = {
     '     · Account → Workers Scripts    → Edit（必需：部署 Worker、读取访问域名）',
     '     · Account → Workers KV Storage → Edit（必需：建 KV、写入模型列表）',
     '     · User    → API Tokens         → Read（必需：账户页读取令牌名称 / 权限自检）',
-    '     · Zone    → Zone               → Read（可选：权限组 “Zone”，不是 “DNS Read”；网关页地址发现）',
+    '     · Zone    → Zone               → Read（可选：网关页地址发现）',
     '     · Zone    → Workers Routes     → Read（可选：网关页地址发现：路由形式的自定义域名）',
     '     · Zone    → DNS                → Read（可选：把通配符路由的 <子域> 自动解析为真实子域）',
     '  ④ 复制形如 AbCdEf123456 的令牌粘贴到下方',

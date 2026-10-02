@@ -22,22 +22,25 @@ import { verifyUserToken, listUserTokens } from './api.js'
  * 本项目管理 API Token 所需的 Cloudflare 权限组。
  *
  * resource/access 用于与令牌 policies 中 permission_groups[].name 比对；
- * label/reason/required 仅用于展示（required=false 表示缺失时仅提示「建议」）。
+ * scope/label/reason/required 仅用于展示（required=false 表示缺失时仅提示「建议」）。
+ * scope 对应 Cloudflare 创建令牌时的作用域（Account / User / Zone）；
+ * label 为「<资源> · <访问级别>」，展示时与 scope 组合成「<作用域> · <资源> · <访问级别>」，
  * 名称取自 Cloudflare 权限文档（如 "Workers KV Storage Edit"）。
  *
  * reason 为面向用户的「用途说明」，统一指向界面里能感知的功能位置，
- * 便于用户判断该权限在系统中用于干嘛（账户页 / 网关页 / Provider 页等）。
- * @type {ReadonlyArray<{ id: string, resource: string, access: string, required: boolean, label: string, reason: string }>}
+ * 便于用户判断该权限在系统中用于干嘛（账户页 / 网关页 / Provider 页等）；
+ * 不再重复指明具体权限组，具体权限由 scope + label 列给出。
+ * @type {ReadonlyArray<{ id: string, scope: string, resource: string, access: string, required: boolean, label: string, reason: string }>}
  */
 export const REQUIRED_PERMISSIONS = Object.freeze([
-  { id: 'ai-gateway-edit', resource: 'AI Gateway', access: 'Edit', required: true, label: 'AI Gateway · Edit', reason: '建 / 管 AI Gateway；在 Provider 页写入厂商 Key（BYOK）；在动态路由页管理降级链' },
-  { id: 'workers-scripts-edit', resource: 'Workers Scripts', access: 'Edit', required: true, label: 'Workers Scripts · Edit', reason: '部署转发 Worker（网关页「部署 Worker」）；读取 workers.dev 默认域名与自定义域名（「Cloudflare 网关」卡，Edit 已含读）' },
-  { id: 'workers-kv-edit', resource: 'Workers KV Storage', access: 'Edit', required: true, label: 'Workers KV Storage · Edit', reason: '创建 KV namespace、写入 models.json 等运行时数据（Worker 页 → 保存并提交）' },
-  { id: 'api-tokens-read', resource: 'API Tokens', access: 'Read', required: true, label: 'API Tokens · Read', reason: '账户页读取本令牌名称与所需权限（本卡自检依赖）' },
-  { id: 'zone-read', resource: 'Zone', access: 'Read', required: false, label: 'Zone · Read', reason: '列出账号下 Zone（作用域 Zone → 权限组 “Zone”，不是 “DNS Read”），供网关页「Cloudflare 网关」卡发现路由形式的自定义域名' },
-  { id: 'dns-read', resource: 'DNS', access: 'Read', required: false, label: 'DNS · Read', reason: '读取 Zone 内已代理 DNS 记录，把网关页「Cloudflare 网关」卡通配符路由（<子域>.域名）自动解析为真实子域' },
-  { id: 'workers-routes-read', resource: 'Workers Routes', access: 'Read', required: false, label: 'Workers Routes · Read', reason: '读取 Zone 下 Workers 路由，推导网关页「Cloudflare 网关」卡的自定义域名（<子域>.域名）地址' },
-  { id: 'ai-gateway-run', resource: 'AI Gateway', access: 'Run', required: false, label: 'AI Gateway · Run', reason: '经 Cloudflare 网关发起推理请求（仅运行时用；本工具的管理操作不需要）' },
+  { id: 'ai-gateway-edit', scope: 'Account', resource: 'AI Gateway', access: 'Edit', required: true, label: 'AI Gateway · Edit', reason: '建 / 管 AI Gateway；在 Provider 页写入厂商 Key（BYOK）；在动态路由页管理降级链' },
+  { id: 'workers-scripts-edit', scope: 'Account', resource: 'Workers Scripts', access: 'Edit', required: true, label: 'Workers Scripts · Edit', reason: '部署转发 Worker（网关页「部署 Worker」）；读取 workers.dev 默认域名与自定义域名（「Cloudflare 网关」卡）' },
+  { id: 'workers-kv-edit', scope: 'Account', resource: 'Workers KV Storage', access: 'Edit', required: true, label: 'Workers KV Storage · Edit', reason: '创建 KV namespace、写入 models.json 等运行时数据（Worker 页 → 保存并提交）' },
+  { id: 'api-tokens-read', scope: 'User', resource: 'API Tokens', access: 'Read', required: true, label: 'API Tokens · Read', reason: '账户页读取本令牌名称与所需权限（本卡自检依赖）' },
+  { id: 'zone-read', scope: 'Zone', resource: 'Zone', access: 'Read', required: false, label: 'Zone · Read', reason: '列出账号下 Zone，供网关页「Cloudflare 网关」卡发现路由形式的自定义域名' },
+  { id: 'dns-read', scope: 'Zone', resource: 'DNS', access: 'Read', required: false, label: 'DNS · Read', reason: '读取 Zone 内已代理 DNS 记录，把网关页「Cloudflare 网关」卡通配符路由（<子域>.域名）自动解析为真实子域' },
+  { id: 'workers-routes-read', scope: 'Zone', resource: 'Workers Routes', access: 'Read', required: false, label: 'Workers Routes · Read', reason: '读取 Zone 下 Workers 路由，推导网关页「Cloudflare 网关」卡的自定义域名（<子域>.域名）地址' },
+  { id: 'ai-gateway-run', scope: 'Account', resource: 'AI Gateway', access: 'Run', required: false, label: 'AI Gateway · Run', reason: '经 Cloudflare 网关发起推理请求（仅运行时用；本工具的管理操作不需要）' },
 ])
 
 // ─── 纯函数：解析与比对 ──────────────────────────────────
