@@ -5488,32 +5488,31 @@ export function buildManagementTokenInfo(tokenInfo, requiredPermissions) {
   }
 
   const notConfigured = Boolean(tokenInfo && tokenInfo.configured === false)
-  const rows = []
+
+  // ① 身份区：令牌名称 / 状态（未配置、检查中、检查失败时降级为提示）
+  let identity
   if (notConfigured) {
-    rows.push(`<div class="token-info-hint muted">尚未配置管理 Token：按下表权限在 Cloudflare 创建后填入</div>`)
+    identity = `<div class="token-info-hint muted">尚未配置管理 Token：按下表权限在 Cloudflare 创建后填入</div>`
   } else if (!tokenInfo) {
-    rows.push(`<div class="token-info-hint muted">正在检查令牌名称与权限…</div>`)
+    identity = `<div class="token-info-hint muted">正在检查令牌名称与权限…</div>`
   } else if (tokenInfo.ok === false) {
-    rows.push(`<div class="token-info-hint warn">令牌检查失败：${escapeHtml(tokenInfo.error || '未知错误')}</div>`)
+    identity = `<div class="token-info-hint warn">令牌检查失败：${escapeHtml(tokenInfo.error || '未知错误')}</div>`
   } else {
     const name = tokenInfo.name ? String(tokenInfo.name) : ''
-    rows.push(
+    identity =
+      `<div class="token-meta">` +
       `<div class="status-item"><span class="k">Token 名称</span>` +
-      `<span class="v${name ? '' : ' warn'}">${escapeHtml(name || '未知')}</span></div>`,
-    )
-    if (tokenInfo.status) {
-      rows.push(
-        `<div class="status-item"><span class="k">状态</span><span class="v">${escapeHtml(String(tokenInfo.status))}</span></div>`,
-      )
-    }
-    if (tokenInfo.permissionsReadable === false) {
-      const detail = tokenInfo.error ? `（Cloudflare：${escapeHtml(tokenInfo.error)}）` : ''
-      rows.push(
-        `<div class="token-info-hint warn">未能读取令牌名称与权限：本卡自检需要 <b>User → API Tokens → Read</b> 权限（或 Write）。${detail}<br>请对照下表补全后刷新</div>`,
-      )
-    }
+      `<span class="v${name ? '' : ' warn'}">${escapeHtml(name || '未知')}</span></div>` +
+      (tokenInfo.status
+        ? `<div class="status-item"><span class="k">状态</span><span class="v">${escapeHtml(String(tokenInfo.status))}</span></div>`
+        : '') +
+      `</div>` +
+      (tokenInfo.permissionsReadable === false
+        ? `<div class="token-info-hint warn">未能读取令牌名称与权限：本卡自检需要 <b>User → API Tokens → Read</b> 权限（或 Write）。${tokenInfo.error ? `（Cloudflare：${escapeHtml(tokenInfo.error)}）` : ''}<br>请对照下表补全后刷新</div>`
+        : '')
   }
 
+  // ② 所需权限区：汇总 + 清单表格
   const missingRequired = manifest.filter((p) => p.required && p.granted === false)
   const missingOptional = manifest.filter((p) => !p.required && p.granted === false)
   let summary
@@ -5524,9 +5523,9 @@ export function buildManagementTokenInfo(tokenInfo, requiredPermissions) {
   else if (missingRequired.length === 0) summary = `<span class="ok">✓ 必需权限齐全</span>`
   else summary = `<span class="warn">✗ 缺少 ${missingRequired.length} 项必需权限，请到 Cloudflare 补充</span>`
   if (missingOptional.length) summary += ` <span class="muted">/ ${missingOptional.length} 项建议未配置</span>`
-  rows.push(`<div class="token-perms-head">所需权限：${summary}</div>`)
 
-  rows.push(
+  const permsTable =
+    `<div class="token-perms-head">所需权限：${summary}</div>` +
     `<table class="token-perms-table">` +
       `<thead><tr><th>权限</th><th>必需</th><th>状态</th><th>用途</th></tr></thead><tbody>` +
       manifest
@@ -5553,15 +5552,25 @@ export function buildManagementTokenInfo(tokenInfo, requiredPermissions) {
           )
         })
         .join('') +
-      `</tbody></table>`,
+      `</tbody></table>`
+
+  // ③ 说明区：与自检区隔开，避免长段灰字贴在一起
+  const notes =
+    `<div class="token-info-notes">` +
+    `<div class="token-info-notes-title">说明</div>` +
+    `<div class="token-info-note muted">令牌「状态 / ID」来自 verify 接口，任何有效令牌均可读取（无需额外权限）；「名称 / 权限列表」来自 /user/tokens 接口，需要 “API Tokens · Read” 权限。</div>` +
+    `<div class="token-info-note muted">网关页「Cloudflare 网关」卡地址：workers.dev 默认域名 / 绑定自定义域名由 <b>Workers Scripts</b> 读取；路由形式的自定义域名由 <b>Zone · Read</b> + <b>Workers Routes · Read</b> 读取；通配符路由（<code>&lt;子域&gt;.域名</code>）自动解析真实子域另需 <b>DNS · Read</b>。</div>` +
+    `</div>`
+
+  // 分区渲染：标题「令牌自检」→ 身份 → 权限清单 → 说明，形成清晰的层级
+  return (
+    `<div class="token-info">` +
+    `<div class="token-info-title">令牌自检</div>` +
+    identity +
+    permsTable +
+    notes +
+    `</div>`
   )
-  rows.push(
-    `<div class="token-info-note muted">说明：令牌「状态 / ID」来自 verify 接口，任何有效令牌均可读取（无需额外权限）；「名称 / 权限列表」来自 /user/tokens 接口，需要 “API Tokens · Read” 权限。</div>`,
-  )
-  rows.push(
-    `<div class="token-info-note muted">网关页「Cloudflare 网关」卡地址：workers.dev 默认域名 / 绑定自定义域名由 <b>Workers Scripts</b> 读取；路由形式的自定义域名由 <b>Zone · Read</b> + <b>Workers Routes · Read</b> 读取；通配符路由（<code>&lt;子域&gt;.域名</code>）自动解析真实子域另需 <b>DNS · Read</b>。</div>`,
-  )
-  return `<div class="token-info">${rows.join('')}</div>`
 }
 
 // /api/account/status 响应 → 账户面板 HTML（§4.3）
@@ -5577,21 +5586,36 @@ export function buildAccountStatusView(tokens, gateway, tokenInfo, requiredPermi
   const slotCards = ['management', 'gateway']
     .map((slot) => {
       const e = t[slot] || {}
-      // 管理 API Token 卡附「在 Cloudflare 中添加 / 编辑 ↗」外链（cloudflare.com/profile/api-tokens）
-      // 与令牌自检区块（名称 + 所需权限表格）——未配置时也展示所需权限清单，便于据此创建令牌
-      const cfLink =
-        slot === 'management'
-          ? `<a class="slot-cf-link" href="${CF_API_TOKENS_URL}" target="_blank" rel="noopener noreferrer">在 Cloudflare 中添加 / 编辑 ↗</a>` +
-            buildManagementTokenInfo(tokenInfo, requiredPermissions)
-          : ''
+      const status = `<div class="slot-status">${escapeHtml(slotStatusLine(e))}</div>`
+      const actions =
+        `<button class="btn-update" type="button" data-slot="${slot}">更新</button>` +
+        `<button class="btn-clear" type="button" data-slot="${slot}">清除</button>`
+      // 管理 API Token 卡：头部（标题 / 说明 / Cloudflare 外链 ｜ 状态 / 更新·清除）
+      // 与下方「令牌自检」区分层，避免标题、状态、按钮、权限表挤成一列。
+      if (slot === 'management') {
+        return (
+          `<div class="panel slot-card slot-card-management" data-slot="management">` +
+          `<div class="slot-card-head">` +
+          `<div class="slot-card-head-main">` +
+          `<h3>${escapeHtml(slotLabel(slot))}</h3>` +
+          `<p class="slot-note">${SLOT_NOTES[slot] || ''}</p>` +
+          `<a class="slot-cf-link" href="${CF_API_TOKENS_URL}" target="_blank" rel="noopener noreferrer">在 Cloudflare 中添加 / 编辑 ↗</a>` +
+          `</div>` +
+          `<div class="slot-card-head-side">` +
+          status +
+          `<div class="slot-card-actions">${actions}</div>` +
+          `</div>` +
+          `</div>` +
+          buildManagementTokenInfo(tokenInfo, requiredPermissions) +
+          `</div>`
+        )
+      }
       return (
         `<div class="panel slot-card" data-slot="${slot}">` +
         `<h3>${escapeHtml(slotLabel(slot))}</h3>` +
         `<p class="slot-note">${SLOT_NOTES[slot] || ''}</p>` +
-        `<div class="slot-status">${escapeHtml(slotStatusLine(e))}</div>` +
-        `<button class="btn-update" type="button" data-slot="${slot}">更新</button>` +
-        `<button class="btn-clear" type="button" data-slot="${slot}">清除</button>` +
-        cfLink +
+        status +
+        actions +
         `</div>`
       )
     })
@@ -5821,6 +5845,25 @@ function injectWorkersAccountStyles() {
     .slot-note { color: var(--muted); font-size: 0.8rem; margin: 0 0 0.4rem; }
     .slot-status { font-size: 0.9rem; margin-bottom: 0.5rem; }
     .gateway-hint.warn { color: var(--warn); font-size: 0.85rem; margin: 0.5rem 0 0; }
+    /* 管理 API Token 卡头部：左（标题 / 说明 / 外链）｜右（状态 / 操作），底边线分隔下方自检区 */
+    .slot-card-management .slot-card-head {
+      display: flex; flex-wrap: wrap; align-items: flex-start;
+      gap: 0.5rem 1.25rem;
+      padding-bottom: 0.7rem; margin-bottom: 0.7rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .slot-card-management .slot-card-head-main { min-width: 0; }
+    .slot-card-management .slot-card-head-main h3 { margin-bottom: 0.2rem; }
+    .slot-card-management .slot-card-head-side {
+      display: flex; flex-direction: column; align-items: flex-end;
+      gap: 0.45rem; margin-left: auto; text-align: right;
+    }
+    .slot-card-management .slot-card-head-side .slot-status { margin-bottom: 0; }
+    .slot-card-management .slot-card-actions { display: flex; gap: 0.4rem; }
+    /* 窄屏：头部纵向堆叠，状态 / 操作左对齐 */
+    @media (max-width: 560px) {
+      .slot-card-management .slot-card-head-side { align-items: flex-start; text-align: left; margin-left: 0; }
+    }
     /* 槽位按钮精化：幽灵按钮 + hover 显色 */
     .slot-card .btn-update, .slot-card .btn-clear {
       background: transparent; color: var(--muted);
@@ -5834,26 +5877,47 @@ function injectWorkersAccountStyles() {
     .slot-card .btn-clear:hover {
       background: var(--err-soft); color: var(--err); border-color: var(--err-border);
     }
-    /* 管理 API Token 卡外链：紧贴按钮组，低调强调色，↗ 表示新窗口打开 */
+    /* 管理 API Token 卡外链：位于说明文案下方，低调强调色，↗ 表示新窗口打开 */
     .slot-card .slot-cf-link {
-      display: block; margin-top: 0.55rem;
+      display: inline-block; margin-top: 0.4rem;
       color: var(--accent); font-size: 0.82rem; text-decoration: none;
     }
     .slot-card .slot-cf-link:hover { text-decoration: underline; }
-    /* 管理 API Token 卡：令牌自检（名称 + 所需权限清单） */
-    .token-info { margin-top: 0.6rem; padding-top: 0.5rem; border-top: 1px solid var(--border); }
-    .token-info .status-item { font-size: 0.85rem; }
+    /* 管理 API Token 卡：令牌自检区块（标题 → 身份 → 权限清单 → 说明） */
+    .token-info { margin-top: 0; }
+    .token-info-title {
+      font-size: 0.7rem; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.09em; margin-bottom: 0.45rem;
+    }
+    /* 令牌身份：名称 / 状态并排成两列，标签在上、值在下（清晰字段感） */
+    .token-meta {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 0.15rem 1.5rem;
+    }
+    .token-meta .status-item {
+      flex-direction: column; align-items: flex-start; gap: 0.1rem;
+      padding: 0.1rem 0; border-bottom: none;
+    }
+    .token-meta .status-item .k { font-size: 0.72rem; }
+    .token-meta .status-item .v { font-size: 0.9rem; }
     .token-info-hint { font-size: 0.82rem; margin-top: 0.4rem; }
     .token-info-hint.muted { color: var(--muted); }
     .token-info-hint.warn { color: var(--warn); }
-    .token-info-note { font-size: 0.75rem; line-height: 1.5; margin-top: 0.4rem; }
-    .token-perms-head { font-size: 0.8rem; color: var(--muted); margin: 0.5rem 0 0.3rem; }
+    /* 说明区：独立小节 + 顶部分隔线，长段灰字不与表格贴在一起 */
+    .token-info-notes { margin-top: 0.85rem; padding-top: 0.7rem; border-top: 1px solid var(--border); }
+    .token-info-notes-title {
+      font-size: 0.7rem; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.09em; margin-bottom: 0.35rem;
+    }
+    .token-info-note { font-size: 0.75rem; line-height: 1.6; margin-top: 0.3rem; }
+    .token-info-note:first-of-type { margin-top: 0; }
+    .token-perms-head { font-size: 0.82rem; color: var(--muted); margin: 0.75rem 0 0.3rem; }
     .token-perms-head .ok { color: var(--ok); }
     .token-perms-head .warn { color: var(--warn); }
     .token-perms-head .muted { color: var(--muted); }
     .token-perms-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 0.15rem; }
     .token-perms-table th, .token-perms-table td {
-      text-align: left; padding: 0.28rem 0.5rem 0.28rem 0;
+      text-align: left; padding: 0.42rem 0.75rem 0.42rem 0;
       vertical-align: baseline; border-bottom: 1px solid var(--border);
     }
     .token-perms-table thead th { color: var(--muted); font-weight: 500; font-size: 0.75rem; }
