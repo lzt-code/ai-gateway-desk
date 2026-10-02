@@ -34,7 +34,8 @@ export const VIEW_HINTS = {
   models: 'Provider 侧栏 + 模型表格；space 切换选中/隐藏；同步后保存并部署',
   routes: '动态路由 fallback 链只读展示；数据随「更新模型列表」同步更新，编辑请到 Cloudflare 后台',
   workers: '本地网关直发厂商（本机 IP）/ cloud 模式走 Cloudflare 网关，Agent Base URL 保持不变',
-  account: '管理 API Token 与 Gateway Token（cfut_xxx）双槽位管理',
+  account:
+    '两个 Token 分工不同：管理 API Token 调 Cloudflare REST（建网关 / 存厂商 Key / 发现模型），账户级、勿分发；Gateway Token（cfut_xxx）供各 PC Agent 经网关转发，可分发',
 }
 
 // ── Cloudflare 动态路由（Dynamic Routes）外部入口 ──────────
@@ -5414,10 +5415,10 @@ export function slotLabel(slot) {
   return slot // 非法值原样透传（测试 9）
 }
 
-// 槽位卡说明文案（§4.3 固定文案，与 VIEW_HINTS 一致）
+// 槽位卡说明文案（§4.3 固定文案，与 VIEW_HINTS 一致）：说明两个 Token 各自的用途，让用户明白为何要创建两个
 const SLOT_NOTES = {
-  management: '账户级凭证，绝不分发给各 PC',
-  gateway: '绑定单个 gateway，可分发各 PC Agent',
+  management: '账户级凭证：调用 Cloudflare REST 建网关 / 存厂商 Key / 发现模型，绝不分发给各 PC',
+  gateway: '网关级凭证：各 PC Agent 请求网关转发时携带，可分发到各 PC',
 }
 
 // KV key 三态映射：exists→'存在'(ok) / error→'无法读取'(warn) / skipped→'未检查'(muted)
