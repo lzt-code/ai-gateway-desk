@@ -696,7 +696,7 @@ export function setModelPageButtonsDisabled(disabled) {
 // 用 body.init-blocking 类兜底未来新增按钮（CSS pointer-events），JS 负责当前按钮的 disabled 态。
 export function setInitOperationButtonsDisabled(disabled) {
   if (typeof document === 'undefined') return
-  const sels = ['#view-providers', '#view-models', '#view-routes', '#view-workers', '#view-account', '#side-actions', '#model-side-actions', '#routes-side-actions', '#workers-side-actions']
+  const sels = ['#view-providers', '#view-models', '#view-routes', '#view-workers', '#view-account', '#side-actions', '#model-side-actions', '#routes-side-actions', '#workers-side-actions', '#account-side-actions']
   const collect = () => {
     const els = []
     for (const sel of sels) {
@@ -1590,6 +1590,8 @@ export function renderView(name) {
   if (routesSideActions) routesSideActions.hidden = name !== 'routes'
   const workersSideActions = document.getElementById('workers-side-actions')
   if (workersSideActions) workersSideActions.hidden = name !== 'workers'
+  const accountSideActions = document.getElementById('account-side-actions')
+  if (accountSideActions) accountSideActions.hidden = name !== 'account'
   // 切换视图后按当前视图刷新同步进度面板可见性（仅模型页展示，切走即隐藏）
   syncProgressPanelVisibility()
 }
@@ -5625,7 +5627,7 @@ export function buildAccountStatusView(tokens, gateway, tokenInfo, requiredPermi
     `<h3>Gateway 信息</h3>` +
     `<div class="status-item"><span class="k">accountId</span><span class="v${accId === '未配置' ? ' warn' : ''}">${escapeHtml(accId)}</span></div>` +
     `<div class="status-item"><span class="k">gatewayId</span><span class="v${gwId === '未配置' ? ' warn' : ''}">${escapeHtml(gwId)}</span></div>` +
-    (bothUnconfigured ? `<p class="gateway-hint warn">尚未初始化，点击下方『初始化向导』</p>` : '') +
+    (bothUnconfigured ? `<p class="gateway-hint warn">尚未初始化，点击右侧『初始化向导』</p>` : '') +
     `</div>` +
     slotCards
   )
@@ -6259,14 +6261,12 @@ export function renderAccountView(container) {
     <h2 class="view-title">账户</h2>
     <div class="account-view">
       <div id="account-status"><!-- buildAccountStatusView 输出 --></div>
-      <div class="toolbar">
-        <button id="btn-setup" class="btn btn-default" type="button">初始化向导</button>
-      </div>
     </div>
   `
 
   const statusBox = container.querySelector('#account-status')
-  const btnSetup = container.querySelector('#btn-setup')
+  // 初始化向导按钮位于右侧按钮栏（#account-side-actions，index.html 静态定义，随视图显隐）
+  const btnSetup = document.getElementById('btn-setup')
 
   // ── 渲染辅助 ────────────────────────────────────────────
   // 账户状态与令牌自检分两次异步返回，用局部状态合并重绘：
@@ -6398,7 +6398,7 @@ export function renderAccountView(container) {
   async function runSetup() {
     const yes = await confirmDialog('运行初始化向导？', '向导将在服务器终端启动，请切换到终端完成 7 步配置')
     if (!yes) return
-    btnSetup.disabled = true
+    if (btnSetup) btnSetup.disabled = true
     try {
       await withBusy('正在启动初始化向导…', api('/api/account/setup', { method: 'POST' }))
       flash('初始化向导已在终端启动', 'info')
@@ -6407,7 +6407,7 @@ export function renderAccountView(container) {
       flash(err.message, 'err')
       logActivity(`启动初始化向导失败：${err.message}`, 'err')
     } finally {
-      btnSetup.disabled = false
+      if (btnSetup) btnSetup.disabled = false
     }
   }
 
@@ -6419,7 +6419,7 @@ export function renderAccountView(container) {
     else if (btn.classList.contains('btn-clear')) clearToken(btn.dataset.slot)
   })
 
-  btnSetup.addEventListener('click', runSetup)
+  if (btnSetup) btnSetup.addEventListener('click', runSetup)
 
   // ── 初始加载：进入视图拉一次（§3.1 step 2）──
   refreshAccountInfo()

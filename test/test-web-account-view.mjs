@@ -134,7 +134,7 @@ const a3 = buildAccountStatusView(
   gatewayNone,
 )
 check(a3.includes('未配置') && a3.includes('v warn'), 'gateway 未配置 → warn 色「未配置」')
-check(a3.includes('尚未初始化'), 'gateway 未配置 → 含「尚未初始化，点击下方『初始化向导』」')
+check(a3.includes('尚未初始化'), 'gateway 未配置 → 含「尚未初始化，点击右侧『初始化向导』」')
 
 // 8：槽位说明文案
 check(a1.includes('绝不分发'), 'management 卡含「绝不分发」说明文案')
