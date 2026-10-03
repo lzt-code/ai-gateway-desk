@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url'
 const mod = await import('../src/web/public/app.js')
 const {
   buildModelTableRows,
+  buildModelDetailSections,
   parseSSEEvents,
   buildSyncProgressState,
   buildDebugLogLines,
@@ -200,6 +201,109 @@ check(
   check(!rowsEmpty.some((r) => r.html.includes('row-new')), '空 Set → 无任何 row-new')
 }
 
+// ── buildModelDetailSections ─────────────────────────────
+section('buildModelDetailSections')
+{
+  const find = (r, title) => r.sections.find((s) => s.title === title)
+  const row = (s, label) => s && s.rows.find((x) => x.label === label)
+  const r = buildModelDetailSections('openrouter/deepseek-r1', {
+    status: 'selected',
+    provider: 'openrouter',
+    metadata: {
+      name: 'DeepSeek R1',
+      owned_by: 'deepseek',
+      created: 1700000000,
+      context_length: 131072,
+      max_output_length: 8192,
+      description: '推理模型',
+      input_modalities: ['text', 'image'],
+      output_modalities: ['text'],
+      supported_features: ['tools', 'reasoning'],
+      pricing: { prompt: 0.0000005, completion: 0.000002 },
+      route_models: ['openrouter/a', 'openrouter/b'],
+      architecture: { modality: 'text->text' },
+    },
+  })
+  const basic = find(r, '基本信息')
+  check(row(basic, '模型名称').value === 'DeepSeek R1', '基本信息 → 模型名称')
+  check(row(basic, '模型 ID').value === 'openrouter/deepseek-r1' && row(basic, '模型 ID').copy === true, '模型 ID 行带 copy 标记')
+  check(row(basic, 'Provider').value === 'openrouter', 'Provider 取 entry.provider')
+  check(row(basic, '归属').value === 'deepseek', '归属取 metadata.owned_by')
+  check(row(basic, '状态').value.includes('选中'), '状态 → 图标 + 文案')
+  check(row(basic, '来源').value === '同步发现', '非 manual → 来源「同步发现」')
+  check(!!row(basic, '创建时间'), 'created 秒 → 展示创建时间行')
+
+  const spec = find(r, '规格')
+  check(row(spec, '上下文长度').value.includes('128K') && row(spec, '上下文长度').value.includes('131072'), '上下文长度 → 紧凑值 + 原值')
+  check(row(spec, '最大输出').value.includes('8K'), '最大输出 → 紧凑值')
+
+  const ability = find(r, '能力')
+  check(row(ability, '输入模态').value === '文本、图像', '输入模态 → 中文标签拼接')
+  check(row(ability, '输出模态').value === '文本', '输出模态 → 中文标签')
+  check(row(ability, '支持特性').value === '函数调用、推理', '支持特性 → tools/reasoning 中文化')
+
+  const price = find(r, '价格')
+  check(row(price, '输入').value === '$0.5 /M tokens', '扁平 pricing.prompt → 换算展示')
+  check(row(price, '输出').value === '$2 /M tokens', '扁平 pricing.completion → 换算展示')
+
+  const route = find(r, '动态路由链')
+  check(row(route, 'Fallback 顺序').value === 'openrouter/a  →  openrouter/b', 'route_models → fallback 顺序串')
+
+  check(r.raw && r.raw.architecture && r.raw.architecture.modality === 'text->text', '未归类字段（architecture）进入 raw')
+  check(r.raw.name === undefined && r.raw.pricing === undefined, '已归类字段不出现在 raw')
+}
+{
+  // 结构化 pricings（嵌套对象/数组）→ 递归展开，读显式 unit/currency
+  const r = buildModelDetailSections('p/m', {
+    status: 'selected',
+    metadata: {
+      pricings: {
+        prompt: [{ value: 2.5, unit: 'perMTokens', currency: 'USD' }],
+        speed: { fast: [{ value: 1, unit: 'perMTokens', currency: 'USD' }] },
+      },
+    },
+  })
+  const price = r.sections.find((s) => s.title === '价格')
+  const labels = price.rows.map((x) => x.label)
+  check(labels.includes('prompt') && labels.includes('speed.fast'), 'pricings 嵌套 → 路径式标签展开')
+  check(price.rows.find((x) => x.label === 'speed.fast').value === '$1 /M tokens', '结构化价读显式 unit/currency')
+}
+{
+  // 缺 metadata / 空条目 → 只有基本信息（ID + 来源），raw 为 null
+  const r = buildModelDetailSections('x/1', {})
+  check(r.sections.length === 1 && r.sections[0].title === '基本信息', '空 metadata → 仅基本信息分组')
+  check(r.sections[0].rows.some((x) => x.label === '模型 ID' && x.value === 'x/1'), '空 metadata → 仍展示模型 ID')
+  check(r.raw === null, '无剩余字段 → raw 为 null')
+}
+{
+  // manual 条目 → 来源「手工添加」
+  const r = buildModelDetailSections('p/manual', { status: 'pending', manual: true, metadata: {} })
+  const basic = r.sections[0]
+  check(basic.rows.find((x) => x.label === '来源').value === '手工添加', 'manual → 来源「手工添加」')
+  check(basic.rows.find((x) => x.label === '状态').value.includes('待审'), 'pending → 状态「待审」')
+}
+{
+  // providerLabel：provider id → 展示名称；名称与 id 不同时用 title 保留 id
+  const r = buildModelDetailSections(
+    'openrouter/m',
+    { status: 'selected', provider: 'openrouter', metadata: {} },
+    { providerLabel: (id) => (id === 'openrouter' ? 'OpenRouter' : null) },
+  )
+  const row = r.sections[0].rows.find((x) => x.label === 'Provider')
+  check(row.value === 'OpenRouter', 'providerLabel → Provider 显示名称')
+  check(row.title === 'openrouter' && row.mono === false, '名称≠id → title 保留 id、非等宽')
+}
+{
+  // providerLabel 返回空 → 回退 id，等宽、无 title
+  const r = buildModelDetailSections(
+    'p/m',
+    { status: 'selected', provider: 'p', metadata: {} },
+    { providerLabel: () => null },
+  )
+  const row = r.sections[0].rows.find((x) => x.label === 'Provider')
+  check(row.value === 'p' && row.mono === true && row.title === undefined, 'providerLabel 空 → 回退 id')
+}
+
 // ── 6-8：parseSSEEvents ──────────────────────────────────
 section('parseSSEEvents')
 {
@@ -381,7 +485,7 @@ section('computeDirty')
 
 // ── 18-19：导出存在性 + 任务 30 回归 ─────────────────────
 section('导出存在性')
-for (const fn of [buildModelTableRows, parseSSEEvents, buildSyncProgressState, buildDebugLogLines, filterQuery, computeDirty, copyToClipboard]) {
+for (const fn of [buildModelTableRows, buildModelDetailSections, parseSSEEvents, buildSyncProgressState, buildDebugLogLines, filterQuery, computeDirty, copyToClipboard]) {
   check(typeof fn === 'function', `新纯函数 ${fn.name} 已导出`)
 }
 check((await copyToClipboard('x')) === false, 'copyToClipboard 无 DOM 安全返回 false')

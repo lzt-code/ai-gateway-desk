@@ -1850,7 +1850,7 @@ export function buildModelTableRows(items, newModelIds) {
         : '') +
       `</td>`
     // 待审行状态列：双操作（✓ 采用 → selected / ✕ 忽略 → hidden），替代单一状态徽章——
-    // 待审是「等待决策」态，直接暴露决策按钮比展示状态更可用；空格键仍走采用
+    // 待审是「等待决策」态，直接暴露决策按钮比展示状态更可用
     const statusCellHtml = statusKey === 'pending'
       ? `<button class="status-toggle" data-model-id="${escapeHtml(modelId)}" title="采用：加入选中列表（写入 models.json）" type="button"><span class="status-ok">✓ 采用</span></button>` +
         `<button class="model-ignore" data-ignore-model="${escapeHtml(modelId)}" title="忽略：转入隐藏（不再进入网关）" type="button"><span class="status-warn">✕ 忽略</span></button>`
@@ -1867,6 +1867,158 @@ export function buildModelTableRows(items, newModelIds) {
     rows.push({ modelId, html })
   }
   return rows
+}
+
+// ── 模型详情对话框（纯函数可单测 + 原生 <dialog> 渲染）───────────
+// 字段分组：基本信息 / 规格 / 能力 / 价格 / 动态路由链；未归类的其余 metadata
+// （架构、top_provider 等原生富字段）汇总为 raw，供「原始 JSON」折叠区展示。
+// 缺失字段不生成行（值为空则跳过）。
+const DETAIL_PRICE_LABELS = {
+  prompt: '输入', input: '输入',
+  completion: '输出', output: '输出',
+  input_cache_read: '缓存读取', cache_read: '缓存读取',
+  input_cache_write: '缓存写入', cache_write: '缓存写入',
+}
+const DETAIL_FEATURE_LABELS = { tools: '函数调用', json_mode: 'JSON 模式', reasoning: '推理' }
+const DETAIL_MODALITY_LABELS = { text: '文本', image: '图像', audio: '音频', video: '视频', file: '文件' }
+
+function detailModalityLabel(m) {
+  const key = String(m).toLowerCase()
+  return DETAIL_MODALITY_LABELS[key] || String(m)
+}
+
+// pricing/pricings → 价格行。pricings 为嵌套对象/数组（结构化 [{value,unit,currency}]），
+// 递归展开到叶子后用 formatPriceDisplay（读显式 unit/currency）；pricing 为扁平对象，
+// 按已知键名映射中文标签。
+function buildDetailPriceRows(meta) {
+  const rows = []
+  const push = (label, v) => {
+    const disp = formatPriceDisplay(v)
+    rows.push({ label, value: disp != null ? disp : formatDiffValue(v), mono: true })
+  }
+  const pricing = meta.pricing
+  if (pricing && typeof pricing === 'object' && !Array.isArray(pricing)) {
+    for (const [k, v] of Object.entries(pricing)) push(DETAIL_PRICE_LABELS[k] || k, v)
+  }
+  const pricings = meta.pricings
+  if (pricings && typeof pricings === 'object') {
+    const walk = (prefix, obj, depth) => {
+      if (depth > 4 || obj === null || obj === undefined) return
+      if (typeof obj !== 'object' || Array.isArray(obj)) {
+        push(prefix || '价格', obj)
+        return
+      }
+      for (const [k, v] of Object.entries(obj)) walk(prefix ? `${prefix}.${k}` : k, v, depth + 1)
+    }
+    walk('', pricings, 0)
+  }
+  return rows
+}
+
+/**
+ * state 条目 → 详情对话框分组（纯函数，Node 无 DOM 可单测）。
+ * @param {string} modelId
+ * @param {{status?:string, provider?:string, manual?:boolean, metadata?:object}} entry
+ * @param {{providerLabel?: (id:string) => (string|null|undefined)}} [options]
+ *   providerLabel：可选，把 provider id 映射为展示名称（模型视图用侧栏 providers 列表）。
+ *   返回空/未提供时回退显示 id；名称与 id 不同时用 title 保留完整 id。
+ * @returns {{sections: Array<{title:string, rows:Array<{label:string,value:string,mono?:boolean,copy?:boolean,title?:string}>}>, raw: object|null}}
+ */
+export function buildModelDetailSections(modelId, entry, options = {}) {
+  const e = entry && typeof entry === 'object' ? entry : {}
+  const meta = e.metadata && typeof e.metadata === 'object' ? e.metadata : {}
+  const opts = options && typeof options === 'object' ? options : {}
+  const providerLabel = typeof opts.providerLabel === 'function' ? opts.providerLabel : null
+  const id = modelId || meta.id || ''
+  const consumed = new Set()
+  const sections = []
+  const strVal = (v) => (v === undefined || v === null || v === '' ? null : String(v))
+  let v
+
+  // 基本信息
+  const basic = []
+  if ((v = strVal(meta.name)) != null) { basic.push({ label: '模型名称', value: v }); consumed.add('name') }
+  if (id) { basic.push({ label: '模型 ID', value: String(id), mono: true, copy: true }); consumed.add('id') }
+  if ((v = strVal(e.provider || meta.provider)) != null) {
+    const label = providerLabel ? strVal(providerLabel(v)) : null
+    const display = label || v
+    // 展示名称与 id 不同时，用 title 保留完整 id 便于核对
+    basic.push({ label: 'Provider', value: display, mono: display === v, title: display === v ? undefined : v })
+    consumed.add('provider')
+  }
+  if ((v = strVal(meta.owned_by)) != null) { basic.push({ label: '归属', value: v }); consumed.add('owned_by') }
+  if (e.status) {
+    const st = STATUS_MAP[e.status]
+    basic.push({ label: '状态', value: st ? `${st.icon} ${st.text}` : String(e.status) })
+  }
+  basic.push({ label: '来源', value: e.manual ? '手工添加' : '同步发现' })
+  if (meta.created != null) {
+    const n = Number(meta.created)
+    const ms = Number.isFinite(n) ? (n > 1e12 ? n : n * 1000) : NaN
+    const d = new Date(ms)
+    basic.push({ label: '创建时间', value: Number.isFinite(d.getTime()) ? d.toLocaleString() : String(meta.created) })
+    consumed.add('created')
+  }
+  if ((v = strVal(meta.description)) != null) { basic.push({ label: '描述', value: v }); consumed.add('description') }
+  if (basic.length) sections.push({ title: '基本信息', rows: basic })
+
+  // 规格
+  const spec = []
+  if (meta.context_length != null) {
+    const c = formatCompactLength(meta.context_length)
+    spec.push({ label: '上下文长度', value: c ? `${c}（${meta.context_length}）` : String(meta.context_length), mono: true })
+    consumed.add('context_length')
+  }
+  if (meta.max_output_length != null) {
+    const o = formatCompactLength(meta.max_output_length)
+    spec.push({ label: '最大输出', value: o ? `${o}（${meta.max_output_length}）` : String(meta.max_output_length), mono: true })
+    consumed.add('max_output_length')
+  }
+  if (spec.length) sections.push({ title: '规格', rows: spec })
+
+  // 能力
+  const ability = []
+  if (Array.isArray(meta.input_modalities) && meta.input_modalities.length) {
+    ability.push({ label: '输入模态', value: meta.input_modalities.map(detailModalityLabel).join('、') })
+    consumed.add('input_modalities')
+  }
+  if (Array.isArray(meta.output_modalities) && meta.output_modalities.length) {
+    ability.push({ label: '输出模态', value: meta.output_modalities.map(detailModalityLabel).join('、') })
+    consumed.add('output_modalities')
+  }
+  if (Array.isArray(meta.supported_features) && meta.supported_features.length) {
+    ability.push({ label: '支持特性', value: meta.supported_features.map((f) => DETAIL_FEATURE_LABELS[f] || f).join('、') })
+    consumed.add('supported_features')
+  }
+  if (ability.length) sections.push({ title: '能力', rows: ability })
+
+  // 价格
+  const priceRows = buildDetailPriceRows(meta)
+  if (priceRows.length) {
+    if (meta.pricing) consumed.add('pricing')
+    if (meta.pricings) consumed.add('pricings')
+    sections.push({ title: '价格', rows: priceRows })
+  }
+
+  // 动态路由链（route_models：数组顺序即 fallback 尝试顺序）
+  const route = meta.route_models
+  const chain = Array.isArray(route)
+    ? route.filter((m) => typeof m === 'string' && m.trim() !== '')
+    : (typeof route === 'string' && route.trim() ? [route.trim()] : [])
+  if (chain.length) {
+    sections.push({ title: '动态路由链', rows: [{ label: 'Fallback 顺序', value: chain.join('  →  '), mono: true }] })
+    consumed.add('route_models')
+  }
+
+  // 其余未归类 metadata（含 architecture / top_provider 等原生富字段）
+  const rest = {}
+  for (const [k, val] of Object.entries(meta)) {
+    if (consumed.has(k)) continue
+    rest[k] = val
+  }
+  const raw = Object.keys(rest).length ? rest : null
+
+  return { sections, raw }
 }
 
 // SSE 事件流文本 → 结构化事件数组（data 已 JSON.parse；坏 data → null 不抛错）
@@ -2255,6 +2407,32 @@ function injectModelsStyles() {
     .sync-diff-table .diff-old { color: var(--warn); background: var(--warn-soft); }
     .sync-diff-table .diff-new { color: var(--ok); background: var(--ok-soft); }
     .sync-diff-table mark.diff-mark { background: var(--accent-soft); color: var(--accent); border-radius: 2px; padding: 0 1px; font-weight: 600; }
+    /* 模型详情对话框：分组只读展示（单击模型行打开）。
+       弹窗略宽于默认，长内容在 dialog-body 内滚动而非撑高页面。 */
+    dialog:has(.model-detail) { min-width: 340px; max-width: min(92vw, 560px); }
+    dialog:has(.model-detail) .dialog-body { max-height: 60vh; overflow-y: auto; }
+    .model-detail { display: flex; flex-direction: column; gap: 0.9rem; }
+    .detail-section { display: flex; flex-direction: column; gap: 0.3rem; }
+    .detail-section-title {
+      font-size: 0.72rem; color: var(--muted); font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .detail-row {
+      display: grid; grid-template-columns: 6.5rem 1fr; gap: 0.6rem;
+      align-items: baseline; font-size: 0.85rem;
+    }
+    .detail-label { color: var(--muted); }
+    .detail-value { color: var(--fg); word-break: break-word; }
+    .detail-value.mono { font-family: var(--font-mono); font-size: 0.8rem; }
+    .detail-copy { margin-left: 0.4rem; }
+    .detail-raw { margin-top: 0.1rem; }
+    .detail-raw summary { cursor: pointer; color: var(--muted); font-size: 0.75rem; }
+    .detail-raw pre {
+      margin: 0.4rem 0 0; padding: 0.5rem; background: var(--field-bg);
+      border: 1px solid var(--border); border-radius: 6px;
+      font-size: 0.72rem; max-height: 18vh; overflow: auto;
+      white-space: pre-wrap; word-break: break-word;
+    }
   `
   document.head.appendChild(style)
 }
@@ -2277,7 +2455,7 @@ export function renderModelsView(container) {
   let sortKey = null          // 列排序（th[data-sort]，null = 后端默认顺序）
   let sortDir = 'asc'         // 排序方向（asc/desc，sortKey=null 时无意义）
   let items = []              // 当前筛选结果
-  let selectedModelId = null
+  let detailModelId = null    // 最近查看详情的模型 ID（行高亮 + 详情标题）
   let syncing = false
   let finished = false        // 同步收尾标志（防 done/error/网络 error 重复处理）
   let es = null               // EventSource 实例
@@ -2325,7 +2503,6 @@ export function renderModelsView(container) {
   const sidebar = container.querySelector('.provider-sidebar')
   const keywordInput = container.querySelector('#model-keyword')
   const tbody = container.querySelector('.model-table tbody')
-  const tableWrap = container.querySelector('.table-wrap')
   const hintNoMatch = container.querySelector('#hint-no-match')
   const hintNoProvider = container.querySelector('#hint-no-provider')
   const dirtyMark = container.querySelector('.dirty-mark')
@@ -2388,7 +2565,7 @@ export function renderModelsView(container) {
     const rows = buildModelTableRows(getter ? sortViewItems(items, getter, sortDir) : items, newModelIds)
     tbody.innerHTML = rows.map((r) => r.html).join('')
     for (const tr of tbody.querySelectorAll('tr')) {
-      tr.classList.toggle('row-active', tr.dataset.modelId === selectedModelId)
+      tr.classList.toggle('row-active', tr.dataset.modelId === detailModelId)
     }
     // 空状态区分（已知坑 4）：未配置 Provider vs 无匹配模型
     const noProviders = providers.length === 0
@@ -2407,12 +2584,94 @@ export function renderModelsView(container) {
       : '仅当当前列表全部为手工添加的模型时可用'
   }
 
-  function selectRow(modelId) {
-    selectedModelId = modelId
+  // 单击行 → 打开只读详情对话框（原「单击选中」交互已移除：
+  // 批量/单行操作均为显式按钮，不再有「先选中再操作」的隐含流程）。
+  // detailModelId 仅用于行高亮（视觉锚点）+ 详情标题，不参与任何数据操作。
+  function renderModelDetailBody(modelId, entry) {
+    // provider id → 展示名称（与侧栏一致：name 缺失或为 default 时回退 id）
+    const providerLabel = (pid) => {
+      for (const p of providers) {
+        const id = typeof p === 'string' ? p : p.id
+        if (id !== pid) continue
+        const name = typeof p === 'string' ? p : p.name
+        return name && name !== 'default' ? name : null
+      }
+      return null
+    }
+    const { sections, raw } = buildModelDetailSections(modelId, entry, { providerLabel })
+    const wrap = document.createElement('div')
+    wrap.className = 'model-detail'
+    for (const sec of sections) {
+      const secEl = document.createElement('div')
+      secEl.className = 'detail-section'
+      const titleEl = document.createElement('div')
+      titleEl.className = 'detail-section-title'
+      titleEl.textContent = sec.title
+      secEl.appendChild(titleEl)
+      for (const row of sec.rows) {
+        const rowEl = document.createElement('div')
+        rowEl.className = 'detail-row'
+        const labEl = document.createElement('div')
+        labEl.className = 'detail-label'
+        labEl.textContent = row.label
+        const valEl = document.createElement('div')
+        valEl.className = 'detail-value' + (row.mono ? ' mono' : '')
+        if (row.title) valEl.title = row.title
+        valEl.textContent = row.value
+        if (row.copy) {
+          const copyBtn = document.createElement('button')
+          copyBtn.type = 'button'
+          copyBtn.className = 'model-copy detail-copy'
+          copyBtn.textContent = '⧉'
+          copyBtn.title = '复制完整模型名称（含 Provider）'
+          copyBtn.addEventListener('click', () => {
+            copyToClipboard(row.value).then((ok) => {
+              flash(ok ? `已复制：${row.value}` : '复制失败，请手动选择复制', ok ? 'ok' : 'err')
+              if (ok) logActivity(`复制模型名称：${row.value}`, 'ok')
+            })
+          })
+          valEl.appendChild(copyBtn)
+        }
+        rowEl.append(labEl, valEl)
+        secEl.appendChild(rowEl)
+      }
+      wrap.appendChild(secEl)
+    }
+    if (raw) {
+      const det = document.createElement('details')
+      det.className = 'detail-raw'
+      const sum = document.createElement('summary')
+      sum.textContent = '原始 JSON（含未归类字段）'
+      const pre = document.createElement('pre')
+      let json = ''
+      try { json = JSON.stringify(raw, null, 2) } catch { json = String(raw) }
+      pre.textContent = json
+      det.append(sum, pre)
+      wrap.appendChild(det)
+    }
+    return wrap
+  }
+
+  async function openModelDetail(modelId) {
+    const entry = state[modelId]
+    if (!entry) {
+      flash('模型不存在或已被移除', 'warn')
+      return
+    }
+    detailModelId = modelId
     for (const tr of tbody.querySelectorAll('tr')) {
       tr.classList.toggle('row-active', tr.dataset.modelId === modelId)
     }
-    tableWrap.focus({ preventScroll: true })
+    const name = entry.metadata && entry.metadata.name
+    const action = await showDialog({
+      title: name ? `模型详情：${name}` : '模型详情',
+      body: renderModelDetailBody(modelId, entry),
+      actions: [
+        { id: 'close', label: '关闭' },
+        { id: 'edit', label: '编辑', variant: 'primary' },
+      ],
+    })
+    if (action === 'edit') editModel(modelId)
   }
 
   // 闲置自动部署（服务端防抖）：toggle/set-status/batch-toggle 响应携带
@@ -2524,7 +2783,7 @@ export function renderModelsView(container) {
     try {
       const res = await withBusy('正在删除模型…', api('/api/models/remove', { method: 'POST', body: { modelId } }))
       delete state[modelId] // 永久删除
-      if (selectedModelId === modelId) selectedModelId = null
+      if (detailModelId === modelId) detailModelId = null
       updateDirty()
       await applyFilter()
       flash('已删除', 'ok')
@@ -2587,7 +2846,7 @@ export function renderModelsView(container) {
       for (const id of targets) {
         delete state[id]
       }
-      if (selectedModelId && targets.includes(selectedModelId)) selectedModelId = null
+      if (detailModelId && targets.includes(detailModelId)) detailModelId = null
       updateDirty()
       await applyFilter()
       flash('已批量删除', 'ok')
@@ -2735,7 +2994,6 @@ export function renderModelsView(container) {
     try {
       const res = await withBusy('正在添加模型…', api('/api/models/add', { method: 'POST', body: { modelId, provider: providerVal, metadata } }))
       state[modelId] = res.entry
-      selectedModelId = modelId
       updateDirty()
       await applyFilter()
       flash('已添加模型', 'ok')
@@ -3231,7 +3489,7 @@ export function renderModelsView(container) {
       })
       return
     }
-    // 待审行「忽略」按钮：pending → hidden（采用走 status-toggle / 空格）
+    // 待审行「忽略」按钮：pending → hidden（采用走 status-toggle 的「✓ 采用」）
     const ignoreBtn = e.target.closest('.model-ignore')
     if (ignoreBtn) {
       const modelId = ignoreBtn.dataset.ignoreModel
@@ -3257,18 +3515,9 @@ export function renderModelsView(container) {
       if (modelId) removeModel(modelId)
       return
     }
+    // 单击行 → 打开只读详情（原选中语义已移除）
     const tr = e.target.closest('tr[data-model-id]')
-    if (tr) selectRow(tr.dataset.modelId)
-  })
-
-  // 空格键 toggle：只在表格容器处理，输入框/按钮聚焦时不拦截（已知坑 8）
-  tableWrap.addEventListener('keydown', (e) => {
-    if (e.key !== ' ') return
-    const t = e.target
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.tagName === 'BUTTON')) return
-    if (!selectedModelId) return
-    e.preventDefault()
-    toggleModel(selectedModelId)
+    if (tr) openModelDetail(tr.dataset.modelId)
   })
 
   btnSync.addEventListener('click', () => startSync())
