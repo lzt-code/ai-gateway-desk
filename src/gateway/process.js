@@ -21,6 +21,8 @@ import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
+import { openInTerminal } from './console-window.js'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 /** src/gateway/ → 项目根 */
@@ -136,17 +138,22 @@ export function spawnGatewayChild({
  * @param {object} options
  * @param {number} options.port
  * @param {() => (boolean|Promise<boolean>)} options.isAlive - 端口上有本网关存活
+ * @param {boolean} [options.console] - true：在可见终端窗口中启动（弹窗失败自动
+ *        回落隐藏式后台启动）；窗口模式下 stdout 归窗口，不写 logPath
+ * @param {Function} [options.openInTerminalFn] - 弹窗实现（测试注入）
  * @param {Function} [options.spawnFn]
  * @param {string} [options.execPath]
  * @param {string} [options.binPath]
  * @param {string} [options.logPath]
  * @param {number} [options.timeoutMs]
  * @param {number} [options.intervalMs]
- * @returns {Promise<{ ok: boolean, running: boolean, port: number, error?: string }>}
+ * @returns {Promise<{ ok: boolean, running: boolean, port: number, console?: string, error?: string }>}
  */
 export async function startGatewayProcess({
   port,
   isAlive,
+  console: useConsole = false,
+  openInTerminalFn = openInTerminal,
   spawnFn = spawn,
   execPath = process.execPath,
   binPath = DEFAULT_GATEWAY_BIN,
@@ -155,6 +162,29 @@ export async function startGatewayProcess({
   intervalMs = DEFAULT_POLL_INTERVAL_MS,
 }) {
   const probe = typeof isAlive === 'function' ? isAlive : async () => false
+
+  // 窗口模式：启动器（cmd start / osascript / 终端模拟器）立即返回，无法竞速
+  // 子进程退出，仅按 /health 探测判定；就绪超时让用户看窗口输出（日志在窗口里）
+  let consoleMethod = null
+  if (useConsole) {
+    try {
+      const r = openInTerminalFn({ title: `AI Gateway :${port}`, execPath, binPath, port })
+      if (r && r.ok === true) consoleMethod = r.method || 'console'
+    } catch {
+      consoleMethod = null // 弹窗异常 → 回落隐藏启动
+    }
+  }
+  if (consoleMethod) {
+    const ready = await waitFor(probe, { timeoutMs, intervalMs })
+    if (ready) return { ok: true, running: true, port, console: consoleMethod }
+    return {
+      ok: false,
+      running: false,
+      port,
+      console: consoleMethod,
+      error: `等待网关就绪超时（${timeoutMs}ms）：请查看网关控制台窗口（AI Gateway :${port}）的输出`,
+    }
+  }
 
   let child
   try {

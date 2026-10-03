@@ -64,6 +64,7 @@ const TESTS = [
   'test-gateway-backend-local.mjs',   // LocalBackend 直发（mock fetch / 错误归类）
   'test-gateway-server.mjs',          // 网关全部端点 + backfill（全 mock）
   'test-gateway-process.mjs',         // 管理界面托管网关进程（spawn / 就绪 / 关闭，全 mock）
+  'test-gateway-console-window.mjs',  // 跨平台终端弹窗启动网关（三平台规格 / 探测回退，全 mock）
   // ── 本地网关阶段二：fallback 引擎 + 网关视图 ──
   'test-gateway-fallback.mjs',        // 本地 fallback 链 / 重试 / percentage / 异常结构
   'test-gateway-web-api.mjs',         // 管理服务网关 API（overview/backfill/key）

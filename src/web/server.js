@@ -2157,6 +2157,7 @@ export function createApp({
 
     const r = await depsAll.startGatewayProcess({
       port,
+      console: true, // 可见终端窗口启动（窗口在 = 网关在）；弹窗失败自动回落后台
       isAlive: async () => (await probeGateway(port)).running,
     })
     ioLogResult(op, {
@@ -2169,6 +2170,7 @@ export function createApp({
       running: r.running === true,
       port,
       baseUrl,
+      console: r.console || null, // 弹窗机制（如 cmd-start / terminal-app）；null=后台模式
       error: r.error ? String(r.error).slice(0, 500) : null,
     })
   })
