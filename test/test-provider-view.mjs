@@ -1,14 +1,14 @@
 /**
  * Provider 管理视图测试（任务 20）
  *
- * 纯逻辑测试：不触网、不启动真实 TUI、不渲染 blessed 屏幕。
+ * 纯逻辑测试：不触网、无 UI 依赖。
  * 覆盖：
  *   - provider-actions.js：mergeProviderViews / followDelete / setLocalEnabled /
  *     setLocalName / buildCloudUpdateParams / updateProviderCloud（mock 依赖）/
  *     buildCloudDeleteParams / deleteProviderCloud（mock 依赖）/ writeProvidersConfigFile（mock fs）
  *   - api.js：updateCustomProvider / updateProviderConfig / deleteCustomProvider /
  *     deleteProviderConfig（mock fetch）
- *   - views.js：buildProviderItems（列表项渲染）
+ *   - render.js：buildProviderItems（列表项渲染）
  *
  * 场景（任务 20 测试方法）：
  *   A: 合并展示——云端新增标 [新增]、本地已有保留本地 enabled、本地缺失标 [云端已删]
@@ -31,9 +31,9 @@ import {
   buildCloudDeleteParams,
   deleteProviderCloud,
   writeProvidersConfigFile,
-} from '../src/tui/provider-actions.js'
+} from '../src/logic/provider-actions.js'
 import { updateCustomProvider, updateProviderConfig, deleteCustomProvider, deleteProviderConfig, createCustomProvider } from '../src/cloudflare/api.js'
-import { buildProviderItems } from '../src/tui/render.js'
+import { buildProviderItems } from '../src/logic/render.js'
 
 let failures = 0
 let checks = 0
@@ -371,7 +371,7 @@ section('测试 10: updateProviderConfig')
   }
 }
 
-// ── 测试 11：buildProviderItems（views.js 列表项渲染）──
+// ── 测试 11：buildProviderItems（列表项渲染）──
 section('测试 11: buildProviderItems')
 {
   const providers = [

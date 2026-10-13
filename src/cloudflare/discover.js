@@ -185,7 +185,7 @@ export function gatewaySlug(provider) {
 /**
  * 遍历启用的 provider，通过 AI Gateway fetch /v1/models，收集结果
  *
- * 可选 onProgress 回调（TUI 启动自动同步/按 F4 时显示每个 provider 拉取进度）：
+ * 可选 onProgress 回调（模型发现时显示每个 provider 拉取进度）：
  *   - 请求发出前触发一次 { status: 'pending' }
  *   - 每个 provider 完成（成功/失败）后触发一次 { status: 'done'|'error' }
  *   - config.debug === true 时额外触发 { status: 'debug', debug: {...} }：

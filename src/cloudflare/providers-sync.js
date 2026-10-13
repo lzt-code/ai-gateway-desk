@@ -7,7 +7,7 @@
  *
  * 背景：providers.json 完全靠手工维护时，用户在 dashboard 手动添加 BYOK Key
  *       或 Custom Provider 后，本地无法感知，导致 discover 漏掉新 provider。
- *       本模块供 setup 向导（任务 11）第 e 步与后续 TUI「同步 provider」入口使用。
+ *       本模块供 setup 向导（任务 11）第 e 步与 Web「同步 provider」入口使用。
  *
  * 依赖：./api.js（任务 10，同目录）
  */
@@ -93,7 +93,7 @@ export async function fetchCloudProviders(apiToken, accountId, gatewayId) {
   const byId = new Map() // id → provider，同 id 冲突时 custom-provider 优先
 
   // 追加 provider：同 id 时保留 custom-provider（显式创建、名称信息更完整），
-  // 丢弃 byok —— 否则同一 slug 会重复出现，F4 同步时 discover 会对同一 URL 发
+  // 丢弃 byok —— 否则同一 slug 会重复出现，provider 同步时 discover 会对同一 URL 发
   // 两次请求，且 mergeProviders 按 Map 去重会把 custom 条目覆盖丢失。
   // 特殊处理脱敏预览：agnes 等在两源同时存在时（custom headers 为 null，BYOK 有 secret_preview），
   // 需把 BYOK 的 apiKeyPreview 合并给 custom，避免列表页显示为 -。

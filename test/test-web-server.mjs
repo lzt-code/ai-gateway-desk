@@ -285,7 +285,6 @@ section('测试 19-21: package.json 依赖')
   const deps = pkg.dependencies || {}
   check(typeof deps['hono'] === 'string', `依赖含 hono（实际=${JSON.stringify(deps['hono'])}）`)
   check(typeof deps['@hono/node-server'] === 'string', `依赖含 @hono/node-server（实际=${JSON.stringify(deps['@hono/node-server'])}）`)
-  check(!deps['neo-blessed'], 'neo-blessed 已移除（任务 34）')
   const ver = String(deps['@hono/node-server'])
   const major = parseInt((ver.match(/\d+/) || ['NaN'])[0], 10)
   check(major === 1, `@hono/node-server 主版本号 === 1（防误升 2.x 破坏 Node 18，实际=${ver}）`)

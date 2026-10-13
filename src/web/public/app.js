@@ -9,7 +9,7 @@
  * - 选项卡 data-view 与视图容器 view-<name> 的 id 是任务 31-33 的绑定契约。
  */
 
-// ── 视图定义（Web 五视图；TUI keys.js 仍为四视图，routes 仅 Web 有）────
+// ── 视图定义（Web 五视图）────
 export const VIEWS = {
   PROVIDERS: 'providers',  // 选项卡 1：Provider
   MODELS: 'models',        // 选项卡 2：模型
@@ -1754,7 +1754,7 @@ export const PROVIDER_SORT_GETTERS = {
   visibility: (p) => (p && p.enabled === false ? 1 : 0),
 }
 
-// 模型状态排序位次（与 TUI 分组一致：selected > pending > hidden）
+// 模型状态排序位次（selected > pending > hidden）
 const MODEL_STATUS_RANK = { selected: 0, pending: 1, hidden: 2 }
 
 // 模型列取值器（th[data-sort] 键 → 排序值）；context 先按上下文再按输出长度

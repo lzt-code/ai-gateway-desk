@@ -5,7 +5,7 @@
  * 纯函数：不碰文件系统、不读 env、不弹 UI；一切依赖经 deps 注入，
  * 进度事件经 onEvent 回调外发（server.js 转发为 SSE）。
  *
- * 语义与原 TUI 同步流程（任务 15/27）完全一致：
+ * 同步语义（任务 15/27）：
  *   - provider 同步失败不中断 discover（管理 Token 缺失则跳过）
  *   - discover 无结果不抛错（summary 为空 + errors 携带原因）
  *   - enrich 失败静默跳过（enrichModel 内部已容错，这里兜底）
@@ -15,7 +15,7 @@
  * @module ai-gateway-desk/src/web/sync-flow
  */
 
-import { syncProvidersToConfig as syncProvidersToConfigImpl } from '../tui/actions.js'
+import { syncProvidersToConfig as syncProvidersToConfigImpl } from '../logic/actions.js'
 import { discoverModels as discoverModelsImpl } from '../cloudflare/discover.js'
 import { mergeDiscovery as mergeDiscoveryImpl, buildSyncDetails as buildSyncDetailsImpl } from '../pipeline/merge.js'
 import { enrichModel as enrichModelImpl } from '../pipeline/enrich.js'
@@ -123,7 +123,7 @@ export async function runSyncFlow({
     emit({ type: 'discover', ...p })
   }, providerFilter, mgmtToken)
 
-  // 无结果：不抛错，返回空汇总（errors 携带失败原因，与 TUI「未发现任何模型」一致）
+  // 无结果：不抛错，返回空汇总（errors 携带失败原因，对应「未发现任何模型」）
   if (discovery.results.length === 0) {
     return {
       state,

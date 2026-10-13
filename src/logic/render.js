@@ -1,19 +1,16 @@
 /**
- * TUI 渲染纯函数（从 TUI views.js/keys.js 迁移，Web 测试继续使用）
+ * 视图渲染纯函数（供 Web API 层与测试复用）
  *
- * 任务 34：旧 TUI 依赖与 TUI 专属代码整体移除。原 src/tui/views.js 的
- * 7 个纯字符串渲染函数（buildFilterBar / buildListItems / buildTableHeader /
+ * 提供 7 个纯字符串渲染函数（buildFilterBar / buildListItems / buildTableHeader /
  * buildProviderSidebarItems / buildProviderItems / buildAccountLines /
- * buildWorkersLines，含内部 formatNumber）与 src/tui/keys.js 的 3 个视图常量
- * （VIEWS / VIEW_ORDER / VIEW_LABELS）原样迁移至此，函数签名与输出逐字节不变。
- * 原 views.js 依赖的终端 unicode 模块 strWidth 已内联（见下方 strWidth），
- * 本模块不依赖任何 blessed 终端库。
+ * buildWorkersLines，含内部 formatNumber）。函数签名与输出保持稳定。
+ * CJK 显示宽度由本模块内联的 strWidth 计算，不依赖任何第三方终端库。
  */
 
 import { collectProviders, entryProvider } from './actions.js'
 
 /**
- * CJK 显示宽度（从原 TUI unicode 模块内联，删除终端库依赖后的替代）
+ * CJK 显示宽度（内联实现）
  * CJK 统一表意文字主区及扩展区按 2 宽，其余按 1 宽。
  * @param {string} s
  * @returns {number}
@@ -75,7 +72,7 @@ function truncateWidth(text, maxWidth) {
 }
 
 /**
- * 右侧填充至指定显示宽度（blessed 标签不计宽，适合已带标签的单元格）
+ * 右侧填充至指定显示宽度（标记不计宽，适合已带标记的单元格）
  * @param {string} text
  * @param {number} width
  * @returns {string}
@@ -147,7 +144,7 @@ export function buildListItems(state, width = 60) {
 /**
  * 构建表格表头行（与 buildListItems 列宽一致，保证对齐）
  * @param {number} [width=60]
- * @returns {string} blessed tags 内容
+ * @returns {string} 标记内容
  */
 export function buildTableHeader(width = 60) {
   const { idW, providerW, ctxW, outW, statusW } = tableColumns(width)
@@ -204,14 +201,14 @@ export function formatNumber(n) {
 /**
  * 构建筛选状态栏文本（列表顶部显示）
  * @param {{ provider: string|null, keyword: string|null }} filter
- * @returns {string|null} blessed tags 内容；无筛选时返回 null
+ * @returns {string|null} 标记内容；无筛选时返回 null
  */
 export function buildFilterBar(filter = {}) {
   const parts = []
   if (filter.provider) parts.push(`provider=${filter.provider}`)
   if (filter.keyword) parts.push(`关键字=${filter.keyword}`)
   if (parts.length === 0) return null
-  return ` {cyan-fg}筛选:{/cyan-fg} ${parts.join('  |  ')}  {gray-fg}(ESC 清除){/gray-fg}`
+  return ` {cyan-fg}筛选:{/cyan-fg} ${parts.join('  |  ')}`
 }
 
 // ─── 任务 20：Provider 视图组件 ──────────────────────────
@@ -260,10 +257,10 @@ export function buildProviderItems(providers) {
 // ─── 任务 21：账户视图 / Worker 视图组件 ────────────────
 
 /**
- * 账户视图状态面板行（[4] 账户：双 token 槽位 + gateway 信息）
+ * 账户状态面板行（双 token 槽位 + gateway 信息）
  *
  * 输入由 account-actions.js summarizeTokenStatus / summarizeGatewayInfo 提供。
- * 每行格式（含 blessed tags）：
+ * 每行格式（含标记）：
  *   管理 API Token: ● 本地已存   （source=local）
  *   Gateway Token:  ● env 提供   （source=env）
  *   accountId / gatewayId（缺失显示「未配置」）
@@ -295,12 +292,12 @@ export function buildAccountLines(summary) {
     ` accountId: ${g.accountId}`,
     ` gatewayId: ${g.gatewayId}`,
     '',
-    ' {gray-fg}1/2 更新   3/4 清除（清除前确认影响面）{/gray-fg}',
+    ' {gray-fg}支持更新 / 清除凭证（清除前确认影响面）{/gray-fg}',
   ]
 }
 
 /**
- * Worker 视图状态面板行（[3] Worker：KV / models.json / KV key + 部署提示）
+ * Worker 状态面板行（KV / models.json / KV key + 部署提示）
  *
  * 输入由 account-actions.js buildWorkersStatus 提供。
  *
@@ -314,12 +311,12 @@ export function buildAccountLines(summary) {
 export function buildWorkersLines(status) {
   const kvLine = status.kvNamespace.configured
     ? ` {bold}KV namespace id:{/bold} {green-fg}${status.kvNamespace.id}{/green-fg}`
-    : ' {bold}KV namespace id:{/bold} {yellow-fg}未配置（账户视图 i 初始化）{/yellow-fg}'
+    : ' {bold}KV namespace id:{/bold} {yellow-fg}未配置（在账户视图初始化）{/yellow-fg}'
 
   const mj = status.modelsJson
   const modelsLine = mj.exists
     ? ` {bold}data/models.json:{/bold} {green-fg}存在{/green-fg}${mj.count !== null ? ` {gray-fg}(${mj.count} 个模型){/gray-fg}` : ''}`
-    : ' {bold}data/models.json:{/bold} {yellow-fg}不存在（按 S 保存并提交生成）{/yellow-fg}'
+    : ' {bold}data/models.json:{/bold} {yellow-fg}不存在（保存并提交后生成）{/yellow-fg}'
 
   const keyLine = status.kvKey.status === 'exists'
     ? ` {bold}KV key "models":{/bold} {green-fg}${status.kvKey.detail}{/green-fg}`
@@ -335,32 +332,7 @@ export function buildWorkersLines(status) {
     '',
     ' {gray-fg}Worker 代码无需修改，此视图仅管理部署{/gray-fg}',
     status.canDeploy
-      ? ' {bold}D{/bold}: 部署 Worker（wrangler deploy，生成临时配置）'
-      : ' {yellow-fg}部署不可用：先配置 KV namespace（账户视图 i 初始化）{/yellow-fg}',
+      ? ' {bold}部署 Worker{/bold}（wrangler deploy，生成临时配置）'
+      : ' {yellow-fg}部署不可用：先配置 KV namespace（在账户视图初始化）{/yellow-fg}',
   ]
 }
-
-// ─── 视图标识（从 keys.js 迁移）─────────────────────────
-
-export const VIEWS = Object.freeze({
-  PROVIDERS: 'providers',
-  MODELS: 'models',
-  WORKERS: 'workers',
-  ACCOUNT: 'account',
-})
-
-// 视图在选项卡中的展示顺序
-export const VIEW_ORDER = Object.freeze([
-  VIEWS.PROVIDERS,
-  VIEWS.MODELS,
-  VIEWS.WORKERS,
-  VIEWS.ACCOUNT,
-])
-
-// 视图展示名（选项卡 / 提示栏用）
-export const VIEW_LABELS = Object.freeze({
-  [VIEWS.PROVIDERS]: 'Provider',
-  [VIEWS.MODELS]: '模型',
-  [VIEWS.WORKERS]: 'Worker',
-  [VIEWS.ACCOUNT]: '账户',
-})

@@ -2,7 +2,7 @@
  * Cloudflare REST API 封装模块
  * @module ai-gateway-desk/src/cloudflare/api
  *
- * 用途：封装 TUI 所需的 Cloudflare REST API 调用，供 setup 向导（任务 11）、
+ * 用途：封装 Cloudflare REST API 调用，供 setup 向导（任务 11）、
  *       provider 列表同步（任务 14）等后续功能使用。
  *
  * 凭证：所有函数第一个参数均为 apiToken（管理 Token，账户级），

@@ -12,7 +12,7 @@
  *      { success: false } 与抛错两条路径）
  */
 
-import { saveAndDeploy } from '../src/tui/actions.js'
+import { saveAndDeploy } from '../src/logic/actions.js'
 
 let failures = 0
 let checks = 0

@@ -50,7 +50,7 @@ import {
   saveAndDeploy,
   hiddenProviderSlugs,
   filterVisibleState,
-} from '../tui/actions.js'
+} from '../logic/actions.js'
 import { logRequest as ioLogRequest, logResponse as ioLogResponse, logResult as ioLogResult, isDebugEnabled, getRecentLogs, subscribeLogs } from '../core/io-logger.js'
 import { discoverModels, gatewaySlug, parseRouteFallbackChain } from '../cloudflare/discover.js'
 import { fetchCloudProviders } from '../cloudflare/providers-sync.js'
@@ -71,7 +71,7 @@ import {
   writeProvidersConfigFile,
   applyVisibility,
   buildVisibilityMap,
-} from '../tui/provider-actions.js'
+} from '../logic/provider-actions.js'
 import { runSyncFlow } from './sync-flow.js'
 import {
   writeProviderHeaders,
@@ -93,7 +93,7 @@ import {
   clearSlotToken,
   buildWorkersStatus,
   checkKVKey,
-} from '../tui/account-actions.js'
+} from '../logic/account-actions.js'
 
 const DEFAULT_PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url))
 const __filename = fileURLToPath(import.meta.url)
@@ -1155,7 +1155,7 @@ export function createApp({
           if (!(id in state)) delete merged[id]
         }
       }
-      // 同步完成后统一写盘一次（不逐模型写，与 TUI「合并后统一 dirty」一致）
+      // 同步完成后统一写盘一次（不逐模型写，合并后统一落盘）
       // 有变更（同步 discover + KV 手工/隐藏/采用应用）才落盘
       const hasChanges =
         (result.summary.newModels && result.summary.newModels.length > 0) ||

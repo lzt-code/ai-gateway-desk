@@ -3,7 +3,7 @@
  * @module ai-gateway-desk/src/setup
  *
  * 职责：串接任务 10（cloudflare/api.js）+ 12（core/token-store.js 双凭证）
- *       + 14（cloudflare/providers-sync.js），实现「TUI 为主」方案的自动初始化：
+ *       + 14（cloudflare/providers-sync.js），实现自动初始化：
  *   a. 管理 API Token → token-store 管理槽位
  *   b. Account ID（手工输入）
  *   c. 创建 AI Gateway
@@ -14,7 +14,7 @@
  *   g. 汇总输出
  *
  * 说明：每步独立 try/catch，失败不中断后续，最后汇总报告。
- * 使用 readline/promises 交互，不引入 TUI 库。
+ * 使用 readline/promises 交互，不引入第三方终端 UI 库。
  */
 
 import { createInterface } from 'node:readline/promises'
@@ -123,7 +123,7 @@ const G = {
   ],
   cfut: [
     style.hl('【是什么】') + '绑定单个网关的认证 token，专用于「通过网关发请求」。',
-    '  · 用途一：本地 TUI 模型发现（向网关拉取各 provider 的模型列表）',
+    '  · 用途一：模型发现（向网关拉取各 provider 的模型列表）',
     '  · 用途二：分发给各 PC 的 Agent —— Worker 转发推理请求时，网关用它验身份',
     '  · 它只管发请求，不做配置管理（建 gateway / 存 Key / 建 Provider 由管理 Token 负责）',
     '',
@@ -512,7 +512,7 @@ export async function runSetup() {
     if (results.every((r) => r.ok)) {
       console.log('\n全部完成 ✓')
       console.log('下一步:')
-      console.log('  1. 运行 npm run tui 进入 TUI 管理模型（发现 → 勾选 → 生成列表 → 部署）')
+      console.log('  1. 运行 aigd web 进入 Web 管理界面（发现 → 勾选 → 生成列表 → 部署）')
       console.log('  2. 把 cfut_xxx 分发给各 PC，配置到 Agent（如 Cline / Continue）即可走网关转发')
     } else {
       console.log('\n存在失败步骤（见上方 ✗ 项），可重新运行本向导重试：')

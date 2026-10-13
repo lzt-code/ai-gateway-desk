@@ -1,10 +1,10 @@
 /**
- * TUI 动作 — 纯状态操作，无 UI 依赖
+ * 模型状态动作 — 纯状态操作，无 UI 依赖
  *
- * 按键触发的状态变更逻辑集中于此，便于单测与复用。
+ * 状态变更逻辑集中于此，便于单测与 Web API 层复用。
  * 所有函数返回是否发生了变更（dirty），由调用方决定是否刷新 UI。
  *
- * @module ai-gateway-desk/src/tui/actions
+ * @module ai-gateway-desk/src/logic/actions
  */
 
 import { removeModel, saveState as saveStateImpl } from '../core/state.js'
@@ -48,7 +48,7 @@ export function deleteModel(state, modelId) {
 }
 
 /**
- * F2：批量切换（有选中 → 全部隐藏；无选中 → 全部选中）。
+ * 批量切换（有选中 → 全部隐藏；无选中 → 全部选中）。
  * pending（待审）按「未选中」参与判定：范围内仅待审/隐藏 → 全部选中。
  * @param {object} state
  * @param {string[]} [modelIds] - 仅切换这些模型（筛选结果）；缺省 = 全部模型。
@@ -298,7 +298,7 @@ export async function saveAndDeploy({
 
 /**
  * 编辑模型元数据（任务 26，Web API 层复用）。
- * 语义与 TUI showEditForm 完全一致：
+ * 字段处理语义：
  *   - fields 中 undefined / 空字符串的字段不覆盖（保留原值）
  *   - context_length：非空值 parseInt 转数字，NaN 忽略（不覆盖）
  *   - max_output_length：同上（非空值 parseInt 转数字，NaN 忽略）

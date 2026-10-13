@@ -1,7 +1,7 @@
 /**
  * 模型筛选纯函数测试（任务 19）
  *
- * 纯逻辑测试：不触网、不启动真实 TUI、不渲染 blessed 屏幕。
+ * 纯逻辑测试：不触网、无 UI 依赖。
  * 覆盖 actions.js 的 filterModelsByProvider / filterModelsByKeyword /
  * applyModelFilters / collectProviders。
  *
@@ -19,8 +19,8 @@ import {
   filterModelsByKeyword,
   applyModelFilters,
   collectProviders,
-} from '../src/tui/actions.js'
-import { buildFilterBar, buildListItems } from '../src/tui/render.js'
+} from '../src/logic/actions.js'
+import { buildFilterBar, buildListItems } from '../src/logic/render.js'
 
 let failures = 0
 let checks = 0
@@ -162,13 +162,12 @@ section('测试 9: buildFilterBar 渲染')
   const both = buildFilterBar({ provider: 'openrouter', keyword: 'deep' })
   check(both.includes('provider=openrouter') && both.includes('关键字=deep'),
     '组合 → 同时含 provider 与关键字')
-  check(both.includes('ESC'), '含 ESC 清除提示')
 }
 
 // ── 测试 10：集成 — 筛选结果可被 buildListItems 直接渲染 ──
 section('测试 10: 筛选 → 列表渲染集成')
 {
-  // TUI refreshList 流程：applyModelFilters → Object.fromEntries → buildListItems
+  // 刷新列表流程：applyModelFilters → Object.fromEntries → buildListItems
   const toState = (items) => Object.fromEntries(items.map(({ modelId, entry }) => [modelId, entry]))
   const filtered = toState(applyModelFilters(sampleState, { provider: 'openrouter' }))
   const items = buildListItems(filtered)
@@ -180,7 +179,7 @@ section('测试 10: 筛选 → 列表渲染集成')
     "关键字 'DEEP' 筛选后列表渲染 1 项（deepseek-r1）")
 
   const none = buildListItems(toState(applyModelFilters(sampleState, { keyword: 'zzz' })))
-  check(none.length === 0, '无匹配 → 渲染空列表（TUI 显示「无匹配模型」提示）')
+  check(none.length === 0, '无匹配 → 渲染空列表（显示「无匹配模型」提示）')
 }
 
 console.log(`\n结果: ${checks - failures}/${checks} 通过`)

@@ -154,7 +154,7 @@ assets/tray/
 约束：
 
 - 托盘所有 IO（轮询、shutdown 请求、spawn）走 `src/core/io-logger.js` 的 `logResult`，操作名 `tray:poll` / `tray:gateway:start` / `tray:gateway:stop` 风格。
-- `status-poller.js` 与 `menu-model.js` 不 import systray2，保持纯逻辑，对齐 `src/tui/` 的可测模式。
+- `status-poller.js` 与 `menu-model.js` 不 import systray2，保持纯逻辑，对齐 `src/logic/` 的可测模式。
 - 单实例锁：`data/tray.pid` 记录托盘进程 pid，启动时 `process.kill(pid, 0)` 探测存活，已存活则提示并退出，防止多个托盘图标。
 
 ## 7. 跨平台差异与自启动

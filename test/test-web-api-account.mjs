@@ -21,7 +21,7 @@ import {
   summarizeTokenStatus,
   summarizeGatewayInfo,
   buildWorkersStatus,
-} from '../src/tui/account-actions.js'
+} from '../src/logic/account-actions.js'
 
 let failures = 0
 let checks = 0

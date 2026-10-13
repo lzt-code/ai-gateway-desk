@@ -1,7 +1,7 @@
 /**
  * Provider 创建测试（添加 Provider 方案 FP1）
  *
- * 纯逻辑测试：不触网、不启动真实 TUI、不渲染 blessed 屏幕。
+ * 纯逻辑测试：不触网、无 UI 依赖。
  * 覆盖 provider-actions.js 新增的两个导出：
  *   - buildCloudCreateParams：校验 + 参数组装（byok / custom-provider）
  *   - createProviderCloud：按类型分发到云端创建函数（mock 依赖）
@@ -13,7 +13,7 @@
 import {
   buildCloudCreateParams,
   createProviderCloud,
-} from '../src/tui/provider-actions.js'
+} from '../src/logic/provider-actions.js'
 
 let failures = 0
 let checks = 0

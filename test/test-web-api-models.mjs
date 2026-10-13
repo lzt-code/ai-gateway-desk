@@ -10,7 +10,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createApp } from '../src/web/server.js'
-import { editModelMetadata } from '../src/tui/actions.js'
+import { editModelMetadata } from '../src/logic/actions.js'
 
 // 测试默认禁用闲置自动部署防抖（避免定时器触发真实 saveAndDeploy / KV 写入）
 const createTestApp = (options = {}) => createApp(Object.assign({ autoDeployIdleMs: 0 }, options))

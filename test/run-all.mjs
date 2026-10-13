@@ -18,9 +18,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const TESTS = [
   'test-merge.mjs',             // 模型合并：策略 A 覆盖 + 未发现→物理删除（manual 豁免）
   'test-model-filter.mjs',      // 任务 19：模型筛选纯函数（provider / 关键字 / 组合）
-  'test-model-table.mjs',       // 任务 24：模型表格 + Provider 侧栏 + F2 筛选范围（纯函数）
+  'test-model-table.mjs',       // 任务 24：模型表格 + Provider 侧栏 + 筛选范围（纯函数）
   'test-save-deploy.mjs',       // 任务 19：保存并提交三步编排（mock 依赖）
-  'test-provider-sync-logic.mjs', // 任务 15：syncProvidersToConfig 纯函数（原 test-tui-provider-sync.mjs）
+  'test-provider-sync-logic.mjs', // 任务 15：syncProvidersToConfig 纯函数
   'test-discover-progress.mjs', // discoverModels 进度回调（mock fetch）
   'test-deploy-config.mjs',     // scripts/deploy.mjs 动态注入占位符（纯函数）
   'test-provider-routes.mjs',   // provider-routes KV 键与 gatewaySlug 一致（回归方舟 compat 回退 bug）

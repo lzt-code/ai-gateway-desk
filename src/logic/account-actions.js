@@ -1,14 +1,14 @@
 /**
- * Worker / 账户视图纯逻辑（任务 21）
- * @module ai-gateway-desk/src/tui/account-actions
+ * Worker / 账户纯逻辑（任务 21）
+ * @module ai-gateway-desk/src/logic/account-actions
  *
- * 背景：任务 18 四视图框架中 [3] Worker 与 [4] 账户视图由本任务实现。
- *   - Worker 视图（[3]）：状态展示（KV namespace id / models.json / KV key 存在性）
+ * 职责：
+ *   - Worker 状态：展示（KV namespace id / models.json / KV key 存在性）
  *     + 部署（调 scripts/deploy.mjs，Worker 代码不可改，仅管理部署）
- *   - 账户视图（[4]）：双 token 槽位（管理 API Token + Gateway Token）更新 / 清除，
+ *   - 账户：双 token 槽位（管理 API Token + Gateway Token）更新 / 清除，
  *     清除前确认影响面；gateway 信息展示
  *
- * 本模块**不依赖 blessed**：token 状态汇总 / gateway 信息 / Worker 状态构建等
+ * 本模块为纯逻辑模块（无 UI 依赖）：token 状态汇总 / gateway 信息 / Worker 状态构建等
  * 纯逻辑可独立单测（见 test/test-account-view.mjs）；更新 / 清除编排与 KV key
  * 检查支持依赖注入（默认绑定真实 token-store / wrangler）。
  */
@@ -41,7 +41,7 @@ export const SLOTS = Object.freeze({
  * 汇总两个凭证槽位的展示状态（纯函数，不读取任何外部状态）
  *
  * 来源优先级：env（临时）> 本地安全存储 > 无。
- * 返回结构化展示信息，供 views.js buildAccountLines 渲染：
+ * 返回结构化展示信息，供 render.js buildAccountLines 渲染：
  *   source: 'env' | 'local' | 'none' —— 当前生效来源
  *   hasLocal: boolean —— 本地安全存储是否已有
  *   label: 展示文本（如「env 提供」「本地已存」「未配置」）

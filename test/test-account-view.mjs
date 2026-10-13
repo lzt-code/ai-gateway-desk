@@ -1,10 +1,10 @@
 /**
  * Worker / 账户视图测试（任务 21）
  *
- * 纯逻辑测试：不触网、不启动真实 TUI、不渲染 blessed 屏幕。
+ * 纯逻辑测试：不触网、无 UI 依赖。
  * 覆盖 account-actions.js（summarizeTokenStatus / summarizeGatewayInfo /
  * updateToken / clearSlotToken / buildWorkersStatus / checkKVKey）与
- * views.js（buildAccountLines / buildWorkersLines 渲染）。
+ * render.js（buildAccountLines / buildWorkersLines 渲染）。
  *
  * 场景（任务 21 测试方法）：
  *   A: token 状态汇总——两槽位 ×（env 提供 / 本地 / 无）组合 → 正确的展示结构
@@ -23,8 +23,8 @@ import {
   clearSlotToken,
   buildWorkersStatus,
   checkKVKey,
-} from '../src/tui/account-actions.js'
-import { buildAccountLines, buildWorkersLines } from '../src/tui/render.js'
+} from '../src/logic/account-actions.js'
+import { buildAccountLines, buildWorkersLines } from '../src/logic/render.js'
 
 let failures = 0
 let checks = 0
@@ -276,12 +276,12 @@ section('测试 8: 渲染函数')
     namespaceId: 'a1b2c3', modelsJson: { exists: true, count: 42 }, kvKey: 'exists',
   })).join('\n')
   check(wLines.includes('KV namespace id') && wLines.includes('a1b2c3'),
-    'Worker 面板含 namespace id（blessed tags 分隔标签与值）')
+    'Worker 面板含 namespace id（标记分隔标签与值）')
   check(wLines.includes('data/models.json') && wLines.includes('存在') && wLines.includes('42 个模型'),
     'Worker 面板含 models.json 状态与计数')
   check(wLines.includes('KV key "models"') && wLines.includes('存在'), 'Worker 面板含 KV key 状态')
   check(wLines.includes('Worker 代码无需修改，此视图仅管理部署'), 'Worker 面板含职责说明')
-  check(wLines.includes('D') && wLines.includes('部署 Worker'), 'Worker 面板含 D 部署提示')
+  check(wLines.includes('部署 Worker'), 'Worker 面板含部署提示')
 
   // d. Worker 面板：未配置
   const emptyW = buildWorkersLines(buildWorkersStatus({})).join('\n')

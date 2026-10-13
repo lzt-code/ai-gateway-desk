@@ -69,7 +69,7 @@ ai-gateway-desk/
 │   │                         # routes-deploy（动态路由 REST 部署编排）
 │   ├── web/                  # server.js（Hono + 心跳退出）/ sync-flow.js（四步编排）/
 │   │                         # public/（前端五视图，Vanilla JS）
-│   └── tui/                  # 纯逻辑模块（render / actions / provider-actions / account-actions）
+│   └── logic/                # 纯逻辑模块（render / actions / provider-actions / account-actions）
 ├── ai-gateway-desk-worker/      # Cloudflare Worker（零依赖转发层）
 │   └── src/                  # index.js / http.js / config.js / models-list.js / routes/
 ├── data/                     # 运行时数据（gitignore，仅 *.example.json 白名单提交）
@@ -140,9 +140,9 @@ Vanilla JS 单页（`app.js` / `index.html` / `style.css`），五个视图 tab�
 
 `runSyncFlow` 纯函数：**provider 同步 → discover → merge → enrich** 四步，依赖全部注入，进度经 `onEvent` 外发（server.js 转 SSE）。容错语义：provider 同步失败不中断 discover、discover 无结果不抛错、enrich 失败静默、enrich 的 pricing 覆盖后回写 provider 自报价格（provider 价格优先于富化源）、merge 深拷贝不改原 state。
 
-### 4.9 TUI 目录 — `src/tui/`
+### 4.9 纯逻辑模块 — `src/logic/`
 
-UI 已迁移至 Web（2026-08-10），目录保留**纯逻辑模块**供 API 层复用：`render.js`（视图渲染）、`actions.js`（同步/保存编排）、`provider-actions.js`（云端参数组装）、`account-actions.js`（token 槽位/Worker 状态汇总）。
+`render.js`（视图渲染）、`actions.js`（同步/保存编排）、`provider-actions.js`（云端参数组装）、`account-actions.js`（token 槽位 / Worker 状态汇总），供 Web API 层复用。
 
 ### 4.10 Worker — `ai-gateway-desk-worker/src/`
 
@@ -686,7 +686,7 @@ npm test   # 聚合运行 test/ 下全部测试（test/run-all.mjs）
 | 测试文件 | 覆盖 |
 |----------|------|
 | `test-model-filter.mjs` | 模型筛选纯函数 + 筛选栏渲染 |
-| `test-model-table.mjs` | 模型表格 + Provider 侧栏 + F2 筛选范围 |
+| `test-model-table.mjs` | 模型表格 + Provider 侧栏 + 筛选范围 |
 | `test-save-deploy.mjs` | 保存并提交三步编排 |
 | `test-provider-sync-logic.mjs` | `syncProvidersToConfig` 纯函数 |
 | `test-discover-progress.mjs` | 模型发现进度回调（mock fetch） |

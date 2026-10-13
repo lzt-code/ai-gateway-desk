@@ -1,8 +1,8 @@
 /**
  * 模型表格 + Provider 侧栏纯函数测试（任务 24）
  *
- * 纯逻辑测试：不触网、不启动真实 TUI、不渲染 blessed 屏幕。
- * 覆盖 views.js 的 buildListItems（表格式行）/ buildTableHeader /
+ * 纯逻辑测试：不触网、无 UI 依赖。
+ * 覆盖 render.js 的 buildListItems（表格式行）/ buildTableHeader /
  * buildProviderSidebarItems 与 actions.js 的 toggleAllStatus（按筛选范围切换）。
  *
  * 场景：
@@ -11,11 +11,11 @@
  *   C: buildTableHeader 与行共用列宽（对齐）
  *   D: buildProviderSidebarItems（第一项「全部」+ 计数 + 排序 + 截断）
  *   E: toggleAllStatus 仅切换指定模型（筛选结果）
- *   F: 集成——侧栏筛选结果喂给 F2（applyModelFilters → toggleAllStatus）
+ *   F: 集成——侧栏筛选结果喂给批量切换（applyModelFilters → toggleAllStatus）
  */
 
-import { buildListItems, buildTableHeader, buildProviderSidebarItems, strWidth } from '../src/tui/render.js'
-import { toggleAllStatus, setAllStatus, applyModelFilters, deleteModel } from '../src/tui/actions.js'
+import { buildListItems, buildTableHeader, buildProviderSidebarItems, strWidth } from '../src/logic/render.js'
+import { toggleAllStatus, setAllStatus, applyModelFilters, deleteModel } from '../src/logic/actions.js'
 
 let failures = 0
 let checks = 0
@@ -34,7 +34,7 @@ function section(name) {
   console.log(`\n${name}`)
 }
 
-// 显示宽度（剥离 blessed 标签后按 CJK 双宽统计）
+// 显示宽度（剥离标记后按 CJK 双宽统计）
 const widthOf = (s) => strWidth(String(s).replace(/\{[^}]*\}/g, ''))
 
 // ── 测试数据 ──
@@ -223,23 +223,23 @@ section('测试 6b: setAllStatus 显式目标状态（按筛选范围）')
     '范围含不存在 id 时跳过（不抛错）')
 }
 
-// ── 测试 7：场景 F — 集成（侧栏筛选结果喂给 F2）──
-section('测试 7: 场景 F — 筛选 → F2 集成')
+// ── 测试 7：场景 F — 集成（侧栏筛选结果喂给批量切换）──
+section('测试 7: 场景 F — 筛选 → 批量切换集成')
 {
   const st = JSON.parse(JSON.stringify(sampleState))
-  // index.js F2：applyModelFilters(state, filter) → toggleAllStatus(state, ids)
+  // applyModelFilters(state, filter) → toggleAllStatus(state, ids)
   const ids = applyModelFilters(st, { provider: 'openrouter', keyword: null }).map(({ modelId }) => modelId)
   check(ids.length === 2, `openrouter 筛选 → 2 个目标（实际 ${ids.length}）`)
   toggleAllStatus(st, ids)
   check(st['openrouter/deepseek-r1'].status === 'hidden' && st['openrouter/gpt-4o'].status === 'hidden',
-    'F2 隐藏了筛选结果中的 openrouter 模型')
-  check(st['custom-agnes/agnes'].status === 'selected', '筛选范围外模型不受 F2 影响')
+    '批量切换隐藏了筛选结果中的 openrouter 模型')
+  check(st['custom-agnes/agnes'].status === 'selected', '筛选范围外模型不受批量切换影响')
 
-  // 无筛选时 F2 = 全量（缺省参数路径）
+  // 无筛选时批量切换 = 全量（缺省参数路径）
   const st2 = JSON.parse(JSON.stringify(sampleState))
   const allIds = applyModelFilters(st2, {}).map(({ modelId }) => modelId)
   toggleAllStatus(st2, allIds)
-  check(Object.values(st2).every((e) => e.status === 'hidden'), '无筛选 → F2 作用于全部模型')
+  check(Object.values(st2).every((e) => e.status === 'hidden'), '无筛选 → 批量切换作用于全部模型')
 }
 
 console.log(`\n结果: ${checks - failures}/${checks} 通过`)

@@ -2,7 +2,7 @@
 // 覆盖：有 Token + 成功 / 有 Token + 抛错 / 无 Token 跳过 / 结果透传 / 默认 syncFn
 import {
   syncProvidersToConfig,
-} from '../src/tui/actions.js'
+} from '../src/logic/actions.js'
 import { syncProviders as realSyncProviders } from '../src/cloudflare/providers-sync.js'
 
 let failed = false

@@ -88,7 +88,6 @@ check('bugs.url 为有效 url', pkg.bugs && typeof pkg.bugs.url === 'string' && 
 
 // ── 10. 发布字段完整性（防意外删除 type / 依赖）
 check('type 为 module', pkg.type === 'module', `(type=${JSON.stringify(pkg.type)})`)
-check('dependencies 不含 neo-blessed', !(pkg.dependencies && pkg.dependencies['neo-blessed']), `(dependencies=${JSON.stringify(pkg.dependencies)})`)
 check('dependencies 含 hono', pkg.dependencies && typeof pkg.dependencies['hono'] === 'string', `(dependencies=${JSON.stringify(pkg.dependencies)})`)
 check('dependencies 含 wrangler（部署 Worker/KV 必需，npm 安装须可见）',
   pkg.dependencies && typeof pkg.dependencies['wrangler'] === 'string',

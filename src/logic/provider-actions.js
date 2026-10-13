@@ -1,6 +1,6 @@
 /**
  * Provider 管理视图纯逻辑（任务 20）
- * @module ai-gateway-desk/src/tui/provider-actions
+ * @module ai-gateway-desk/src/logic/provider-actions
  *
  * Provider 管理视图纯逻辑
  *
@@ -35,7 +35,7 @@ import { createCustomProvider, createProviderConfig, updateCustomProvider, updat
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-/** src/tui/ → 项目根 data/ */
+/** src/logic/ → 项目根 data/ */
 function resolveData(...segments) {
   return path.resolve(__dirname, '..', '..', 'data', ...segments)
 }
