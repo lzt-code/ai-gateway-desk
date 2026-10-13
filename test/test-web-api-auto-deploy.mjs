@@ -1,13 +1,13 @@
 /**
  * 闲置自动部署（防抖）验证脚本
  *
- * 覆盖：toggle/set-status/batch-toggle 变更后不再即时写 hidden-models KV，
+ * 覆盖：toggle/set-status/batch-status 变更后不再即时写 hidden-models KV，
  * 闲置 autoDeployIdleMs 后一次性 saveAndDeploy + 写 hidden/manual KV：
  *   - 单次变更 → 排期并部署一次
  *   - 连续变更 → 防抖合并为一次部署
  *   - KV 未就绪 → 不排期（autoDeployScheduled: false）
  *   - 手动 save-deploy → 取消待部署定时器（不重复部署）
- *   - batch-toggle → 单请求至多排期一次
+ *   - batch-status → 单请求至多排期一次
  * 全程 mock 依赖与内存 stateStore，绝不触碰真实 data/ 文件与网络。
  */
 
@@ -180,8 +180,8 @@ section('测试 4: toggle 后立即手动 save-deploy → 不重复自动部署'
   check(counters.saveAndDeploy === 1, '定时器已取消：无第二次自动部署')
 }
 
-// ── 测试 5：set-status / batch-toggle 同样排期（单请求一次） ──
-section('测试 5: set-status / batch-toggle → 各排期一次')
+// ── 测试 5：set-status / batch-status 同样排期（单请求一次） ──
+section('测试 5: set-status / batch-status → 各排期一次')
 {
   const counters = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
   const { req } = makeApp(counters)
@@ -191,11 +191,11 @@ section('测试 5: set-status / batch-toggle → 各排期一次')
   await waitDeploy()
   check(counters.saveAndDeploy === 1, 'set-status 闲置后部署 1 次')
 
-  const res2 = await req('POST', '/api/models/batch-toggle', { modelIds: ['openrouter/deepseek-r1', 'openrouter/gpt-4o'] })
+  const res2 = await req('POST', '/api/models/batch-status', { modelIds: ['openrouter/deepseek-r1', 'openrouter/gpt-4o'], status: 'hidden' })
   const body2 = await res2.json()
-  check(body2.autoDeployScheduled === true, 'batch-toggle 响应 autoDeployScheduled === true')
+  check(body2.autoDeployScheduled === true, 'batch-status 响应 autoDeployScheduled === true')
   await waitDeploy()
-  check(counters.saveAndDeploy === 2, 'batch-toggle（多模型）仅再部署 1 次')
+  check(counters.saveAndDeploy === 2, 'batch-status（多模型）仅再部署 1 次')
 }
 
 // ── 测试 6：未变更（toggle 不存在模型除外场景）— pending 无变化不排期 ──

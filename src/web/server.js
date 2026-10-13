@@ -42,7 +42,7 @@ import { fetchManagementTokenInfo, REQUIRED_PERMISSIONS } from '../cloudflare/to
 import {
   toggleStatus,
   deleteModel,
-  toggleAllStatus,
+  setAllStatus,
   collectProviders,
   applyModelFilters,
   editModelMetadata,
@@ -455,7 +455,7 @@ async function readJsonBody(c) {
  *        自动退出」）。缺省 null：/api/heartbeat 仅返回 ok、不记录（直接 createApp 场景）
  * @param {number} [options.autoDeployIdleMs]
  *        闲置自动部署防抖窗口（默认 20000ms；0 = 禁用，测试用）：
- *        toggle/set-status/batch-toggle 变更后不再即时写 hidden-models KV，
+ *        toggle/set-status/batch-status 变更后不再即时写 hidden-models KV，
  *        闲置到期一次性 saveAndDeploy + 写 hidden/manual KV（等价 /api/save-deploy）
  * @returns {Hono}
  */
@@ -651,7 +651,7 @@ export function createApp({
   }
 
   /**
-   * 闲置自动部署（防抖）：toggle / set-status / batch-toggle 变更后不再即时写
+   * 闲置自动部署（防抖）：toggle / set-status / batch-status 变更后不再即时写
    * hidden-models KV，统一进入 idle 防抖（autoDeployIdleMs，默认 20s，0 禁用）。
    * 闲置到期一次性执行 saveAndDeploy（models.json → models KV）+ hidden/manual
    * KV，与 /api/save-deploy 等价：连续操作只触发一次部署，无需手工部署。
@@ -872,23 +872,24 @@ export function createApp({
     return c.json({ ok: true, changed, entry: state[body.modelId] ?? null })
   })
 
-  // POST /api/models/batch-toggle — 批量切换（modelIds 缺省 = 全部）
+  // POST /api/models/batch-status — 批量设置状态（modelIds 缺省 = 全部）
+  // 显式指定目标状态（selected|hidden），替代原 batch-toggle 的「推导」语义：
+  // 待审筛选范围内没有 selected，推导会走到「全部选中」分支，把整批待审一次性
+  // 采用（误操作）。改为目标状态由调用方指定，pending 也可显式采用/忽略。
   // 变更后进入闲置自动部署防抖（单次请求至多排期一次，同 toggle）
-  app.post('/api/models/batch-toggle', async (c) => {
+  app.post('/api/models/batch-status', async (c) => {
     const body = await readJsonBody(c)
     if (body === null) return c.json({ error: 'invalid json body' }, 400)
     if (body.modelIds !== undefined && !Array.isArray(body.modelIds)) {
       return c.json({ error: 'modelIds must be an array' }, 400)
     }
-    // 预计算目标状态与参与数量（与 toggleAllStatus 内部逻辑一致）
+    if (body.status !== 'selected' && body.status !== 'hidden') {
+      return c.json({ error: 'status 必须为 selected 或 hidden' }, 400)
+    }
+    // 参与数量：范围内存在的模型（缺省 = 全部）
     const ids = Array.isArray(body.modelIds) ? body.modelIds : Object.keys(state)
     const targets = ids.filter((id) => state[id])
-    let currentSelected = 0
-    for (const id of targets) {
-      if (state[id].status === 'selected') currentSelected++
-    }
-    const targetStatus = currentSelected > 0 ? 'hidden' : 'selected'
-    const changed = toggleAllStatus(state, body.modelIds)
+    const changed = setAllStatus(state, body.modelIds, body.status)
     let autoDeployScheduled = false
     if (changed) {
       stateVersion++
@@ -898,7 +899,7 @@ export function createApp({
     return c.json({
       ok: true,
       changed,
-      status: targetStatus,
+      status: body.status,
       count: targets.length,
       autoDeployScheduled,
       ...(autoDeployScheduled ? { autoDeployIdleMs } : {}),

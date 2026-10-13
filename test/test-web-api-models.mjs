@@ -1,7 +1,7 @@
 /**
  * 任务 26 验证脚本：模型管理 API 端点（内存 stateStore 注入）
  *
- * 覆盖：8 个 API 端点（GET /api/state、toggle/remove/batch-toggle/edit/add、
+ * 覆盖：8 个 API 端点（GET /api/state、toggle/remove/batch-status/edit/add、
  * filtered、providers/list）+ 变更落盘/只读不落盘 + editModelMetadata 纯函数
  * + 任务 25 静态文件回归。全程注入内存 stateStore，绝不触碰真实 data/ 文件。
  */
@@ -214,11 +214,11 @@ section('测试 8: remove — 模型不存在')
   check(body.error === 'model not found', 'error === model not found')
 }
 
-// ── 测试 9-12：POST /api/models/batch-toggle ──
-section('测试 9: batch-toggle — 指定 modelIds')
+// ── 测试 9-12：POST /api/models/batch-status ──
+section('测试 9: batch-status — 指定 modelIds + selected')
 {
   const { req } = makeApp()
-  const res = await req('POST', '/api/models/batch-toggle', { modelIds: ['openrouter/gpt-4o'] })
+  const res = await req('POST', '/api/models/batch-status', { modelIds: ['openrouter/gpt-4o'], status: 'selected' })
   const body = await res.json()
   check(res.status === 200, '返回 200')
   check(body.count === 1, 'count === 1')
@@ -226,22 +226,48 @@ section('测试 9: batch-toggle — 指定 modelIds')
   check(body.changed === true, 'changed === true')
 }
 
-section('测试 10: batch-toggle — 全量')
+section('测试 10: batch-status — 全量隐藏（缺省 modelIds）')
 {
   const { req } = makeApp()
-  const res = await req('POST', '/api/models/batch-toggle', {})
+  const res = await req('POST', '/api/models/batch-status', { status: 'hidden' })
   const body = await res.json()
   check(body.count === 3, 'count === 3（全部）')
-  check(body.status === 'hidden', '有 selected → status === hidden')
+  check(body.status === 'hidden', 'status === hidden')
+  check(body.changed === true, 'changed === true（存在 selected → hidden）')
 }
 
-section('测试 12: batch-toggle — modelIds 非数组')
+section('测试 11: batch-status — 待审范围显式采用（修复旧推导误操作）')
+{
+  // 待审（pending）范围内没有 selected：旧 batch-toggle 推导为「全部选中」，
+  // 会悄悄把整批待审一次性采用；新 batch-status 目标状态由调用方显式指定。
+  const pendingState = {
+    'custom-agnes/p1': { status: 'pending', provider: 'custom-agnes', metadata: {} },
+    'custom-agnes/p2': { status: 'pending', provider: 'custom-agnes', metadata: {} },
+  }
+  const { req } = makeApp(pendingState)
+  const res = await req('POST', '/api/models/batch-status', { modelIds: ['custom-agnes/p1', 'custom-agnes/p2'], status: 'selected' })
+  const body = await res.json()
+  check(body.status === 'selected', '显式 selected → 全部采用')
+  check(body.changed === true, 'changed === true')
+
+  // 已全部为 selected → 再设 selected 无变化
+  const res2 = await req('POST', '/api/models/batch-status', { modelIds: ['custom-agnes/p1', 'custom-agnes/p2'], status: 'selected' })
+  const body2 = await res2.json()
+  check(body2.changed === false, '状态未变化 → changed === false')
+}
+
+section('测试 12: batch-status — 参数校验（modelIds / status）')
 {
   const { req } = makeApp()
-  const res = await req('POST', '/api/models/batch-toggle', { modelIds: 'x' })
+  const res = await req('POST', '/api/models/batch-status', { modelIds: 'x', status: 'selected' })
   const body = await res.json()
-  check(res.status === 400, '返回 400')
+  check(res.status === 400, 'modelIds 非数组 → 400')
   check(body.error.includes('modelIds'), 'error 含 modelIds')
+
+  const res2 = await req('POST', '/api/models/batch-status', { modelIds: ['openrouter/gpt-4o'], status: 'pending' })
+  const body2 = await res2.json()
+  check(res2.status === 400, 'status 非法 → 400')
+  check(body2.error.includes('status'), 'error 含 status')
 }
 
 // ── 测试 12b-12e：POST /api/models/batch-remove ──

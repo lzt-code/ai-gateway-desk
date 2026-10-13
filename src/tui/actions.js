@@ -66,6 +66,30 @@ export function toggleAllStatus(state, modelIds) {
 }
 
 /**
+ * 批量设置状态为目标值（selected | hidden），供 Web「批量选中 / 批量隐藏」使用。
+ * 区别于 toggleAllStatus 的推导语义：目标状态由调用方显式指定，
+ * 避免「待审」筛选下被推导为全部采用（pending → selected）的误操作。
+ * pending 也可被显式设为 selected（采用）或 hidden（忽略）。
+ * @param {object} state
+ * @param {string[]} [modelIds] - 仅设置这些模型（筛选结果）；缺省 = 全部模型。
+ * @param {'selected'|'hidden'} targetStatus
+ * @returns {boolean} 是否发生了变更（范围非空且至少一个条目状态改变）
+ */
+export function setAllStatus(state, modelIds, targetStatus) {
+  if (targetStatus !== 'selected' && targetStatus !== 'hidden') return false
+  const ids = Array.isArray(modelIds) ? modelIds : Object.keys(state)
+  const targets = ids.filter((id) => state[id])
+  let changed = false
+  for (const id of targets) {
+    if (state[id].status !== targetStatus) {
+      state[id].status = targetStatus
+      changed = true
+    }
+  }
+  return changed
+}
+
+/**
  * provider 同步步骤：拉取云端 provider 合并写回 providers.json，并更新内存 config
  *
  * 任务 15：u 同步前先自动拉取云端 provider 列表，解决「dashboard 手动添加

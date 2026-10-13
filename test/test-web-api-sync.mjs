@@ -1717,63 +1717,64 @@ section('测试 45: toggle 待审采用')
     '采用不即时写 hidden-models KV（防抖自动部署统一处理）')
 }
 
-// ── 测试 46：batch-toggle 目标状态推导 + 防抖排期（不即时写 KV）─
-// 语义变更：batch-toggle 不再按「隐藏集合是否变化」即时写 hidden-models KV，
+// ── 测试 46：batch-status 显式目标状态 + 防抖排期（不即时写 KV）─
+// 语义：目标状态由调用方显式指定（不再推导），避免「待审」范围被推导为
+// 全部采用；同时不再按「隐藏集合是否变化」即时写 hidden-models KV，
 // 统一进入闲置自动部署防抖（本文件禁用排期，断言 autoDeployScheduled 为 false）。
-section('测试 46: batch-toggle 目标状态推导 + 防抖排期')
+section('测试 46: batch-status 显式目标状态 + 防抖排期')
 {
   const restoreEnv = withCleanEnv()
   try {
     const flushKvQueue = () => new Promise((r) => setTimeout(r, 0))
 
-    // 范围内仅待审 → 批量采用
+    // 待审范围显式采用（旧 batch-toggle 会推导为全部选中，语义等价但来源不同）
     {
       const { app, deps } = makeApp({
         'custom-agnes/p1': { status: 'pending', provider: 'custom-agnes', metadata: {} },
         'custom-agnes/p2': { status: 'pending', provider: 'custom-agnes', metadata: {} },
       }, { kvHiddenModels: {}, kvManualModels: {} }, fakeConfigWithKv)
-      const res = await app.request('/api/models/batch-toggle', {
+      const res = await app.request('/api/models/batch-status', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ modelIds: ['custom-agnes/p1', 'custom-agnes/p2'] }),
+        body: JSON.stringify({ modelIds: ['custom-agnes/p1', 'custom-agnes/p2'], status: 'selected' }),
       })
       const body = await res.json()
-      check(body.status === 'selected', '仅待审范围 → 批量采用')
+      check(body.status === 'selected', '待审范围显式采用 → selected')
       check(body.autoDeployScheduled === false, 'autoDeployScheduled === false（测试环境禁用防抖排期）')
       await flushKvQueue()
       check(deps.kvWrites.filter((w) => w.key === 'hidden-models').length === 0,
         '批量采用不即时写 hidden-models KV')
     }
 
-    // 范围含已选中 → 批量隐藏
+    // 待审范围显式隐藏（旧 batch-toggle 无法表达该意图）
     {
       const { app, deps } = makeApp({
-        'custom-agnes/s1': { status: 'selected', provider: 'custom-agnes', metadata: {} },
         'custom-agnes/p1': { status: 'pending', provider: 'custom-agnes', metadata: {} },
+        'custom-agnes/p2': { status: 'pending', provider: 'custom-agnes', metadata: {} },
       }, { kvHiddenModels: {}, kvManualModels: {} }, fakeConfigWithKv)
-      const res = await app.request('/api/models/batch-toggle', {
+      const res = await app.request('/api/models/batch-status', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ modelIds: ['custom-agnes/s1', 'custom-agnes/p1'] }),
+        body: JSON.stringify({ modelIds: ['custom-agnes/p1', 'custom-agnes/p2'], status: 'hidden' }),
       })
-      check((await res.json()).status === 'hidden', '范围含已选中 → 批量隐藏')
+      check((await res.json()).status === 'hidden', '待审范围显式隐藏 → hidden')
       await flushKvQueue()
       check(deps.kvWrites.filter((w) => w.key === 'hidden-models').length === 0,
         '批量隐藏不即时写 hidden-models KV（防抖自动部署统一处理）')
     }
 
-    // 范围内全为隐藏 → 批量取消隐藏
+    // 范围内全为隐藏 → 显式取消隐藏
     {
       const { app, deps } = makeApp({
         'custom-agnes/h1': { status: 'hidden', provider: 'custom-agnes', metadata: {} },
         'custom-agnes/h2': { status: 'hidden', provider: 'custom-agnes', metadata: {} },
       }, { kvHiddenModels: {}, kvManualModels: {} }, fakeConfigWithKv)
-      const res = await app.request('/api/models/batch-toggle', {
+      const res = await app.request('/api/models/batch-status', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ modelIds: ['custom-agnes/h1', 'custom-agnes/h2'] }),
+        body: JSON.stringify({ modelIds: ['custom-agnes/h1', 'custom-agnes/h2'], status: 'selected' }),
       })
-      check((await res.json()).status === 'selected', '范围内全为隐藏 → 批量取消隐藏')
+      check((await res.json()).status === 'selected', '范围内全为隐藏 → 显式取消隐藏')
       await flushKvQueue()
       check(deps.kvWrites.filter((w) => w.key === 'hidden-models').length === 0,
         '批量取消隐藏不即时写 hidden-models KV')

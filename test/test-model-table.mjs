@@ -15,7 +15,7 @@
  */
 
 import { buildListItems, buildTableHeader, buildProviderSidebarItems, strWidth } from '../src/tui/render.js'
-import { toggleAllStatus, applyModelFilters, deleteModel } from '../src/tui/actions.js'
+import { toggleAllStatus, setAllStatus, applyModelFilters, deleteModel } from '../src/tui/actions.js'
 
 let failures = 0
 let checks = 0
@@ -189,6 +189,38 @@ section('测试 6: 场景 E — toggleAllStatus 按范围切换 / deleteModel')
   const st7 = { a: { status: 'selected' }, b: { status: 'hidden' } }
   check(deleteModel(st7, 'a') === true && !('a' in st7), 'deleteModel 直接删除条目')
   check(deleteModel(st7, 'ghost') === false, '删除不存在的 id → false')
+}
+
+// ── 测试 6b：setAllStatus 显式目标状态（Web「批量选中 / 批量隐藏」）──
+section('测试 6b: setAllStatus 显式目标状态（按筛选范围）')
+{
+  // 仅待审范围 → 显式选中（采用）
+  const st = { a: { status: 'pending' }, b: { status: 'pending' } }
+  check(setAllStatus(st, ['a', 'b'], 'selected') === true, '待审范围显式选中 → 返回 true')
+  check(st.a.status === 'selected' && st.b.status === 'selected', '待审范围显式选中 → 全部采用')
+  check(setAllStatus(st, ['a', 'b'], 'selected') === false, '状态未变化 → 返回 false')
+
+  // 仅待审范围 → 显式隐藏（忽略）——旧 toggleAllStatus 无法表达该意图
+  const st2 = { a: { status: 'pending' }, b: { status: 'pending' } }
+  check(setAllStatus(st2, ['a', 'b'], 'hidden') === true, '待审范围显式隐藏 → 返回 true')
+  check(st2.a.status === 'hidden' && st2.b.status === 'hidden', '待审范围显式隐藏 → 全部忽略')
+
+  // 范围外模型不受影响；缺省 modelIds = 全部
+  const st3 = { a: { status: 'hidden' }, b: { status: 'selected' } }
+  setAllStatus(st3, ['a'], 'selected')
+  check(st3.a.status === 'selected' && st3.b.status === 'selected', '范围外模型不受影响')
+  const st4 = { a: { status: 'selected' }, b: { status: 'pending' } }
+  check(setAllStatus(st4, undefined, 'hidden') === true, '缺省 modelIds → 作用于全部模型')
+  check(st4.a.status === 'hidden' && st4.b.status === 'hidden', '全部设为 hidden')
+
+  // 非法目标状态 / 空范围 → false，且不改动状态
+  const st5 = { a: { status: 'selected' } }
+  check(setAllStatus(st5, ['a'], 'pending') === false, '非法目标状态 pending → 返回 false')
+  check(st5.a.status === 'selected', '非法目标状态不改动状态')
+  check(setAllStatus(st5, [], 'hidden') === false, '空范围 → 返回 false')
+  check(setAllStatus(st5, ['ghost'], 'hidden') === false, '范围全是缺失 id → 返回 false')
+  check(setAllStatus(st5, ['a', 'ghost'], 'hidden') === true && st5.a.status === 'hidden',
+    '范围含不存在 id 时跳过（不抛错）')
 }
 
 // ── 测试 7：场景 F — 集成（侧栏筛选结果喂给 F2）──

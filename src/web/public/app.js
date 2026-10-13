@@ -2511,7 +2511,8 @@ export function renderModelsView(container) {
   const btnShowDiff = document.getElementById('mbtn-show-diff')
   const btnSaveDeploy = document.getElementById('mbtn-save-deploy')
   const btnSave = document.getElementById('mbtn-save')
-  const btnBatchToggle = document.getElementById('mbtn-batch-toggle')
+  const btnBatchSelect = document.getElementById('mbtn-batch-select')
+  const btnBatchHide = document.getElementById('mbtn-batch-hide')
   const btnBatchRemove = document.getElementById('mbtn-batch-remove')
   const btnAdd = document.getElementById('mbtn-add')
   const progressPanel = document.getElementById('progress-panel')
@@ -2674,7 +2675,7 @@ export function renderModelsView(container) {
     if (action === 'edit') editModel(modelId)
   }
 
-  // 闲置自动部署（服务端防抖）：toggle/set-status/batch-toggle 响应携带
+  // 闲置自动部署（服务端防抖）：toggle/set-status/batch-status 响应携带
   // autoDeployScheduled/autoDeployIdleMs → 标记文案区分「待自动部署 / 未保存」
   let autoDeployScheduled = false
   let autoDeployIdleMs = 20000
@@ -2794,18 +2795,31 @@ export function renderModelsView(container) {
     }
   }
 
-  async function batchToggle() {
-    if (guardInitBlocked('批量切换')) return
+  // 批量设置状态：把当前筛选结果的全部模型显式设为 selected / hidden。
+  // 取代原「批量切换」——其目标状态由范围推导（无 selected 即全部选中），
+  // 在「待审」筛选下会把整批待审一次性采用，属于误操作。
+  async function batchSetStatus(target) {
+    if (guardInitBlocked(target === 'selected' ? '批量选中' : '批量隐藏')) return
     if (syncing) return
     const targets = items
       .filter((it) => it.entry)
       .map((it) => it.modelId)
     if (!targets.length) {
-      flash('当前筛选结果没有可切换的模型', 'warn')
+      flash('当前筛选结果没有可操作的模型', 'warn')
       return
     }
+    const actionText = target === 'selected' ? '批量选中' : '批量隐藏'
+    // 批量隐藏为破坏性操作，二次确认；批量选中（采用）无需确认
+    if (target === 'hidden') {
+      const yes = await confirmDialog(
+        '批量隐藏模型',
+        `将把当前筛选出的 ${targets.length} 个模型全部设为隐藏，是否继续？`,
+        { danger: true },
+      )
+      if (!yes) return
+    }
     try {
-      const res = await withBusy('正在批量切换…', api('/api/models/batch-toggle', { method: 'POST', body: { modelIds: targets } }))
+      const res = await withBusy(`正在${actionText}…`, api('/api/models/batch-status', { method: 'POST', body: { modelIds: targets, status: target } }))
       for (const id of targets) {
         if (state[id]) state[id].status = res.status
       }
@@ -2813,10 +2827,10 @@ export function renderModelsView(container) {
       if (res.autoDeployIdleMs) autoDeployIdleMs = res.autoDeployIdleMs
       updateDirty()
       await applyFilter()
-      logActivity(`批量切换：${targets.length} 个模型 → ${res.status === 'selected' ? '选中' : '隐藏'}`, 'ok')
+      logActivity(`${actionText}：${targets.length} 个模型 → ${STATUS_TEXT[res.status] || res.status}`, 'ok')
     } catch (err) {
       flash(err.message, 'err')
-      logActivity(`批量切换失败：${err.message}`, 'err')
+      logActivity(`${actionText}失败：${err.message}`, 'err')
     }
   }
 
@@ -3545,7 +3559,8 @@ export function renderModelsView(container) {
   })
   btnSaveDeploy.addEventListener('click', () => saveModels(true))
   btnSave.addEventListener('click', () => saveModels(false))
-  btnBatchToggle.addEventListener('click', batchToggle)
+  btnBatchSelect.addEventListener('click', () => batchSetStatus('selected'))
+  btnBatchHide.addEventListener('click', () => batchSetStatus('hidden'))
   btnBatchRemove.addEventListener('click', batchRemove)
   btnAdd.addEventListener('click', addModel)
 
