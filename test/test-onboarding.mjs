@@ -203,6 +203,17 @@ section('core/providers-config')
   fs.writeFileSync(configPath, '{ not json')
   check(readProvidersConfig(deps).providers === undefined, '损坏文件 → 容错为空')
 
+  // 全新机器：只传 gateway（KV 失败/跳过场景）→ 仍须产出 loadConfig 合法的结构
+  const freshPath = path.join(dir, 'fresh.json')
+  mergeProvidersConfig(
+    { gateway: { accountId: 'acc-x', gatewayId: 'gw-x' } },
+    { configPath: freshPath, backupPath: `${freshPath}.bak` }
+  )
+  const fresh = JSON.parse(fs.readFileSync(freshPath, 'utf8'))
+  check(fresh.gateway.host === 'gateway.ai.cloudflare.com', '全新文件补默认 host')
+  check(Array.isArray(fresh.providers) && fresh.providers.length === 0, '全新文件补 providers:[]')
+  check(fresh.kv && fresh.kv.namespaceId === '' && fresh.kv.key === 'models', '全新文件补 kv 骨架（loadConfig 必需）')
+
   fs.rmSync(dir, { recursive: true, force: true })
 }
 

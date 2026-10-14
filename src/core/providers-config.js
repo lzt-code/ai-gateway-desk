@@ -79,7 +79,11 @@ function writeProvidersConfig(config, deps = {}) {
 /**
  * 合并写入 data/providers.json 的 gateway / kv 分块
  *
- * 只覆盖传入的分块（gateway / kv），providers 数组、debug 等其余字段原样保留。
+ * 只覆盖传入的分块（gateway / kv），其余字段原样保留；同时补齐 loadConfig()
+ * 的必需字段，保证产出的文件始终合法（全新机器 / KV 失败跳过时也能被读取）：
+ *   - gateway：传入或既有则合并，host 缺失补默认主机
+ *   - kv：始终保证存在（namespaceId 为字符串，key 缺省 models）
+ *   - providers：始终保证为数组
  * @param {object} patch
  * @param {{ host?: string, accountId?: string, gatewayId?: string }} [patch.gateway]
  * @param {{ namespaceId?: string, key?: string }} [patch.kv]
@@ -89,12 +93,20 @@ function writeProvidersConfig(config, deps = {}) {
 export function mergeProvidersConfig({ gateway, kv } = {}, deps = {}) {
   const existing = readProvidersConfig(deps)
   const next = { ...existing }
-  if (gateway) {
-    next.gateway = { ...(existing.gateway || {}), ...gateway }
+
+  if (gateway || next.gateway) {
+    const merged = { ...(next.gateway || {}), ...(gateway || {}) }
+    if (!merged.host) merged.host = DEFAULT_GATEWAY_HOST
+    next.gateway = merged
   }
-  if (kv) {
-    next.kv = { ...(existing.kv || {}), ...kv }
-  }
+
+  const mergedKv = { ...(next.kv || {}), ...(kv || {}) }
+  if (typeof mergedKv.namespaceId !== 'string') mergedKv.namespaceId = ''
+  if (!mergedKv.key) mergedKv.key = DEFAULT_KV_KEY
+  next.kv = mergedKv
+
+  if (!Array.isArray(next.providers)) next.providers = []
+
   const { backupPath } = writeProvidersConfig(next, deps)
   return { backupPath, config: next }
 }
