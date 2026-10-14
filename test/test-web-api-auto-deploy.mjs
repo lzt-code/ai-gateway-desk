@@ -49,13 +49,22 @@ const sampleState = {
     status: 'pending',
     metadata: { provider: 'openrouter', name: 'Llama 3' },
   },
+  // 已隐藏 provider 下的 selected 模型：不在 models.json 投影内，编辑不应排期
+  'custom-off/glm-hidden-provider': {
+    status: 'selected',
+    provider: 'custom-off',
+    metadata: { provider: 'custom-off', name: 'Hidden Provider Model' },
+  },
 }
 
 const mockConfigStore = {
   load: () => ({
     gateway: { host: 'gateway.ai.cloudflare.com', accountId: 'acc', gatewayId: 'gw' },
     kv: { namespaceId: 'ns', key: 'models' },
-    providers: [{ id: 'openrouter', name: 'openrouter', type: 'byok', enabled: true }],
+    providers: [
+      { id: 'openrouter', name: 'openrouter', type: 'byok', enabled: true },
+      { id: 'off', name: 'off', type: 'custom-provider', enabled: false, pathPrefix: '/x' },
+    ],
   }),
 }
 
@@ -249,6 +258,91 @@ section('测试 7: 退出前冲刷待部署')
   const t0 = Date.now()
   await app4.flushPendingDeploy(50)
   check(Date.now() - t0 < 400, 'flush 超时兜底：挂起部署不阻塞退出')
+}
+
+// ── 测试 8：元数据编辑 / 手工新增同样排期部署（避免本地与 KV 分叉）──
+section('测试 8: models/edit 命中部署投影 → 排期部署')
+{
+  // 8a：编辑 selected 模型（进 models.json）→ 排期并部署一次
+  const counters = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
+  const { req } = makeApp(counters)
+  const res = await req('POST', '/api/models/edit', {
+    modelId: 'openrouter/deepseek-r1',
+    fields: { name: 'R1 Pro' },
+  })
+  const body = await res.json()
+  check(body.ok === true && body.metadata.name === 'R1 Pro', 'edit 生效')
+  check(body.autoDeployScheduled === true, 'selected 模型编辑 → autoDeployScheduled === true')
+  check(counters.saveAndDeploy === 0, '响应时未立即部署（防抖中）')
+  await waitDeploy()
+  check(counters.saveAndDeploy === 1, '闲置后 saveAndDeploy 调用 1 次')
+  check(counters.manualWrites === 1, 'manual-models KV 一并写入')
+
+  // 8b：编辑 hidden 模型（不进 models.json）→ 不排期
+  const counters2 = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
+  const { req: req2 } = makeApp(counters2)
+  const res2 = await req2('POST', '/api/models/edit', {
+    modelId: 'openrouter/gpt-4o',
+    fields: { name: 'GPT-4o 改名' },
+  })
+  const body2 = await res2.json()
+  check(body2.autoDeployScheduled === false, 'hidden 模型编辑 → autoDeployScheduled === false')
+  await waitDeploy()
+  check(counters2.saveAndDeploy === 0, 'hidden 模型编辑不触发部署')
+
+  // 8c：编辑 pending 模型（不进 models.json）→ 不排期
+  const counters3 = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
+  const { req: req3 } = makeApp(counters3)
+  const res3 = await req3('POST', '/api/models/edit', {
+    modelId: 'openrouter/llama-3',
+    fields: { name: 'Llama 3 改名' },
+  })
+  const body3 = await res3.json()
+  check(body3.autoDeployScheduled === false, 'pending 模型编辑 → autoDeployScheduled === false')
+  await waitDeploy()
+  check(counters3.saveAndDeploy === 0, 'pending 模型编辑不触发部署')
+
+  // 8d：编辑无实际变化 → 不排期
+  const counters4 = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
+  const { req: req4 } = makeApp(counters4)
+  const res4 = await req4('POST', '/api/models/edit', {
+    modelId: 'openrouter/deepseek-r1',
+    fields: { name: '' },
+  })
+  const body4 = await res4.json()
+  check(body4.autoDeployScheduled === false, '留空未变更 → autoDeployScheduled === false')
+  await waitDeploy()
+  check(counters4.saveAndDeploy === 0, '未变更不触发部署')
+
+  // 8e：编辑「已隐藏 provider 下的 selected 模型」→ 不进 models.json，不排期
+  const counters5 = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
+  const { req: req5 } = makeApp(counters5)
+  const res5 = await req5('POST', '/api/models/edit', {
+    modelId: 'custom-off/glm-hidden-provider',
+    fields: { name: '改名' },
+  })
+  const body5 = await res5.json()
+  check(body5.autoDeployScheduled === false, '隐藏 provider 下的模型编辑 → autoDeployScheduled === false')
+  await waitDeploy()
+  check(counters5.saveAndDeploy === 0, '隐藏 provider 下的模型编辑不触发部署')
+}
+
+section('测试 9: models/add 手工新增 → 排期部署（models + manual KV）')
+{
+  const counters = { saveAndDeploy: 0, hiddenWrites: 0, manualWrites: 0 }
+  const { req } = makeApp(counters)
+  const res = await req('POST', '/api/models/add', {
+    modelId: 'openrouter/claude-3-5-sonnet',
+    provider: 'openrouter',
+    metadata: { name: 'Claude 3.5' },
+  })
+  const body = await res.json()
+  check(body.ok === true && body.entry.status === 'selected', 'add 生效（status selected）')
+  check(body.autoDeployScheduled === true, '手工新增 → autoDeployScheduled === true')
+  check(body.autoDeployIdleMs === IDLE_MS, '响应携带 autoDeployIdleMs')
+  await waitDeploy()
+  check(counters.saveAndDeploy === 1, '闲置后 saveAndDeploy 调用 1 次')
+  check(counters.manualWrites === 1, 'manual-models KV 写入 1 次')
 }
 
 console.log(`\n结果: ${checks - failures}/${checks} 通过`)

@@ -412,6 +412,19 @@ CORS 与 Worker 一致，动态回显预检所需头。`/api/gateway/shutdown` �
   `hidden-models` KV，使「本地隐藏但尚未部署」的决策立刻上云，避免同步时的取消隐藏
   归位误伤；隐藏成员未变的状态流转（如待审采用 pending → selected）不写该键——
   写入是本地快照全量覆盖，无变化的重写只会抹掉本机尚未同步到的远端隐藏决策。
+
+  `hidden-models` 的值是 **id 集合**（`{"custom-x/m1": true}`），不是条目快照：
+  隐藏是纯决策，读侧只消费 key（`applyHiddenModels` 仅改 status、
+  `applySelectedModels` 判归位都只取 `Object.keys`）。隐藏模型的 metadata 由各 PC
+  自己 discover 填充，不需要跨 PC 传播——曾经传完整条目使该键膨胀到 MB 级
+  （实测 1329 条 = 2.0 MB，读一次 11–15s，而 `models` 键 1s），成倍放大了
+  「读旧值→写新值」窗口内的互相覆盖风险。读取端兼容历史旧格式（值是条目也能用，
+  因为不读值）。
+
+  **未解析 id 提示**：KV 声明了某个 id 但本机 state 没有对应条目时（新机器 /
+  discover 尚未覆盖），该 id 会进入 `/api/sync` 与 `/api/sync/consistency` 响应的
+  `unresolvedIds`，提示用户先同步——此前是静默跳过，表现为「另一台 PC 选中了它、
+  这台却没有且无任何提示」。
 - 删除：无中间态，provider 不再返回时同步直接物理删除（手工模型需手工删除）
 
 ### 5.3 `data/models.json`（生成产物，gitignore）
@@ -493,6 +506,26 @@ CORS 与 Worker 一致，动态回显预检所需头。`/api/gateway/shutdown` �
 - **本地优先合并**：`/api/sync` 记录同步起点的 `stateVersion` 与状态快照；若发现期间用户改过
   模型（状态/元数据/新增/删除），同步结束前把窗口内的本地改动重放到合并结果之上，避免被
   discover/KV 结果覆盖（改动随后由自动部署统一收敛）。
+
+**闲置自动部署（防抖，`autoDeployIdleMs`，默认 20s）**：会改变 KV 部署投影的操作不再即时写
+KV，而是进入闲置防抖，到期一次性 `saveAndDeploy`（models.json → `models` 键）+ 写
+`hidden-models` / `manual-models` 键，等价一次 `/api/save-deploy`。排期方为
+`toggle` / `set-status` / `batch-status`（状态类）与 `models/edit` / `models/add`（元数据类）。
+响应携带 `autoDeployScheduled` / `autoDeployIdleMs`，前端据此把标记显示为「待自动部署」而非
+「未保存」。
+
+判定是否需要排期以「是否改变部署投影」为准（`hasDeployableModelChanges`）：
+
+| 变更 | 进 `models.json`？ | 排期 |
+|------|------------------|------|
+| selected 且 provider 已启用 | 是 | 是 |
+| selected 但 provider `enabled === false` | 否（隐藏 provider 过滤） | 否 |
+| pending / hidden | 否 | 否 |
+
+元数据编辑（`models/edit`）与手工新增（`models/add`）曾经只落盘 `model-states.json` 而不排期，
+导致本地与 `models.json` / KV 静默分叉（手工新增还不进 `manual-models`，跨 PC 无法重建）；
+现统一纳入防抖排期。KV 未就绪（缺 token / accountId / namespaceId）时不排期，等手动部署或下次
+同步收敛。
 
 ### 7.2 部署（`POST /api/workers/deploy` 或 `npm run deploy`）
 

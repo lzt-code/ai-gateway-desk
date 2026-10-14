@@ -50,6 +50,7 @@ import {
   saveAndDeploy,
   hiddenProviderSlugs,
   filterVisibleState,
+  entryProvider,
 } from '../logic/actions.js'
 import { logRequest as ioLogRequest, logResponse as ioLogResponse, logResult as ioLogResult, isDebugEnabled, getRecentLogs, subscribeLogs } from '../core/io-logger.js'
 import { discoverModels, gatewaySlug, parseRouteFallbackChain } from '../cloudflare/discover.js'
@@ -300,17 +301,24 @@ function loadModelsJsonBaseline() {
 }
 
 /**
- * 从 state 提取隐藏模型映射（modelId → entry），供写入 KV（跨 PC 一致）。
- * 包含手工添加的隐藏模型（applyManualModels 会从 manual-models 重建，
- * 但存入 hidden-models 也无害——applyHiddenModels 仅标记隐藏态）。
+ * 从 state 提取隐藏模型 id 集合（modelId → true），供写入 KV（跨 PC 一致）。
+ *
+ * 只发布 id，不发布条目快照：隐藏是纯「决策」，读侧只消费 key
+ * （applyHiddenModels 仅改 status、applySelectedModels 判归位都只调 Object.keys）。
+ * 隐藏模型的 metadata 由各 PC 自己 discover 填充，不需要也不应跨 PC 传播——
+ * 传完整条目会让该键膨胀到 MB 级（实测 1329 条 = 2.0 MB），KV 读写从 ~1s 拉长到
+ * 11–15s，成倍放大「读旧值→写新值」窗口内的互相覆盖风险。
+ *
+ * 包含手工添加的隐藏模型（applyManualModels 会从 manual-models 重建条目，
+ * 其 manual 标记与 metadata 由那个键负责）。
  * @param {object} state - model-states
- * @returns {Record<string, object>}
+ * @returns {Record<string, true>}
  */
 function buildHiddenModelsMap(state) {
   const map = {}
   for (const [id, entry] of Object.entries(state || {})) {
     if (entry && entry.status === 'hidden') {
-      map[id] = entry
+      map[id] = true
     }
   }
   return map
@@ -333,24 +341,31 @@ function buildManualModelsMap(state) {
 }
 
 /**
- * 将 KV 隐藏模型映射应用到 state：KV 中列出的模型标记为 hidden（KV 优先）。
- * 不在 state 中的条目跳过（provider 已下架或手工模型将由 applyManualModels 重建）。
- * 返回 { state, changed } 供调用方判定是否需要落盘。
+ * 将 KV 隐藏集合应用到 state：集合中列出的模型标记为 hidden（KV 优先）。
+ * 只消费 key，不读 value（兼容历史遗留的「id → 条目」旧格式；新格式为 id → true）。
+ * 不在 state 中的条目跳过（provider 已下架或手工模型将由 applyManualModels 重建），
+ * 这些 id 收集进 unresolvedIds，供调用方提示「云端有决策但本机尚未发现」。
+ * 返回 { state, changed, unresolvedIds } 供调用方判定是否需要落盘。
  * @param {object} state - merge 后的 state
- * @param {object} hiddenMap - KV 读取的 { modelId: entry }
- * @returns {{ state: object, changed: boolean }}
+ * @param {object} hiddenMap - KV 读取的隐藏集合 { modelId: true }（旧格式 { modelId: entry } 同样可用）
+ * @returns {{ state: object, changed: boolean, unresolvedIds: string[] }}
  */
 function applyHiddenModels(state, hiddenMap) {
-  if (!hiddenMap || typeof hiddenMap !== 'object') return { state, changed: false }
+  if (!hiddenMap || typeof hiddenMap !== 'object') return { state, changed: false, unresolvedIds: [] }
   const next = { ...state }
   let changed = false
+  const unresolvedIds = []
   for (const id of Object.keys(hiddenMap)) {
-    if (next[id] && next[id].status !== 'hidden') {
+    if (!next[id]) {
+      unresolvedIds.push(id)
+      continue
+    }
+    if (next[id].status !== 'hidden') {
       next[id] = { ...next[id], status: 'hidden' }
       changed = true
     }
   }
-  return { state: next, changed }
+  return { state: next, changed, unresolvedIds }
 }
 
 /**
@@ -385,29 +400,36 @@ function applyManualModels(state, manualMap) {
  *      远端取消隐藏并部署后（hidden-models 移除 + models 列表加入），本地同步归位，
  *      修复「取消隐藏不跨 PC 传播、且会被下一次部署回滚」的既有缺陷。
  *      kvHiddenMap 为 null（读取失败 / 未配置）时跳过归位（无法确认远端已取消）。
- * 不在 state 中的条目跳过（等待 discover / manual 重建）。
- * 返回 { state, changed } 供调用方判定是否需要落盘 / 部署。
+ * 不在 state 中的条目跳过（等待 discover / manual 重建），这些 id 收集进
+ * unresolvedIds，供调用方提示「云端标记已采用但本机尚未发现」——否则用户会
+ * 看到「另一台 PC 选中了它、这台却没有，且没有任何提示」的静默缺口。
+ * 返回 { state, changed, unresolvedIds } 供调用方判定是否需要落盘 / 部署。
  * @param {object} state - merge 后的 state
  * @param {Array<object>|null} kvModels - KV models 键内容（数组，null = 读取失败跳过）
- * @param {object|null} kvHiddenMap - KV hidden-models 键内容（null = 读取失败）
- * @returns {{ state: object, changed: boolean }}
+ * @param {object|null} kvHiddenMap - KV hidden-models 隐藏集合（只读 key；null = 读取失败）
+ * @returns {{ state: object, changed: boolean, unresolvedIds: string[] }}
  */
 function applySelectedModels(state, kvModels, kvHiddenMap) {
-  if (!Array.isArray(kvModels)) return { state, changed: false }
+  if (!Array.isArray(kvModels)) return { state, changed: false, unresolvedIds: [] }
   const approved = new Set(
     kvModels
       .filter((m) => m && typeof m === 'object' && typeof m.id === 'string' && m.id)
       .map((m) => m.id)
   )
-  if (approved.size === 0) return { state, changed: false }
+  if (approved.size === 0) return { state, changed: false, unresolvedIds: [] }
   const hiddenIds = kvHiddenMap && typeof kvHiddenMap === 'object'
     ? new Set(Object.keys(kvHiddenMap))
     : null
   const next = { ...state }
   let changed = false
+  const unresolvedIds = []
   for (const id of approved) {
     const entry = next[id]
-    if (!entry) continue
+    if (!entry) {
+      // 远端已采用，但本机还没有这个模型（新机器 / discover 尚未覆盖）
+      unresolvedIds.push(id)
+      continue
+    }
     if (entry.status === 'pending') {
       next[id] = { ...entry, status: 'selected' }
       changed = true
@@ -417,7 +439,7 @@ function applySelectedModels(state, kvModels, kvHiddenMap) {
       changed = true
     }
   }
-  return { state: next, changed }
+  return { state: next, changed, unresolvedIds }
 }
 
 /**
@@ -460,7 +482,10 @@ async function readJsonBody(c) {
  * @param {number} [options.autoDeployIdleMs]
  *        闲置自动部署防抖窗口（默认 20000ms；0 = 禁用，测试用）：
  *        toggle/set-status/batch-status 变更后不再即时写 hidden-models KV，
- *        闲置到期一次性 saveAndDeploy + 写 hidden/manual KV（等价 /api/save-deploy）
+ *        闲置到期一次性 saveAndDeploy + 写 hidden/manual KV（等价 /api/save-deploy）。
+ *        models/edit、models/add 命中部署投影（selected 且 provider 已启用）时同样排期
+ *        （见 hasDeployableModelChanges）：元数据编辑与手工新增会改变 models.json /
+ *        manual-models KV，若只落盘 state 不部署，本地与 KV 会静默分叉
  * @returns {Hono}
  */
 export function createApp({
@@ -584,9 +609,32 @@ export function createApp({
   }
 
   /**
+   * 判定「单模型变更」是否影响 KV 部署投影（models.json + 已部署列表）。
+   * 元数据编辑与手工新增同样要进这个判定：只落盘 state 不部署，会让
+   * model-states.json 与 models.json / KV models 静默分叉（本地已改、云端仍旧），
+   * 且没有任何自动收敛计时器。与控制状态类的 toggle/set-status 一致地排期部署。
+   *   - 变更后非 selected（pending / hidden）→ 不进部署投影
+   *   - 变更后 selected 且落在已启用 provider → 该条目在部署投影内（selected 会被
+   *     generate 写入 models.json），需排期
+   * 已隐藏 provider 下的模型不写 models.json，不排期。
+   * @param {object|undefined} before - 变更前的 state 条目（手工新增传 undefined）
+   * @param {object|undefined} after - 变更后的 state 条目
+   * @returns {boolean}
+   */
+  const hasDeployableModelChanges = (before, after) => {
+    if (!after) return false
+    if (after.status !== 'selected') return false
+    const config = configStore.load()
+    const hidden = hiddenProviderSlugs(Array.isArray(config.providers) ? config.providers : [])
+    const slug = entryProvider(after)
+    return !slug || !hidden.has(slug)
+  }
+
+  /**
    * 读取 KV 跨 PC 真相（provider-visibility / hidden-models / manual-models / models）。
    * 一致性语义：这些是「用户决策」的真相源，与模型发现（discover）无关，读取轻量
    * （4 次 REST 读）。分层启动的第一层「一致性同步」即基于它，秒级完成即可解锁 UI。
+   * hidden-models 存的是 id 集合（非条目快照），读侧只消费 key。
    * flush=true 时先冲刷本地未部署的隐藏决策，避免随后 applySelectedModels 的
    * 取消隐藏归位误伤本地刚到但尚未部署的隐藏操作。
    * 任一读取失败 → 该项为 null，调用方按「读取失败跳过」降级（不中断）。
@@ -643,15 +691,25 @@ export function createApp({
   /**
    * 将 KV 真相应用到给定 state：手工模型重建 → 隐藏态（KV 优先）→ 已部署列表
    * （pending → selected 提升 + 取消隐藏归位）。纯函数式：不改入参 state。
+   * unresolvedIds：KV 声明了这些 id，但本机 state 里没有对应条目（新机器 /
+   * discover 尚未覆盖）。调用方据此提示用户先同步，避免「云端已采用、本机没有」
+   * 静默缺口。先经手册键重建的条目不算未解析。
    * @param {object} baseState - 合并后（或当前）的 model-states
    * @param {{ manualModelsMap: object|null, hiddenModelsMap: object|null, kvModelsList: Array|null }} truths
-   * @returns {{ state: object, changed: boolean }}
+   * @returns {{ state: object, changed: boolean, unresolvedIds: string[] }}
    */
   const applyKvTruthsToState = (baseState, truths) => {
     const manual = depsAll.applyManualModels(baseState, truths.manualModelsMap)
     const hidden = depsAll.applyHiddenModels(manual.state, truths.hiddenModelsMap)
     const selected = depsAll.applySelectedModels(hidden.state, truths.kvModelsList, truths.hiddenModelsMap)
-    return { state: selected.state, changed: manual.changed || hidden.changed || selected.changed }
+    // 手工模型已由 manual-models 重建 → 不算未解析（去重，保持稳定顺序）
+    const unresolvedIds = [...new Set([...hidden.unresolvedIds, ...selected.unresolvedIds])]
+      .filter((id) => id && !selected.state[id])
+    return {
+      state: selected.state,
+      changed: manual.changed || hidden.changed || selected.changed,
+      unresolvedIds,
+    }
   }
 
   /**
@@ -943,12 +1001,24 @@ export function createApp({
       return c.json({ error: 'fields is required' }, 400)
     }
     if (!state[body.modelId]) return c.json({ error: 'model not found' }, 404)
+    const before = state[body.modelId]
     const changed = editModelMetadata(state, body.modelId, body.fields)
+    let autoDeployScheduled = false
     if (changed) {
       stateVersion++
       stateStore.save(state)
+      // 元数据编辑同样改变部署投影（models.json / KV models），按与控制状态类
+      // 变更一致的防抖排期部署，避免本地与 KV 静默分叉
+      autoDeployScheduled = hasDeployableModelChanges(before, state[body.modelId])
+        ? scheduleAutoDeploy()
+        : false
     }
-    return c.json({ ok: true, metadata: state[body.modelId].metadata || {} })
+    return c.json({
+      ok: true,
+      metadata: state[body.modelId].metadata || {},
+      autoDeployScheduled,
+      ...(autoDeployScheduled ? { autoDeployIdleMs } : {}),
+    })
   })
 
   // POST /api/models/add — 手动添加模型（status 恒 selected）
@@ -970,7 +1040,17 @@ export function createApp({
     upsertModel(state, body.modelId, body.provider, body.metadata || {}, { manual: true })
     stateVersion++
     stateStore.save(state)
-    return c.json({ ok: true, entry: state[body.modelId] })
+    // 手工新增的模型 status 恒为 selected：既进 models.json 也进 manual-models KV
+    // （跨 PC 重建依据），必须排期部署，否则只存在于本机 state
+    const autoDeployScheduled = hasDeployableModelChanges(undefined, state[body.modelId])
+      ? scheduleAutoDeploy()
+      : false
+    return c.json({
+      ok: true,
+      entry: state[body.modelId],
+      autoDeployScheduled,
+      ...(autoDeployScheduled ? { autoDeployIdleMs } : {}),
+    })
   })
 
   // GET /api/models/filtered — 组合筛选（provider + keyword + status，均可选）
@@ -1207,7 +1287,8 @@ export function createApp({
       if (!hasDeployChanges) autoDeployed = true
       emitEvent({ type: 'done', summary: result.summary, details: result.details || { added: [], removed: [], updated: [] }, autoDeployed, autoDeployError })
       // 返回响应释放 HTTP 连接；KV 部署作为后台任务继续执行
-      const syncReturn = { ok: true, summary: result.summary, details: result.details || { added: [], removed: [], updated: [] }, autoDeployed, autoDeployError }
+      // unresolvedIds：云端已决策但本机尚未发现的模型（新机器场景），前端提示先同步
+      const syncReturn = { ok: true, summary: result.summary, details: result.details || { added: [], removed: [], updated: [] }, autoDeployed, autoDeployError, unresolvedIds: kvApplied.unresolvedIds }
       if (hasDeployChanges) {
         // 后台部署：不阻塞当前请求，失败仅记日志 + 尝试通知仍在订阅的客户端
         ;(async () => {
@@ -1278,7 +1359,12 @@ export function createApp({
       message: kv.changed || visibilityChanged ? '已对齐云端真相' : '无需变更',
       elapsedMs: Date.now() - start,
     })
-    return c.json({ ok: true, kvReady: true, changed: kv.changed || visibilityChanged })
+    return c.json({
+      ok: true,
+      kvReady: true,
+      changed: kv.changed || visibilityChanged,
+      unresolvedIds: kv.unresolvedIds,
+    })
   })
 
   // POST /api/save-deploy — 保存并提交（saveState → writeModelsJson → deployToKV → 写 hidden/manual KV）

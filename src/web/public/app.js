@@ -2916,6 +2916,10 @@ export function renderModelsView(container) {
       if (state[modelId]) {
         state[modelId] = { ...state[modelId], metadata: res.metadata || {} }
       }
+      // 元数据编辑命中部署投影时服务端已排期自动部署 → 同步标记，
+      // 使 dirty 文案显示「待自动部署」而非「未保存」
+      autoDeployScheduled = !!res.autoDeployScheduled
+      if (res.autoDeployIdleMs) autoDeployIdleMs = res.autoDeployIdleMs
       updateDirty()
       await applyFilter()
       flash('已保存修改', 'ok')
@@ -3012,6 +3016,9 @@ export function renderModelsView(container) {
     try {
       const res = await withBusy('正在添加模型…', api('/api/models/add', { method: 'POST', body: { modelId, provider: providerVal, metadata } }))
       state[modelId] = res.entry
+      // 手工新增必然进部署投影（models.json + manual-models KV）→ 服务端已排期自动部署
+      autoDeployScheduled = !!res.autoDeployScheduled
+      if (res.autoDeployIdleMs) autoDeployIdleMs = res.autoDeployIdleMs
       updateDirty()
       await applyFilter()
       flash('已添加模型', 'ok')

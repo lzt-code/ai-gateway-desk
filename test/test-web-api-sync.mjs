@@ -1024,8 +1024,70 @@ section('测试 28: buildHiddenModelsMap / buildManualModelsMap 纯函数')
   const manualWrite = deps.kvWrites.find((w) => w.key === 'manual-models')
   check(Object.keys(hiddenWrite.map).length === 2, 'hidden-models 含 2 条（m2 + m3）')
   check('a/m2' in hiddenWrite.map && 'a/m3' in hiddenWrite.map, 'hidden-models 含 m2/m3')
+  // 隐藏集合只发布 id（值恒为 true），不发布条目快照：值从未被读取，
+  // 传完整条目会把该键撑到 MB 级（放大 KV 读写窗口）
+  check(Object.values(hiddenWrite.map).every((v) => v === true), 'hidden-models 值为 true（id 集合，非条目快照）')
+  check(!JSON.stringify(hiddenWrite.map).includes('metadata'), 'hidden-models 内容不含 metadata')
   check(Object.keys(manualWrite.map).length === 2, 'manual-models 含 2 条（m1 + m3）')
   check('a/m1' in manualWrite.map && 'a/m3' in manualWrite.map, 'manual-models 含 m1/m3')
+  // manual-models 保持完整条目（手工模型上游无法重建，值必须保留）
+  check(manualWrite.map['a/m1'].metadata?.name === 'M1', 'manual-models 仍携带完整条目')
+}
+
+// ── 测试 28b：hidden-models 旧格式（id → 条目）仍可被读取 ──
+section('测试 28b: hidden-models 兼容历史旧格式（id → 条目）')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    // 模拟尚未迁移的旧键内容：值是完整条目而非 true
+    const kvHiddenOld = {
+      'custom-agnes/agnes': { status: 'hidden', provider: 'custom-agnes', metadata: { name: 'Agnes' } },
+    }
+    const { app } = makeApp({}, { kvHiddenModels: kvHiddenOld }, fakeConfigWithKv)
+    const res = await app.request('/api/sync', { method: 'POST' })
+    check(res.status === 200, 'HTTP 200')
+    const stateBody = await (await app.request('/api/state')).json()
+    check(stateBody.state['custom-agnes/agnes'].status === 'hidden', '旧格式仍能标记 hidden')
+    // metadata 取自本地（未被旧值覆盖）
+    check(stateBody.state['custom-agnes/agnes'].metadata.name !== 'Agnes',
+      'metadata 取自本地 discover 结果（不读 KV 值）')
+  } finally {
+    restoreEnv()
+  }
+}
+
+// ── 测试 28c：KV 声明了本地没有的 id → unresolvedIds 透出 ──
+section('测试 28c: 云端已决策但本机未发现 → unresolvedIds')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    // KV models 列表含本地 state 不存在的模型（新机器场景：discover 尚未覆盖）
+    const kvModelsList = [
+      { id: 'custom-agnes/agnes', name: 'Agnes' },
+      { id: 'custom-agnes/never-discovered', name: 'Never Discovered' },
+    ]
+    const kvHidden = { 'custom-agnes/also-missing': true }
+    const { app } = makeApp(
+      { 'custom-agnes/agnes': { status: 'pending', provider: 'custom-agnes', metadata: { name: 'Agnes' } } },
+      { kvModels: kvModelsList, kvHiddenModels: kvHidden },
+      fakeConfigWithKv,
+    )
+    const res = await app.request('/api/sync/consistency', { method: 'POST' })
+    check(res.status === 200, 'HTTP 200')
+    const body = await res.json()
+    check(Array.isArray(body.unresolvedIds), '响应携带 unresolvedIds 数组')
+    check(body.unresolvedIds.includes('custom-agnes/never-discovered'),
+      '未发现的已部署模型进入 unresolvedIds')
+    check(body.unresolvedIds.includes('custom-agnes/also-missing'),
+      '未发现的隐藏模型进入 unresolvedIds')
+    check(!body.unresolvedIds.includes('custom-agnes/agnes'),
+      '本地已存在的模型不进入 unresolvedIds')
+    // 已存在的 pending 仍被提升为 selected（原有行为不变）
+    const stateBody = await (await app.request('/api/state')).json()
+    check(stateBody.state['custom-agnes/agnes'].status === 'selected', 'pending → selected 仍生效')
+  } finally {
+    restoreEnv()
+  }
 }
 
 // ── 测试 29：纯函数 applyHiddenModels / applyManualModels ──
