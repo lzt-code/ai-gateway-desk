@@ -419,6 +419,24 @@ body {
 }
 #view-container { min-width: 0; }   /* é˜²è¡¨æ ¼æº¢å‡º */
 
+/* â”€â”€ æœªè§£ææ¨¡å‹æç¤ºï¼ˆäº‘ç«¯å·²å†³ç­–ã€æœ¬æœºæœªå‘ç° â†’ ä¸€é”®åŒæ­¥ï¼‰â”€â”€ */
+#unresolved-hint { padding: 0.6rem 1rem 0; }
+.unresolved-hint-box {
+  display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--warn-border, var(--border-strong));
+  border-radius: var(--radius-md);
+  background: var(--warn-soft, var(--elevated));
+  font-size: 0.86rem;
+}
+.unresolved-hint-text { flex: 1 1 18rem; min-width: 0; line-height: 1.4; }
+.unresolved-hint-close {
+  flex: none; width: 1.6rem; height: 1.6rem; padding: 0;
+  background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm);
+  color: var(--muted); font-size: 1rem; line-height: 1; cursor: pointer;
+}
+.unresolved-hint-close:hover { background: var(--accent-soft); color: var(--fg); border-color: var(--border-strong); }
+
 /* â”€â”€ æ¨¡å‹è§†å›¾ï¼šå·¦/ä¸­/å³ä¸‰æ å„è‡ªç‹¬ç«‹æ»šåŠ¨ï¼ˆä»… â‰¥901px å®½å±ï¼›å°å±å›é€€æ•´é¡µæ»šåŠ¨ï¼‰â”€â”€ */
 /* é«˜åº¦é“¾ï¼šbody(100vh) â†’ #app-main(flex:1) â†’ #view-models(flex:1) â†’
    .models-layout(flex:1) â†’ ä¸‰æ (overflow-y:auto)ã€‚ä»»ä¸€ç¯èŠ‚ç¼º min-height:0
@@ -924,7 +942,7 @@ body.init-blocking #view-models a.side-ext-link {
   }
 }
 
-/* ©¤©¤ Web ³õÊ¼»¯Òıµ¼£¨Î´³õÊ¼»¯Ê±×Ô¶¯½øÈëµÄ¸¡²ã£©©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤©¤ */
+/* ï¿½ï¿½ï¿½ï¿½ Web ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Î´ï¿½ï¿½Ê¼ï¿½ï¿½Ê±ï¿½Ô¶ï¿½ï¿½ï¿½ï¿½ï¿½Ä¸ï¿½ï¿½ã£©ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ */
 #onboarding {
   position: fixed;
   inset: 0;

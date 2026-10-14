@@ -423,8 +423,13 @@ CORS 与 Worker 一致，动态回显预检所需头。`/api/gateway/shutdown` �
 
   **未解析 id 提示**：KV 声明了某个 id 但本机 state 没有对应条目时（新机器 /
   discover 尚未覆盖），该 id 会进入 `/api/sync` 与 `/api/sync/consistency` 响应的
-  `unresolvedIds`，提示用户先同步——此前是静默跳过，表现为「另一台 PC 选中了它、
-  这台却没有且无任何提示」。
+  `unresolvedIds`。以下两类不算未解析：手工模型（由 `manual-models` 键重建）、
+  已隐藏 provider 下的模型（UI 本就按 `filterVisibleState` 过滤，缺失是预期行为）。
+  此前是静默跳过，表现为「另一台 PC 选中了它、这台却没有且无任何提示」。
+
+  前端处理：启动链拿到非空 `unresolvedIds` 时先记 warn 日志；若后台发现会跑
+  （TTL 到期）则自动解决，否则在页头下方渲染一条可关闭提示 + 「立即同步」
+  按钮（`showUnresolvedHint`，见 `#unresolved-hint` 挂载点）。
 - 删除：无中间态，provider 不再返回时同步直接物理删除（手工模型需手工删除）
 
 ### 5.3 `data/models.json`（生成产物，gitignore）

@@ -69,6 +69,10 @@ check(
     html.includes('id="busy-text"') && html.includes('class="busy-spinner"'),
   '全局加载指示骨架（busy-indicator hidden / busy-text / busy-spinner）',
 )
+check(
+  html.includes('id="unresolved-hint"') && /id="unresolved-hint"[^>]*hidden/.test(html),
+  '未解析模型提示挂载点 id="unresolved-hint"（hidden）',
+)
 
 // ── 6：style.css 主题 + 布局要点 ──────────────────────────
 section('style.css 主题变量与布局')
@@ -84,6 +88,7 @@ check(/grid-template-columns\s*:\s*1fr\s+280px/.test(css), '主区 grid 1fr + 28
 check(/@media\s*\(max-width\s*:\s*900px\)/.test(css), '<900px 响应式断点')
 check(/\.tab-bar\s+button\.active|button\.active/.test(css), '选项卡激活态样式 .active')
 check(/\.busy-spinner\s*\{/.test(css) && /@keyframes\s+busy-spin/.test(css), '转圈圈动画样式（.busy-spinner + @keyframes busy-spin）')
+check(/\.unresolved-hint-box\s*\{/.test(css) && /\.unresolved-hint-close\s*\{/.test(css), '未解析提示样式（.unresolved-hint-box + .unresolved-hint-close）')
 
 // ── 7-19：app.js 纯函数单测 ───────────────────────────────
 section('app.js 纯函数单测')
@@ -113,8 +118,23 @@ const {
   showBusy,
   hideBusy,
   withBusy,
+  getUnresolvedIds,
+  setUnresolvedIds,
+  showUnresolvedHint,
 } = mod
 check(true, 'app.js 可被 Node import（顶层无 DOM 访问，能加载即证明）')
+
+// 8y：未解析模型 id（云端已决策、本机未发现）纯函数
+check(typeof getUnresolvedIds === 'function' && typeof setUnresolvedIds === 'function',
+  'getUnresolvedIds/setUnresolvedIds 已导出')
+check(typeof showUnresolvedHint === 'function', 'showUnresolvedHint 已导出（一键同步提示）')
+setUnresolvedIds(['cloud/a', 'cloud/b'])
+check(getUnresolvedIds().length === 2, 'setUnresolvedIds 保存 id 列表')
+setUnresolvedIds(['cloud/a', '', null, 42])
+check(getUnresolvedIds().length === 1 && getUnresolvedIds()[0] === 'cloud/a',
+  'setUnresolvedIds 过滤非字符串 / 空值')
+setUnresolvedIds(null)
+check(getUnresolvedIds().length === 0, 'setUnresolvedIds(null) → 空列表')
 
 // 8z：全局加载指示（转圈圈）纯函数（showBusy / hideBusy / withBusy）
 check(typeof showBusy === 'function' && typeof hideBusy === 'function', 'showBusy/hideBusy 已导出（全局加载指示）')

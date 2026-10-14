@@ -168,6 +168,19 @@ export function markDiscovered(now = Date.now()) {
 let _modelViewRefreshFn = null
 export function registerModelViewRefresh(fn) { _modelViewRefreshFn = fn }
 
+// ── 未解析模型 id（云端已决策、本机未发现）──────────────────
+// /api/sync/consistency 与 /api/sync 的响应携带 unresolvedIds：KV 声明了这些 id
+// （已采用 / 已隐藏），但本机 state 没有对应条目——新机器、或 discover 尚未覆盖
+// 该 provider。此前是静默跳过，表现为「另一台 PC 选中了它、这台却没有且无提示」。
+// 存到内存 + appState，供 Provider 刷新完成后提示用户一键同步拉回。
+let _unresolvedIds = []
+export function getUnresolvedIds() { return _unresolvedIds }
+export function setUnresolvedIds(ids) {
+  _unresolvedIds = Array.isArray(ids) ? ids.filter((id) => typeof id === 'string' && id) : []
+  try { appState().set('unresolvedIds', _unresolvedIds) } catch { /* 无 DOM 环境静默 */ }
+  return _unresolvedIds
+}
+
 // ── 初始化全局阻塞（步骤 5）：Provider→模型串行初始化期间仅允许查看 ──
 let _initInProgress = false
 export function isInitializing() { return _initInProgress }
@@ -488,6 +501,45 @@ export function flash(message, type = 'info') {
   setTimeout(() => {
     if (el.parentNode) el.parentNode.removeChild(el)
   }, 3000)
+}
+
+// ── 未解析模型提示（云端已决策、本机未发现）─────────────────
+// 展示一条可关闭的横幅 + 一键同步按钮。用于 /api/sync/consistency 返回
+// unresolvedIds 且后台发现不会自动跑（TTL 未到期）的场景：否则用户既不知道
+// 有模型缺失，也无从处理。onSync 为「立即同步」回调。
+export function showUnresolvedHint(ids, onSync) {
+  if (typeof document === 'undefined') return
+  const list = Array.isArray(ids) ? ids.filter((id) => typeof id === 'string' && id) : []
+  const host = document.getElementById('unresolved-hint')
+  if (!host) return
+  if (!list.length) { host.hidden = true; host.innerHTML = ''; return }
+  host.innerHTML = ''
+  const box = document.createElement('div')
+  box.className = 'unresolved-hint-box'
+  const text = document.createElement('span')
+  text.className = 'unresolved-hint-text'
+  const preview = list.slice(0, 3).map((id) => `「${id}」`).join('、')
+  text.textContent = `云端有 ${list.length} 个模型已被采用 / 隐藏，但本机尚未发现：${preview}${list.length > 3 ? ' 等' : ''}。同步后可对齐。`
+  box.appendChild(text)
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'btn btn-primary unresolved-hint-sync'
+  btn.textContent = '立即同步'
+  btn.addEventListener('click', () => {
+    if (typeof onSync === 'function') onSync()
+    host.hidden = true
+    host.innerHTML = ''
+  })
+  box.appendChild(btn)
+  const close = document.createElement('button')
+  close.type = 'button'
+  close.className = 'unresolved-hint-close'
+  close.setAttribute('aria-label', '关闭提示')
+  close.textContent = '×'
+  close.addEventListener('click', () => { host.hidden = true; host.innerHTML = '' })
+  box.appendChild(close)
+  host.appendChild(box)
+  host.hidden = false
 }
 
 // ── 全局加载指示（转圈圈）────────────────────────────────
@@ -5407,13 +5459,26 @@ export function renderProvidersView(container) {
       }
       // ③ 第一层「一致性同步」：只对齐 KV 跨 PC 真相（可见性 / 隐藏 / 采用 / 手工模型），
       //    轻量秒级、不重拉模型。完成即解锁 UI，不再等待重型 discover（分层启动核心）。
+      let unresolvedIds = []
       try {
         const cr = await api('/api/sync/consistency', { method: 'POST' })
         if (cr && cr.changed) logActivity('已对齐云端隐藏 / 采用 / 手工模型状态', 'ok')
+        if (cr && Array.isArray(cr.unresolvedIds)) {
+          unresolvedIds = setUnresolvedIds(cr.unresolvedIds)
+        }
       } catch {
         // 静默降级：本地列表已渲染，一致性对齐可在后续同步时收敛
       }
       if (shouldEnterInit) leaveInitBlocking()
+      // ③b 未解析提示：云端有决策但本机没有这些模型（新机器 / discover 未覆盖）。
+      //    若下面的后台发现会跑（TTL 到期）则自动解决，无需打扰用户；
+      //    否则提示并提供一键同步——否则用户无从得知、也无从处理。
+      if (unresolvedIds.length) {
+        logActivity(
+          `云端有 ${unresolvedIds.length} 个模型（已采用 / 已隐藏）尚未在本机发现：${unresolvedIds.slice(0, 3).join('、')}${unresolvedIds.length > 3 ? ' 等' : ''}`,
+          'warn',
+        )
+      }
       // ④ 第二层「后台发现」：非阻塞，受 TTL 约束——距上次成功发现过久才自动跑，
       //    避免每次打开页面都全量拉取；用户可随时在模型页手动「同步」。
       if (!_startupModelSyncTriggered && !_modelsAutoSyncDone) {
@@ -5430,6 +5495,14 @@ export function renderProvidersView(container) {
         } catch {
           // 探测失败静默（不阻断 Provider 已渲染的列表）
         }
+      }
+      // ③b 兜底：TTL 未到期（上面没触发发现）时，未解析的模型不会被自动拉回，
+      //      提示用户一键同步；有可点按钮则交给用户，无则只留日志提示。
+      if (unresolvedIds.length && !_startupModelSyncTriggered) {
+        showUnresolvedHint(unresolvedIds, () => {
+          setUnresolvedIds([])
+          triggerGlobalModelSync({ background: true })
+        })
       }
       return
     }

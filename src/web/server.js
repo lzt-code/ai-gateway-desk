@@ -693,18 +693,28 @@ export function createApp({
    * （pending → selected 提升 + 取消隐藏归位）。纯函数式：不改入参 state。
    * unresolvedIds：KV 声明了这些 id，但本机 state 里没有对应条目（新机器 /
    * discover 尚未覆盖）。调用方据此提示用户先同步，避免「云端已采用、本机没有」
-   * 静默缺口。先经手册键重建的条目不算未解析。
+   * 静默缺口。以下两类不算未解析（否则提示永远消不掉）：
+   *   - 手工模型：已由 manual-models 键重建
+   *   - 隐藏 provider 下的模型：UI 本就按 filterVisibleState 过滤，其缺失是预期行为
    * @param {object} baseState - 合并后（或当前）的 model-states
    * @param {{ manualModelsMap: object|null, hiddenModelsMap: object|null, kvModelsList: Array|null }} truths
+   * @param {Set<string>} [hiddenProviderSlugs] - 已隐藏 provider 的网关 slug（前缀匹配模型 id）
    * @returns {{ state: object, changed: boolean, unresolvedIds: string[] }}
    */
-  const applyKvTruthsToState = (baseState, truths) => {
+  const applyKvTruthsToState = (baseState, truths, hiddenProviderSlugs = null) => {
     const manual = depsAll.applyManualModels(baseState, truths.manualModelsMap)
     const hidden = depsAll.applyHiddenModels(manual.state, truths.hiddenModelsMap)
     const selected = depsAll.applySelectedModels(hidden.state, truths.kvModelsList, truths.hiddenModelsMap)
-    // 手工模型已由 manual-models 重建 → 不算未解析（去重，保持稳定顺序）
+    const hiddenSlugs = hiddenProviderSlugs instanceof Set ? hiddenProviderSlugs : new Set()
+    const belongsToHiddenProvider = (id) => {
+      for (const slug of hiddenSlugs) {
+        if (id === slug || id.startsWith(`${slug}/`)) return true
+      }
+      return false
+    }
+    // 去重（保持稳定顺序）
     const unresolvedIds = [...new Set([...hidden.unresolvedIds, ...selected.unresolvedIds])]
-      .filter((id) => id && !selected.state[id])
+      .filter((id) => id && !selected.state[id] && !belongsToHiddenProvider(id))
     return {
       state: selected.state,
       changed: manual.changed || hidden.changed || selected.changed,
@@ -1223,7 +1233,11 @@ export function createApp({
       applyKvVisibility(visibilityMap)
       // 应用 KV 手工模型（重建跨 PC 添加的手工模型）+ 隐藏模型（KV 隐藏态优先）
       // + 已部署列表（pending → selected 提升 + 取消隐藏归位）
-      const kvApplied = applyKvTruthsToState(result.state, truths)
+      // 已隐藏 provider 下的 id 不算未解析（UI 本就不展示这些模型）
+      const kvApplied = applyKvTruthsToState(
+        result.state, truths,
+        hiddenProviderSlugs(Array.isArray(config.providers) ? config.providers : []),
+      )
       result.state = kvApplied.state
       // 本地优先：发现是后台重型任务，期间 UI 已不再全局阻塞，用户可能改了模型
       // （状态 / 元数据 / 新增 / 删除）。以同步起点快照为基线，把窗口内的本地改动
@@ -1348,7 +1362,11 @@ export function createApp({
       return c.json({ ok: true, kvReady: false, changed: false })
     }
     const visibilityChanged = applyKvVisibility(truths.visibilityMap)
-    const kv = applyKvTruthsToState(state, truths)
+    const config = configStore.load()
+    const kv = applyKvTruthsToState(
+      state, truths,
+      hiddenProviderSlugs(Array.isArray(config.providers) ? config.providers : []),
+    )
     if (kv.changed) {
       state = kv.state
       stateVersion++

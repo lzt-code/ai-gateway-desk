@@ -56,6 +56,8 @@
 </div>
 
 <div id="app-main">
+  <!-- 未解析模型提示（云端已决策、本机未发现 → 一键同步）：由 app.js 填充 -->
+  <div id="unresolved-hint" hidden></div>
   <main id="view-container">
     <!-- 四视图容器：id 约定 view-<name>，hidden 切换（任务 31-33 填充内容） -->
     <section class="view" id="view-providers" hidden></section>

@@ -1090,6 +1090,38 @@ section('测试 28c: 云端已决策但本机未发现 → unresolvedIds')
   }
 }
 
+// ── 测试 28d：已隐藏 provider 下的 id 不算未解析（否则提示永远消不掉）──
+section('测试 28d: 隐藏 provider 下的未发现 id 不进 unresolvedIds')
+{
+  const restoreEnv = withCleanEnv()
+  try {
+    // fakeConfigWithKv 中该 provider enabled === false（见配置 fixture）
+    const configWithHiddenProvider = {
+      ...fakeConfigWithKv,
+      providers: [
+        ...fakeConfigWithKv.providers,
+        { id: 'off', name: 'off', type: 'custom-provider', enabled: false, pathPrefix: '/x' },
+      ],
+    }
+    const kvModelsList = [
+      { id: 'custom-off/missing', name: 'Hidden Provider Model' },
+      { id: 'custom-agnes/agnes', name: 'Agnes' },
+    ]
+    const { app } = makeApp(
+      { 'custom-agnes/agnes': { status: 'pending', provider: 'custom-agnes', metadata: { name: 'Agnes' } } },
+      { kvModels: kvModelsList },
+      configWithHiddenProvider,
+    )
+    const res = await app.request('/api/sync/consistency', { method: 'POST' })
+    const body = await res.json()
+    check(!body.unresolvedIds.includes('custom-off/missing'),
+      '隐藏 provider 下的模型不进 unresolvedIds（UI 本就不展示）')
+    check(body.unresolvedIds.length === 0, 'unresolvedIds 为空')
+  } finally {
+    restoreEnv()
+  }
+}
+
 // ── 测试 29：纯函数 applyHiddenModels / applyManualModels ──
 section('测试 29: applyHiddenModels / applyManualModels 纯函数')
 {
