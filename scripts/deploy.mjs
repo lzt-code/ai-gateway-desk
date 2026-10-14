@@ -124,13 +124,13 @@ function main() {
 
   if (!namespaceId) {
     console.error(`[wrangler-${mode}] 未找到 KV namespace id（data/providers.json 的 kv.namespaceId 为空）。`)
-    console.error('  请先运行 npm run aigd setup（向导第 6 步自动创建 KV 并回填），')
+    console.error('  请在 Web 界面「账户」页运行初始化引导（自动创建 KV 并回填），')
     console.error('  或手动在 data/providers.json 填写 kv.namespaceId 后重试。')
     process.exit(1)
   }
   if (!accountId || !gatewayId) {
     console.error(`[wrangler-${mode}] 未找到 gateway 配置（data/providers.json 的 gateway.accountId / gateway.gatewayId 为空）。`)
-    console.error('  请先运行 npm run aigd setup（向导第 2 步填写 Account ID 和第 3 步填写 Gateway ID），')
+    console.error('  请在 Web 界面「账户」页运行初始化引导（会自动写入 accountId / gatewayId），')
     console.error('  或手动在 data/providers.json 填写 gateway 配置后重试。')
     process.exit(1)
   }

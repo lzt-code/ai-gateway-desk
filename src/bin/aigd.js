@@ -7,7 +7,6 @@
  *   node src/bin/aigd.js web       启动本地 Web 管理界面（默认）
  *   node src/bin/aigd.js sync      同步模型（规划中，任务 11）
  *   node src/bin/aigd.js deploy    部署到 KV（规划中，任务 11）
- *   node src/bin/aigd.js setup     初始化向导（规划中，任务 11）
  *
  * @module ai-gateway-desk/src/bin/aigd
  */
@@ -28,8 +27,9 @@ aigd — AI Gateway 模型管理工具
                   环境变量: AIGD_GATEWAY_PORT
   aigd sync       同步模型列表（规划中）
   aigd deploy     部署模型列表到 KV（规划中）
-  aigd setup      初始化向导（建 gateway / 存凭证 / provider / KV）
   aigd help       显示帮助
+
+说明: 初始化引导已改到 Web 界面（启动后未初始化会自动进入）。
 `
 
 const PLANNED = new Set(['sync', 'deploy'])
@@ -66,18 +66,17 @@ async function main() {
   }
 
   if (PLANNED.has(cmd)) {
-    console.log(`[aigd] 子命令 "${cmd}" 规划中，当前请使用 "setup"。`)
+    console.log(`[aigd] 子命令 "${cmd}" 规划中，请在 Web 界面中完成。`)
     return
   }
 
   if (cmd === 'setup') {
-    const { runSetup } = await import('../setup.js')
-    await runSetup()
+    console.log('[aigd] 初始化引导已改到 Web 界面：运行 aigd 启动后，未初始化会自动进入引导。')
     return
   }
 
   if (cmd === 'web') {
-    // Web 管理服务器：交互式初始化引导不适合 HTTP 场景（初始化请用 setup 子命令）
+    // Web 管理服务器：初始化引导内置于 Web 界面（未初始化时自动进入）
     const { startServer } = await import('../web/server.js')
     const { url } = await startServer({ openBrowser: !process.env.AIGD_NO_OPEN })
     console.log(`[aigd] Web 管理界面已启动: ${url}`)

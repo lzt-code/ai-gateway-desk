@@ -73,7 +73,7 @@ export function parseRouteFallbackChain(versionData) {
 const DEBUG_BODY_PREVIEW_LIMIT = 1000
 
 /**
- * token 脱敏：保留首尾 4 字符，中间以 * 填充（与 setup.js maskToken 同策略）
+ * token 脱敏：保留首尾 4 字符，中间以 * 填充（与 cloudflare/api.js maskToken 同策略）
  * @param {string} token
  * @returns {string}
  */

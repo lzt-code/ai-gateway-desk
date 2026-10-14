@@ -189,7 +189,7 @@ try {
     check(body.workerEndpoints.workersDev === '', 'workersDev 空串')
     check(body.workerEndpoints.customDomains.length === 0, 'customDomains 空')
     check(body.workerEndpoints.routes.length === 0, 'routes 空')
-    check(body.workerEndpoints.error.includes('aigd setup'), '引导 setup')
+    check(body.workerEndpoints.error.includes('初始化引导'), '引导初始化')
   }
 
   section('4. backfill：无管理 Token → 400')

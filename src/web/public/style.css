@@ -923,3 +923,80 @@ body.init-blocking #view-models a.side-ext-link {
     animation: busy-spin 0.7s linear infinite !important;
   }
 }
+
+/* ── Web 初始化引导（未初始化时自动进入的浮层）─────────────── */
+#onboarding {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  overflow-y: auto;
+  padding: 6vh 1rem 2rem;
+  background: var(--backdrop);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+#onboarding[hidden] { display: none !important; }
+.onboarding-panel {
+  width: 100%;
+  max-width: 720px;
+  background: var(--card-sheen), var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3), var(--highlight);
+  padding: 1.4rem 1.6rem 1.6rem;
+  animation: flash-in 0.18s var(--ease-out);
+}
+.onboarding-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.8rem;
+  margin-bottom: 1rem;
+}
+.onboarding-header h2 { margin: 0; font-size: 1.15rem; }
+.onboarding-desc { color: var(--muted); margin: 0 0 1rem; }
+.onboarding-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+.onboarding-card {
+  background: var(--elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.onboarding-card h3 { margin: 0; font-size: 1rem; }
+.onboarding-card p { margin: 0; color: var(--muted); font-size: 0.88rem; line-height: 1.5; }
+.onboarding-card .btn { align-self: flex-start; margin-top: auto; }
+.onboarding-steps { margin: 0 0 1rem; padding-left: 1.2rem; line-height: 1.7; }
+.onboarding-steps li { margin-bottom: 0.4rem; }
+.onboarding-steps li.ok { color: var(--ok); }
+.onboarding-steps li.warn { color: var(--warn); }
+.onboarding-note { color: var(--muted); font-size: 0.82rem; margin: 0.4rem 0; }
+.onboarding-perms { margin: 0.3rem 0 0; padding-left: 1.1rem; font-size: 0.82rem; color: var(--muted); }
+.onboarding-perms li { margin-bottom: 0.2rem; }
+.onboarding-reason { color: var(--muted); opacity: 0.8; }
+.onboarding-form { display: flex; flex-direction: column; gap: 0.5rem; }
+.onboarding-field { margin-bottom: 0.25rem; }
+.onboarding-field-label { display: block; margin-bottom: 0.2rem; font-size: 0.85rem; color: var(--muted); }
+.onboarding-form .btn { align-self: flex-start; }
+.onboarding-actions {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 1.1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.onboarding-status { white-space: pre-wrap; font-size: 0.85rem; color: var(--muted); margin-top: 0.4rem; }
+.onboarding-status.ok { color: var(--ok); }
+.onboarding-status.err { color: var(--err); }
+.onboarding-done-title { color: var(--ok); margin: 0 0 0.6rem; }

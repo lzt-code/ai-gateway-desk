@@ -53,11 +53,11 @@
 ```
 ai-gateway-desk/
 ├── src/                      # 本地管理工具（Node.js ESM）
-│   ├── bin/aigd.js     # CLI 入口（web 默认 / gateway / setup / help）
-│   ├── setup.js              # 初始化向导（7 步，终端交互）
+│   ├── bin/aigd.js     # CLI 入口（web 默认 / gateway / help）
 │   ├── gateway/              # 本地网关（双后端）：server / config-store / router /
 │   │                         # provider-keys / provider-lookup / fallback / backends/
 │   ├── core/                 # config（providers.json 校验）/ state（model-states）/
+│   │                         # providers-config（providers.json gateway/kv 合并写）/
 │   │                         # routes-store（data/routes.json 动态路由真相源）/
 │   │                         # token-store（双凭证安全存储）
 │   ├── cloudflare/           # api.js（REST 封装，含 Dynamic Routes 读写）/
@@ -68,8 +68,8 @@ ai-gateway-desk/
 │   ├── output/               # generate（models.json）/ deploy（KV 部署 + 路由映射）/
 │   │                         # routes-deploy（动态路由 REST 部署编排）
 │   ├── web/                  # server.js（Hono + 心跳退出）/ sync-flow.js（四步编排）/
-│   │                         # public/（前端五视图，Vanilla JS）
-│   └── logic/                # 纯逻辑模块（render / actions / provider-actions / account-actions）
+│   │                         # public/（前端五视图 + 初始化引导浮层，Vanilla JS）
+│   └── logic/                # 纯逻辑模块（render / actions / provider-actions / account-actions / onboarding）
 ├── ai-gateway-desk-worker/      # Cloudflare Worker（零依赖转发层）
 │   └── src/                  # index.js / http.js / config.js / models-list.js / routes/
 ├── data/                     # 运行时数据（gitignore，仅 *.example.json 白名单提交）
@@ -82,13 +82,18 @@ ai-gateway-desk/
 
 ### 4.1 CLI 入口 — `src/bin/aigd.js`
 
-子命令：`web`（默认，启动本地 Web 界面）、`gateway`（启动本地长驻网关，OpenAI 兼容端点，仅绑 `127.0.0.1:8788`，支持 `--port` / 环境变量 `AIGD_GATEWAY_PORT`）、`setup`（终端初始化向导）。`sync` / `deploy` 为规划占位（Web 界面内已实现同功能）。
+子命令：`web`（默认，启动本地 Web 界面）、`gateway`（启动本地长驻网关，OpenAI 兼容端点，仅绑 `127.0.0.1:8788`，支持 `--port` / 环境变量 `AIGD_GATEWAY_PORT`）。`sync` / `deploy` 为规划占位（Web 界面内已实现同功能）。初始化引导已内置于 Web 界面（见 §4.2）。
 
-### 4.2 初始化向导 — `src/setup.js`
+### 4.2 初始化引导 — `src/logic/onboarding.js` + `src/web/public/onboarding.js`
 
-7 步终端引导：管理 API Token → Account ID → 建 gateway → 验证 `cfut_xxx` → 添加 Provider（BYOK 存厂商 Key / 建 Custom Provider）→ 创建 KV namespace → 生成 `data/providers.json`。
+**触发**：启动后前端拉 `GET /api/account/status`，`initialized === false`（本机无管理 API Token）时自动显示引导浮层（`#onboarding`）。已初始化则保持正常界面，可在「账户」页点「初始化引导」重新打开。
 
-输出约定：KV namespace id 回填 `providers.json` 的 `kv.namespaceId`——**唯一数据源**，部署时由此读取。
+两条路径：
+
+- **A. 没有 Cloudflare 账号**：纯文案 + 外链（注册页 / API Tokens 页 / 所需权限清单，权限数据复用 `REQUIRED_PERMISSIONS`），引导完成后跳到路径 B。
+- **B. 已经用过 aigd / 已有账号**：填两个 Token。后端 `discoverOnboarding` 用管理 Token 调 `GET /accounts` 自动解析 `accountId` 并列已有 Gateway；`completeOnboarding` 确认/创建 Gateway → 验证 `cfut_xxx` → 保存双 Token → 查找/创建 KV namespace（`models-kv`）→ 写 `data/providers.json`。
+
+输出约定：KV namespace id 回填 `providers.json` 的 `kv.namespaceId`——**唯一数据源**，部署时由此读取。关键步骤（网关 / 验证 / 落盘）失败即整体失败且不落盘半成品；KV 为尽力而为（失败仅告警）。
 
 ### 4.3 Web 管理端 — `src/web/server.js`
 
@@ -103,7 +108,8 @@ Hono 应用，`createApp` 支持依赖注入（测试可 mock stateStore / confi
 | 调试 | `GET /api/settings/debug`、`POST /api/settings/debug`（详细日志开关，持久化到 providers.json 顶层 `debug` 字段） |
 | Worker | `GET /api/workers/status`、`POST /api/workers/deploy` |
 | 网关视图 | `GET /api/gateway/overview`、`POST /api/gateway/{start,stop,backfill-keys,provider-key}`（见 §4.12） |
-| 账户 | `GET /api/account/status`、`POST /api/account/{update-token,clear-token,setup}` |
+| 账户 | `GET /api/account/status`、`POST /api/account/{update-token,clear-token}` |
+| 初始化引导 | `POST /api/onboarding/{discover,complete}`（见 §4.2） |
 | 动态路由配置 | `GET /api/routes/config`、`POST /api/routes/{save,deploy,delete,refresh}`（本地编辑 + REST 部署，见 §4.11） |
 
 ### 4.4 前端 — `src/web/public/`
@@ -114,7 +120,9 @@ Vanilla JS 单页（`app.js` / `index.html` / `style.css`），五个视图 tab�
 - **模型**：模型表格 + Provider 侧栏 + 关键字筛选，状态切换（selected/pending/hidden）、编辑、手动添加、批量删除
 - **动态路由**：路由表格（fallback 链 / 状态 / 操作），表单化编辑（模板 + 「provider/模型」下拉建议）→ 一键部署（REST），「拉取云端路由」同步展示层
 - **网关**：本地网关 / Cloudflare 网关双状态卡片、本地网关「启动 / 关闭」按钮、各 provider 本地凭证状态与「从云端回填 Key」、统一 Base URL 一键复制、手工录入 BYOK Key、部署 Worker
-- **账户**：双 token 槽位管理 + gateway 信息 + 初始化向导入口
+- **账户**：双 token 槽位管理 + gateway 信息 + 初始化引导入口（重新打开引导浮层）
+
+> 初始化引导浮层（`onboarding.js`）不占 tab：启动时未初始化自动弹出，内容见 §4.2。
 
 ### 4.5 Cloudflare REST 封装 — `src/cloudflare/`
 
@@ -566,10 +574,9 @@ npm install -g ai-gateway-desk
 # 启动本地 Web 管理界面（默认子命令，启动后自动打开浏览器）
 aigd web
 # 等价于：node src/bin/aigd.js web（不带子命令时默认即 web）
-
-# 首次使用前先运行初始化向导（管理 Token → Account ID → 建 gateway → cfut_xxx → provider → KV）：
-aigd setup
 ```
+
+> 首次使用：启动后检测到本机无管理 API Token，**自动进入 Web 初始化引导**——没有 Cloudflare 账号的按提示注册并创建管理 Token；已有账号的直接填两个 Token（管理 API Token + `cfut_xxx`），工具自动读取账号与网关、创建 / 复用 KV 并写入 `data/providers.json`。已初始化可在「账户」页点「初始化引导」重新打开。
 
 > 关闭语义与桌面应用一致：浏览器页面全部关闭后本地服务器自动退出（默认 15 秒心跳超时；页面关闭瞬间通过 `pagehide` 发送的 goodbye 信号可将退出提前到约 5 秒内）。期间刷新页面不会误退出；纯 API / 从未打开页面的场景不自动退出，按 `Ctrl+C` 手动结束。
 
@@ -589,7 +596,7 @@ aigd setup
 | Provider | 云端 Provider 列表（合并本地缓存）：编辑（slug 只读 / name 可改 / api key 仅覆盖不查看 / 云端启用 / 本地参与发现）、删除（云端 + 本地同步）、刷新 |
 | 模型 | 模型表格（模型ID / Provider / 上下文 / 状态 四列）：Provider 侧栏与关键字筛选、状态切换、同步云端、保存并提交 |
 | 网关 | 本地网关卡（运行状态 / 监听地址 / Base URL 复制 / 启动 · 关闭按钮）+ Cloudflare Worker 卡（自动发现地址、部署 Worker）+ 各 Provider 本地凭证表（回填 / 录入 / 覆盖） |
-| 账户 | 双 token 槽位管理（管理 API Token / Gateway Token）+ 管理 Token 名称与所需权限自检 + gateway 信息，初始化向导入口 |
+| 账户 | 双 token 槽位管理（管理 API Token / Gateway Token）+ 管理 Token 名称与所需权限自检 + gateway 信息，初始化引导入口 |
 
 > 管理 Token 获取顺序：环境变量 `CLOUDFLARE_API_TOKEN` > 本地安全存储；缺失时 Provider 拉取降级为只读本地缓存。
 
@@ -603,7 +610,7 @@ npx wrangler login                        # 交互式登录
 # 或 export CLOUDFLARE_ACCOUNT_ID=<你的账号ID>   # CI 场景
 
 # 2. 准备 KV namespace id（二选一）：
-aigd setup                    # 推荐：向导第 6 步自动创建 KV 并回填 data/providers.json
+#    推荐：在 Web 界面「账户」页运行初始化引导（自动创建 KV 并回填 data/providers.json）
 # 或手动创建后填入 data/providers.json 的 kv.namespaceId：
 #   npx wrangler kv:namespace create MODELS_KV
 
@@ -696,7 +703,7 @@ npm test   # 聚合运行 test/ 下全部测试（test/run-all.mjs）
 | `test-providers-sync.mjs` | `mergeProviders` 合并逻辑 |
 | `test-provider-view.mjs` | Provider 视图纯函数 + api update 端点 |
 | `test-account-view.mjs` | Worker/账户视图纯函数 + 渲染 |
-| `test-setup.mjs` | setup 纯函数 + 假 token 全流程 + CLI 接线 |
+| `test-onboarding.mjs` | Web 初始化引导编排（discover/complete）+ providers-config + 前端纯函数 |
 | `test-worker-config.mjs` | `getGatewayConfig` / 缺 env 友好 500 / 转发映射 |
 | `test-package-meta.mjs` | npm 发布元数据（bin / files / engines 等） |
 | `test-web-server.mjs` | Web 服务器基础（Hono + 静态文件 + 启动器） |
@@ -704,6 +711,7 @@ npm test   # 聚合运行 test/ 下全部测试（test/run-all.mjs）
 | `test-web-api-sync.mjs` | 同步 + 保存部署 API |
 | `test-web-api-providers.mjs` | Provider 管理 API |
 | `test-web-api-account.mjs` | Worker + 账户管理 API |
+| `test-web-api-onboarding.mjs` | 初始化引导 API（status.initialized + discover/complete） |
 | `test-web-frontend.mjs` | 前端骨架 |
 | `test-web-models-view.mjs` | 前端模型视图纯函数 |
 | `test-web-providers-view.mjs` | 前端 Provider 视图纯函数 |

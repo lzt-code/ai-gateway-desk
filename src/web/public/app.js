@@ -9,6 +9,8 @@
  * - 选项卡 data-view 与视图容器 view-<name> 的 id 是任务 31-33 的绑定契约。
  */
 
+import { initOnboarding, openOnboarding } from './onboarding.js'
+
 // ── 视图定义（Web 五视图）────
 export const VIEWS = {
   PROVIDERS: 'providers',  // 选项卡 1：Provider
@@ -65,7 +67,7 @@ export function buildCfGatewayLogsUrl(accountId, gatewayId) {
 // ── Cloudflare API Tokens（管理令牌）外部入口 ──────────
 // 账户页「管理 API Token」卡「在 Cloudflare 中添加 / 编辑 ↗」链接：
 // 管理令牌是账户级 user 令牌，统一在 profile 的 API Tokens 页创建/编辑；
-// Cloudflare 不提供 token 详情直达 URL，故始终指向该列表页（与 setup.js 第 1 步一致）。
+// Cloudflare 不提供 token 详情直达 URL，故始终指向该列表页（与初始化引导第 1 步一致）。
 export const CF_API_TOKENS_URL = 'https://dash.cloudflare.com/profile/api-tokens'
 
 // ── 动态路由视图：路由收集（纯函数，Node 测试可直接 import）──────
@@ -1689,6 +1691,8 @@ export function start() {
     startLogStream() // 服务端 IO 日志实时镜像（与 terminal 一致）
     initCfRoutesLink() // 模型页侧栏「动态路由 ↗」精化到当前网关（静默失败）
     initCfLogsLink() // 模型页侧栏「查看日志 ↗」精化到当前网关（静默失败）
+    // 未初始化（本机无管理 API Token）→ 自动进入 Web 初始化引导（浮层）
+    initOnboarding({ api })
     const bar = document.getElementById('tab-bar')
     if (bar) {
       bar.addEventListener('click', (e) => {
@@ -5892,7 +5896,7 @@ export function buildAccountStatusView(tokens, gateway, tokenInfo, requiredPermi
     `<h3>Gateway 信息</h3>` +
     `<div class="status-item"><span class="k">accountId</span><span class="v${accId === '未配置' ? ' warn' : ''}">${escapeHtml(accId)}</span></div>` +
     `<div class="status-item"><span class="k">gatewayId</span><span class="v${gwId === '未配置' ? ' warn' : ''}">${escapeHtml(gwId)}</span></div>` +
-    (bothUnconfigured ? `<p class="gateway-hint warn">尚未初始化，点击右侧『初始化向导』</p>` : '') +
+    (bothUnconfigured ? `<p class="gateway-hint warn">尚未初始化，点击右侧『初始化引导』</p>` : '') +
     `</div>` +
     slotCards
   )
@@ -6530,7 +6534,7 @@ export function renderAccountView(container) {
   `
 
   const statusBox = container.querySelector('#account-status')
-  // 初始化向导按钮位于右侧按钮栏（#account-side-actions，index.html 静态定义，随视图显隐）
+  // 初始化引导按钮位于右侧按钮栏（#account-side-actions，index.html 静态定义，随视图显隐）
   const btnSetup = document.getElementById('btn-setup')
 
   // ── 渲染辅助 ────────────────────────────────────────────
@@ -6659,21 +6663,10 @@ export function renderAccountView(container) {
     }
   }
 
-  // 初始化向导（已知坑 6：stdio inherit 在服务器终端交互，浏览器只 flash 提示）
-  async function runSetup() {
-    const yes = await confirmDialog('运行初始化向导？', '向导将在服务器终端启动，请切换到终端完成 7 步配置')
-    if (!yes) return
-    if (btnSetup) btnSetup.disabled = true
-    try {
-      await withBusy('正在启动初始化向导…', api('/api/account/setup', { method: 'POST' }))
-      flash('初始化向导已在终端启动', 'info')
-      logActivity('初始化向导已在服务器终端启动（请切换到终端完成 7 步配置）', 'info')
-    } catch (err) {
-      flash(err.message, 'err')
-      logActivity(`启动初始化向导失败：${err.message}`, 'err')
-    } finally {
-      if (btnSetup) btnSetup.disabled = false
-    }
+  // 初始化引导：打开 Web 引导浮层（取代已废弃的终端 aigd setup）
+  function runSetup() {
+    openOnboarding({ force: true, api })
+    logActivity('已打开初始化引导', 'info')
   }
 
   // ── 事件绑定（槽位卡按钮事件委托）───────────────────────

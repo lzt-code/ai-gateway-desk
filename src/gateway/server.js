@@ -227,7 +227,7 @@ export function createGatewayApp(options = {}) {
     const start = Date.now()
     const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || readMgmtToken()
     if (!mgmtToken) {
-      const message = '本地未配置管理 API Token，无法从云端拉取凭证；请先运行 aigd setup 或手工录入 Key'
+      const message = '本地未配置管理 API Token，无法从云端拉取凭证；请在「账户」页运行初始化引导或手工录入 Key'
       logResult(op, { ok: false, message, elapsedMs: Date.now() - start })
       return c.json({ error: message }, 400)
     }

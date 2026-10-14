@@ -22,16 +22,16 @@ npm install -g ai-gateway-desk
 ## 快速开始
 
 ```bash
-# 1. 启动本地 Web 管理界面（默认子命令，启动后自动打开浏览器）
+# 启动本地 Web 管理界面（默认子命令，启动后自动打开浏览器）
 aigd web
-
-# 2. 首次使用运行初始化向导，按顺序完成 7 步引导：
-#    管理 Token → Account ID → 建 gateway → 验证 cfut_xxx
-#    → 添加 Provider（BYOK / Custom Provider）→ 创建 KV → 生成配置
-aigd setup
 ```
 
-> 向导会自动创建 KV namespace 并把 id 回填到本地配置，后续部署无需手动填 KV id。
+启动后若检测到本机尚未配置管理 API Token，会**自动进入 Web 初始化引导**：
+
+- **没有 Cloudflare 账号**？按引导注册账号并创建管理 API Token（页面附权限清单）。
+- **已经用过 aigd / 已有账号**？直接填两个 Token（管理 API Token + `cfut_xxx`），工具会自动读取账号与网关、创建 / 复用 KV namespace 并写入 `data/providers.json`。
+
+> 已初始化后想重新配置，可在「账户」页点「初始化引导」。
 
 ## 管理界面
 
@@ -41,7 +41,7 @@ aigd setup
 - **模型**：模型表格，按 Provider 或关键字筛选，切换状态（selected / hidden）、编辑、添加、批量删除
 - **动态路由**：只读展示 Cloudflare Dynamic Routes 的 fallback 链
 - **网关**：本地网关运行状态与统一 Base URL、本地凭证状态与云端回填、部署云端 Worker
-- **账户**：管理双 token 槽位与 gateway 信息，重新进入初始化向导
+- **账户**：管理双 token 槽位与 gateway 信息，重新进入初始化引导
 
 > 关闭语义与桌面应用一致：浏览器页面全部关闭后本地服务器自动退出；刷新页面不会误退出。
 
@@ -118,7 +118,6 @@ npx wrangler secret put GATEWAY_ID
 |------|------|
 | `aigd web` | 启动本地 Web 管理界面（默认） |
 | `aigd gateway` | 启动本地网关（OpenAI 兼容端点，默认 127.0.0.1:8788） |
-| `aigd setup` | 运行终端初始化向导 |
 | `aigd --help` | 查看帮助 |
 
 ## 许可证

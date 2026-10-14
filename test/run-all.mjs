@@ -28,8 +28,7 @@ const TESTS = [
   'test-providers-sync.mjs',    // 任务 14：mergeProviders 纯逻辑
   'test-provider-view.mjs',     // 任务 20：Provider 视图纯函数 + api update 端点 + 列表项
   'test-account-view.mjs',      // 任务 21：Worker/账户视图纯函数（token 状态汇总 + 编排 + 渲染）
-  'test-setup.mjs',             // 任务 11：setup 纯函数 + 假 token 全流程
-  'test-setup-permissions.mjs', // 向导第 1 步权限清单覆盖账户页 REQUIRED_PERMISSIONS（防漏项漂移）
+  'test-onboarding.mjs',        // Web 初始化引导：发现/完成编排 + providers-config + 前端纯函数
   'test-worker-config.mjs',     // 任务 13：Worker 配置 env 化
   'test-package-meta.mjs',      // 任务 17：npm 发布元数据断言
   'test-web-server.mjs',        // 任务 25：Web 服务器基础（Hono + 静态文件 + 启动器）
@@ -38,6 +37,7 @@ const TESTS = [
   'test-web-api-sync.mjs',      // 任务 27：同步 + 保存部署 API（SSE 进度 + 编排 mock）
   'test-web-api-providers.mjs', // 任务 28：Provider 管理 API（云端合并 + 编辑 + 删除，全 mock）
   'test-web-api-account.mjs',   // 任务 29：Worker + 账户管理 API（状态 + 部署 + Token，全 mock）
+  'test-web-api-onboarding.mjs', // Web 初始化引导 API（status.initialized + discover/complete，全 mock）
   'test-token-info.mjs',        // 账户页管理 Token 自检（名称/权限比对纯函数 + 编排，全 mock）
   'test-web-frontend.mjs',      // 任务 30：前端骨架（结构断言 + app.js 纯函数单测）
   'test-web-models-view.mjs',   // 任务 31：前端模型视图纯函数（表格行/SSE 解析/进度状态/筛选/dirty）

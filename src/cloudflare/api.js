@@ -208,6 +208,109 @@ export async function getGateway(apiToken, accountId, gatewayId) {
   return payload?.result
 }
 
+/**
+ * 列出管理 API Token 可访问的账户（GET /accounts）
+ *
+ * 供 Web 初始化引导自动解析 accountId（用户无需手填 32 位账号标识）。
+ * 需令牌具备账户读权限（账户级令牌均可见自身账户）。
+ * @param {string} apiToken - 管理 API Token
+ * @returns {Promise<Array<{ id: string, name: string }>>} 账户列表；无账户时为空数组
+ */
+export async function listAccounts(apiToken) {
+  guard(apiToken, 'apiToken')
+  const query = new URLSearchParams({ per_page: '50' })
+  const payload = await request(apiToken, `/accounts?${query.toString()}`)
+  const rows = Array.isArray(payload?.result) ? payload.result : []
+  return rows
+    .map((a) => (a?.id ? { id: a.id, name: typeof a.name === 'string' ? a.name : '' } : null))
+    .filter(Boolean)
+}
+
+/**
+ * 列出账户下的 AI Gateway（GET 同一集合端点）
+ *
+ * 供 Web 初始化引导列出已有网关让用户选择；账户无网关时为空数组。
+ * @param {string} apiToken - 管理 API Token
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @returns {Promise<Array<{ id: string }>>} 网关列表
+ */
+export async function listGateways(apiToken, accountId) {
+  guard(accountId, 'accountId')
+  const query = new URLSearchParams({ per_page: '50' })
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/ai-gateway/gateways?${query.toString()}`
+  )
+  const rows = Array.isArray(payload?.result) ? payload.result : []
+  return rows
+    .map((g) => (g?.id ? { id: g.id } : null))
+    .filter(Boolean)
+}
+
+/**
+ * 列出账户下的 KV namespace（GET /storage/kv/namespaces）
+ *
+ * 供 Web 初始化引导查找既有的 models-kv（已用过 aigd 的用户云端已有该 namespace）。
+ * @param {string} apiToken - 管理 API Token
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @returns {Promise<Array<{ id: string, title: string }>>} namespace 列表
+ */
+export async function listKVNamespaces(apiToken, accountId) {
+  guard(accountId, 'accountId')
+  const query = new URLSearchParams({ per_page: '100' })
+  const payload = await request(
+    apiToken,
+    `/accounts/${encodeURIComponent(accountId)}/storage/kv/namespaces?${query.toString()}`
+  )
+  const rows = Array.isArray(payload?.result) ? payload.result : []
+  return rows
+    .map((n) => (n?.id ? { id: n.id, title: typeof n.title === 'string' ? n.title : '' } : null))
+    .filter(Boolean)
+}
+
+/**
+ * 直接请求 gateway 端点验证 cfut_xxx（GET /v1/<account>/<gateway>/models）
+ *
+ * 2xx 即验证通过；4xx/5xx（认证错误）与网络异常均视为失败。
+ * 走统一 IO 日志（gateway:verify:<gatewayId>），token 使用 cf-aig-authorization 传递。
+ * @param {string} host - AI Gateway 主机（默认 gateway.ai.cloudflare.com）
+ * @param {string} accountId - Cloudflare 账户 ID
+ * @param {string} gatewayId - gateway id
+ * @param {string} token - cfut_xxx
+ * @returns {Promise<boolean>} 是否验证通过
+ */
+export async function verifyGatewayToken(host, accountId, gatewayId, token) {
+  guard(accountId, 'accountId')
+  guard(gatewayId, 'gatewayId')
+  guard(token, 'token')
+  const op = `gateway:verify:${gatewayId}`
+  const url = `https://${host || 'gateway.ai.cloudflare.com'}/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayId)}/models`
+  const start = Date.now()
+  logRequest(op, { method: 'GET', url, headers: { 'cf-aig-authorization': `Bearer ${maskToken(token)}` } })
+  try {
+    const res = await fetchWithTimeout(url, {
+      method: 'GET',
+      headers: { 'cf-aig-authorization': `Bearer ${token}` },
+    }, 10_000)
+    const elapsed = Date.now() - start
+    logResponse(op, { status: res.status, output: res.ok ? 'ok' : 'auth failed', elapsedMs: elapsed })
+    logResult(op, { ok: res.ok, message: res.ok ? 'verified' : `HTTP ${res.status}`, elapsedMs: elapsed })
+    return res.ok
+  } catch (err) {
+    const elapsed = Date.now() - start
+    logResponse(op, { status: null, output: err.message, elapsedMs: elapsed })
+    logResult(op, { ok: false, message: err.message, elapsedMs: elapsed })
+    return false
+  }
+}
+
+/** token 脱敏：只保留首尾 4 字符（与 discover.js maskToken 同策略） */
+function maskToken(token) {
+  const s = String(token || '')
+  if (s.length <= 8) return '***'
+  return `${s.slice(0, 4)}${'*'.repeat(Math.max(4, s.length - 8))}${s.slice(-4)}`
+}
+
 // ─── BYOK Provider Config ────────────────────────────────
 
 /**

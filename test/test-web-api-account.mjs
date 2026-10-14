@@ -5,8 +5,7 @@
  * models.json 缺失）、POST /api/workers/deploy（成功 / 失败 / 未配置 KV / 超时）、
  * GET /api/account/status（本地 / env 优先 / gateway 未配置）、
  * POST /api/account/update-token（成功 / 空 token / 非法 slot + 缺 token 字段）、
- * POST /api/account/clear-token（management / gateway 文案不同 / 非法 slot）、
- * POST /api/account/setup（spawn 参数断言）、任务 26/28 回归。
+ * POST /api/account/clear-token（management / gateway 文案不同 / 非法 slot）、任务 26/28 回归。
  *
  * 核心策略：全部依赖 mock（deps 注入），零触网零写盘零真实 spawn；
  * 部署超时时长经 deps.deployTimeoutMs 注入短值（50ms）；env 变量先清理、用后恢复。
@@ -449,23 +448,6 @@ section('POST /api/account/clear-token')
   const res = await post(app, '/api/account/clear-token', { slot: 'foo' })
   const data = await res.json()
   check(res.status === 400 && data.error.includes('invalid slot'), '测试 16: 非法 slot → 400')
-}
-
-// ── 初始化向导 ───────────────────────────────────────────
-
-section('POST /api/account/setup')
-
-{
-  clearEnv()
-  const deps = makeDeps()
-  const { app } = makeApp(deps)
-  const res = await post(app, '/api/account/setup', {})
-  const data = await res.json()
-  check(res.status === 200 && data.ok === true && data.started === true, '测试 17: started true')
-  const s = deps.calls.find((c) => c[0] === 'spawn')
-  check(s && s[1] === process.execPath, '测试 17: spawn cmd === process.execPath')
-  check(s && s[2].includes('setup'), '测试 17: spawn args 含 setup')
-  check(s && s[3].stdio === 'inherit', '测试 17: spawn opts.stdio === inherit')
 }
 
 // ── 回归 ─────────────────────────────────────────────────

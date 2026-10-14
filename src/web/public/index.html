@@ -43,6 +43,18 @@
   <button id="theme-toggle" class="theme-toggle" type="button" aria-label="切换主题"></button>
 </header>
 
+<!-- Web 初始化引导浮层：启动后检测到本机未配置管理 API Token 时自动显示
+     （见 app.js → initOnboarding）。内容由 onboarding.js 动态渲染。 -->
+<div id="onboarding" hidden>
+  <div class="onboarding-panel" role="dialog" aria-modal="true" aria-label="初始化引导">
+    <header class="onboarding-header">
+      <h2>初始化引导</h2>
+      <button id="onboarding-later" class="btn btn-default" type="button">稍后配置</button>
+    </header>
+    <div id="onboarding-body"></div>
+  </div>
+</div>
+
 <div id="app-main">
   <main id="view-container">
     <!-- 四视图容器：id 约定 view-<name>，hidden 切换（任务 31-33 填充内容） -->
@@ -118,8 +130,8 @@
     <div id="account-side-actions" class="side-actions" hidden>
       <div class="side-group">
         <div class="side-group-title">账户操作</div>
-        <!-- 初始化向导（已知坑 6：stdio inherit 在服务器终端交互，浏览器只 flash 提示） -->
-        <button id="btn-setup" class="btn btn-default" type="button">初始化向导</button>
+        <!-- 重新运行 Web 初始化引导（浮层，见 onboarding.js） -->
+        <button id="btn-setup" class="btn btn-default" type="button">初始化引导</button>
       </div>
     </div>
   </aside>

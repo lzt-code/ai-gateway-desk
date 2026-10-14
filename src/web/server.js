@@ -94,6 +94,7 @@ import {
   buildWorkersStatus,
   checkKVKey,
 } from '../logic/account-actions.js'
+import { discoverOnboarding, completeOnboarding, isInitialized } from '../logic/onboarding.js'
 
 const DEFAULT_PUBLIC_DIR = fileURLToPath(new URL('./public/', import.meta.url))
 const __filename = fileURLToPath(import.meta.url)
@@ -213,6 +214,10 @@ const DEFAULT_DEPS = {
   checkKVKey,
   // 账户页「管理 API Token」卡自检（令牌名称 + 所需权限）
   fetchManagementTokenInfo,
+  // Web 初始化引导（未初始化时自动进入；discover/complete 为可注入编排）
+  discoverOnboarding,
+  completeOnboarding,
+  isInitialized,
   loadModelsJsonState,
   setDebugFlag,
   spawnFn: spawn,
@@ -232,9 +237,8 @@ const IMPACT_TEXT = {
   gateway: 'Gateway Token（cfut_xxx）已清除：模型发现（同步）将不可用；需在 Cloudflare dashboard 的网关 Settings 重新创建后粘贴',
 }
 
-// 任务 29：部署 / 向导子进程路径（src/web/ 上溯：scripts 到项目根，bin 在 src/ 下）
+// 任务 29：部署子进程路径（src/web/ 上溯：scripts 到项目根）
 const SCRIPTS_DEPLOY_PATH = path.resolve(__dirname, '..', '..', 'scripts', 'deploy.mjs')
-const AIGD_BIN_PATH = path.resolve(__dirname, '..', 'bin', 'aigd.js')
 
 // 任务 28：按 type 统计 provider 数（Custom Providers / BYOK），供
 // /api/providers 响应 sourceCounts 字段（前端详细日志展示「Custom X / BYOK Y」）
@@ -448,7 +452,7 @@ async function readJsonBody(c) {
  *        readKvManualModels / writeKvManualModels / readKvModels / buildHiddenModelsMap /
  *        buildManualModelsMap / applyHiddenModels / applyManualModels / applySelectedModels / summarizeTokenStatus /
  *        summarizeGatewayInfo / updateToken / clearSlotToken / buildWorkersStatus /
- *        checkKVKey / loadModelsJsonState / spawnFn（部署/向导子进程；
+ *        checkKVKey / loadModelsJsonState / spawnFn（部署子进程；
  *        部署超时可用 deps.deployTimeoutMs 覆盖，默认 120s）
  * @param {{ lastHeartbeat: number|null, goodbyeAt: number|null }} [options.heartbeatState]
  *        心跳状态（startServer 创建并注入，配合前端心跳实现「页面全部关闭 →
@@ -2116,8 +2120,8 @@ export function createApp({
             routes: [],
             notes: [],
             error: mgmtToken
-              ? 'providers.json 缺少 gateway.accountId，请先完成 setup'
-              : '本地未配置管理 API Token，请先运行 aigd setup',
+              ? 'providers.json 缺少 gateway.accountId，请在「账户」页重新运行初始化引导'
+              : '本地未配置管理 API Token，请在「账户」页运行初始化引导',
           }
     }
 
@@ -2224,8 +2228,8 @@ export function createApp({
         routes: [],
         notes: [],
         error: mgmtToken
-          ? 'providers.json 缺少 gateway.accountId，请先完成 setup'
-          : '本地未配置管理 API Token，请先运行 aigd setup',
+          ? 'providers.json 缺少 gateway.accountId，请在「账户」页重新运行初始化引导'
+          : '本地未配置管理 API Token，请在「账户」页运行初始化引导',
       }
     }
     ioLogResult(op, {
@@ -2244,7 +2248,7 @@ export function createApp({
     const start = Date.now()
     const mgmtToken = process.env.CLOUDFLARE_API_TOKEN || depsAll.readManagementToken()
     if (!mgmtToken) {
-      const message = '本地未配置管理 API Token，无法从云端拉取凭证；请先运行 aigd setup 或手工录入 Key'
+      const message = '本地未配置管理 API Token，无法从云端拉取凭证；请在「账户」页运行初始化引导或手工录入 Key'
       ioLogResult(op, { ok: false, message, elapsedMs: Date.now() - start })
       return c.json({ error: message }, 400)
     }
@@ -2335,14 +2339,22 @@ export function createApp({
   // requiredPermissions：所需权限清单（静态，不触网）——账户页先用它渲染权限表格，
   // 再由 /api/account/token-info 回填「已具备/缺失」，避免权限拉取失败时表格整块消失。
   app.get('/api/account/status', async (c) => {
+    const envManagement = process.env.CLOUDFLARE_API_TOKEN
+    const localManagement = depsAll.readManagementToken()
     const tokens = depsAll.summarizeTokenStatus({
-      envManagement: process.env.CLOUDFLARE_API_TOKEN,
+      envManagement,
       envGateway: process.env.GATEWAY_TOKEN,
-      localManagement: depsAll.readManagementToken(),
+      localManagement,
       localGateway: depsAll.readToken(),
     })
-    const gateway = depsAll.summarizeGatewayInfo(configStore.load().gateway)
-    return c.json({ ok: true, tokens, gateway, requiredPermissions: REQUIRED_PERMISSIONS })
+    // providers.json 可能尚不存在（全新机器）→ 视为未配置，不报错
+    let gatewayConfig = {}
+    try { gatewayConfig = configStore.load().gateway } catch { gatewayConfig = {} }
+    const gateway = depsAll.summarizeGatewayInfo(gatewayConfig)
+    // initialized：本机是否已完成初始化（判定依据：有管理 API Token）。
+    // 未初始化时前端自动进入 Web 初始化引导。
+    const initialized = depsAll.isInitialized({ envManagement, localManagement })
+    return c.json({ ok: true, initialized, tokens, gateway, requiredPermissions: REQUIRED_PERMISSIONS })
   })
 
   // GET /api/account/token-info — 管理 API Token 自检（令牌名称 + 所需权限）
@@ -2424,20 +2436,48 @@ export function createApp({
     return c.json({ ok: true, cleared: slot, impact: IMPACT_TEXT[slot] })
   })
 
-  // POST /api/account/setup — 触发初始化向导（spawn aigd setup，stdio inherit，
-  // 立即返回 started:true；向导交互在服务器终端进行，这是本机工具的设计）
-  app.post('/api/account/setup', (c) => {
-    const op = 'account:setup'
+  // ─── Web 初始化引导 API（取代已废弃的终端 aigd setup）───────────────
+  // 未初始化（本机无管理 API Token）时前端自动进入引导；以下两个端点为
+  // 「已经用过 aigd / 已有账号」路径服务：解析 account/gateway → 完成落盘。
+
+  // POST /api/onboarding/discover — 用管理 Token 解析 accountId 并列网关
+  app.post('/api/onboarding/discover', async (c) => {
+    const op = 'onboarding:discover'
     const start = Date.now()
-    try {
-      depsAll.spawnFn(process.execPath, [AIGD_BIN_PATH, 'setup'], { stdio: 'inherit' })
-    } catch (err) {
-      const message = err.message || 'spawn failed'
-      ioLogResult(op, { ok: false, message, elapsedMs: Date.now() - start })
-      return c.json({ error: message }, 500)
-    }
-    ioLogResult(op, { ok: true, message: 'started', elapsedMs: Date.now() - start })
-    return c.json({ ok: true, started: true })
+    const body = await readJsonBody(c)
+    if (body === null) return c.json({ error: 'invalid json body' }, 400)
+    const r = await depsAll.discoverOnboarding({
+      managementToken: body.managementToken,
+      accountId: body.accountId,
+    })
+    ioLogResult(op, {
+      ok: !!r.ok,
+      message: r.ok ? `accountId=${r.accountId} gateways=${(r.gateways || []).length}` : r.error,
+      elapsedMs: Date.now() - start,
+    })
+    if (!r.ok) return c.json({ ok: false, error: r.error || '发现失败' })
+    return c.json({ ok: true, accounts: r.accounts, accountId: r.accountId, gateways: r.gateways })
+  })
+
+  // POST /api/onboarding/complete — 确认/创建 gateway → 验证 cfut → 保存 → KV → 写配置
+  app.post('/api/onboarding/complete', async (c) => {
+    const op = 'onboarding:complete'
+    const start = Date.now()
+    const body = await readJsonBody(c)
+    if (body === null) return c.json({ error: 'invalid json body' }, 400)
+    const r = await depsAll.completeOnboarding({
+      managementToken: body.managementToken,
+      accountId: body.accountId,
+      gatewayId: body.gatewayId,
+      gatewayToken: body.gatewayToken,
+    })
+    ioLogResult(op, {
+      ok: !!r.ok,
+      message: r.ok ? `gateway=${r.gatewayId} kv=${r.kvNamespaceId || '(无)'}` : r.error,
+      elapsedMs: Date.now() - start,
+    })
+    if (!r.ok) return c.json({ ok: false, error: r.error || '初始化失败', steps: r.steps })
+    return c.json({ ok: true, steps: r.steps, gatewayId: r.gatewayId, kvNamespaceId: r.kvNamespaceId, warnings: r.warnings })
   })
 
   // ─── 动态路由配置 API（本地编辑 + REST 部署，注册在静态文件中间件之前）───

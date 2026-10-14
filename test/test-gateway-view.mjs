@@ -105,9 +105,9 @@ section('2. buildCloudWorkerCard')
   check(empty.includes('未绑定'), '无自定义域名 → 未绑定')
 
   const errCard = buildCloudWorkerCard({
-    workerEndpoints: { workersDev: '', customDomains: [], routes: [], error: '本地未配置管理 API Token，请先运行 aigd setup' },
+    workerEndpoints: { workersDev: '', customDomains: [], routes: [], error: '本地未配置管理 API Token，请在「账户」页运行初始化引导' },
   })
-  check(errCard.includes('aigd setup'), '展示发现错误提示')
+  check(errCard.includes('初始化引导'), '展示发现错误提示')
 
   const noteCard = buildCloudWorkerCard({
     workerEndpoints: {
