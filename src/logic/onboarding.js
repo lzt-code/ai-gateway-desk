@@ -38,6 +38,32 @@ import { logResult as ioLogResult } from '../core/io-logger.js'
 export const KV_NAMESPACE_TITLE = 'models-kv'
 
 /**
+ * 组装 cfut_xxx 验证失败的可读提示
+ *
+ * 区分两类失败，避免把「网络不可达」误报成「令牌错误」：
+ *   - 401/403 → 令牌未通过认证（与该 account 不同账号，或网关未开启 Authentication）
+ *   - status 为 null（网络失败）→ 无法连接 AI Gateway
+ * @param {object} input
+ * @param {string} [input.detail] - 来自 verifyGatewayToken 的原始原因
+ * @param {number|null} [input.status] - HTTP 状态码（网络失败为 null）
+ * @param {string} [input.accountId]
+ * @param {string} [input.gatewayId]
+ * @param {string} [input.host]
+ * @returns {string}
+ */
+export function verifyFailureHint({ detail, status, accountId, gatewayId, host } = {}) {
+  const base = detail || '令牌验证失败（请确认 token 已创建且绑定该 gateway）'
+  const target = `account=${accountId || '?'} gateway=${gatewayId || '?'} host=${host || 'gateway.ai.cloudflare.com'}`
+  if (status === 401 || status === 403) {
+    return `${base}（该 cfut_xxx 未被接受：AI Gateway Token 按账号生效，请确认它与该 account 同属一个 Cloudflare 账号，且已在网关设置中开启 Authentication；${target}）`
+  }
+  if (status == null) {
+    return `${base}（无法连接 AI Gateway：${target}，请检查网络或代理）`
+  }
+  return `${base}（${target}）`
+}
+
+/**
  * 是否已初始化（判定依据：有管理 API Token 即视为已初始化）
  *
  * env 提供的管理 Token（CLOUDFLARE_API_TOKEN）优先，其次本地安全存储。
@@ -148,8 +174,17 @@ export async function completeOnboarding(input = {}, deps = {}) {
   // ── 关键步骤 2：验证 cfut_xxx ──
   try {
     const verified = await verifyGatewayTokenFn(host, accountId, gatewayId, gatewayToken)
-    if (!verified) throw new Error('令牌验证失败（请确认 token 已创建且绑定该 gateway）')
-    steps.push({ step: 'cfut_xxx', ok: true, message: '已验证 ✓' })
+    // 兼容旧契约（boolean）与新契约（{ ok, status, detail }）
+    const structured = verified !== null && typeof verified === 'object'
+    const ok = structured ? !!verified.ok : !!verified
+    if (!ok) {
+      const detail = structured && verified.detail ? verified.detail : ''
+      const status = structured ? verified.status : undefined
+      throw new Error(verifyFailureHint({ detail, status, accountId, gatewayId, host }))
+    }
+    // 2xx 是「令牌有效且探测端点可用」的完整证据；非认证类的 4xx 只证明认证已放行
+    const clean = !structured || (verified.status != null && verified.status >= 200 && verified.status < 300)
+    steps.push({ step: 'cfut_xxx', ok: true, message: clean ? '已验证 ✓' : '已通过网关认证 ✓' })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     steps.push({ step: 'cfut_xxx', ok: false, message })

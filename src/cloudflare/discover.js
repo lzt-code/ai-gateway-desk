@@ -4,6 +4,7 @@
  */
 
 import { listDynamicRoutes, getDynamicRouteDetail } from './api.js'
+import { withNetworkRetry, describeNetworkError } from '../core/net-retry.js'
 
 const FETCH_TIMEOUT = 15_000 // 15 秒超时
 
@@ -268,7 +269,16 @@ export async function discoverModels(config, gatewayToken, onProgress, providerF
         emitDebug({ phase: 'request', method, url, headers: masked })
       }
 
-      const response = await fetchWithTimeout(url, { method, headers })
+      const response = await withNetworkRetry(
+        () => fetchWithTimeout(url, { method, headers }),
+        {
+          onRetry: ({ attempt, waitMs, detail }) =>
+            console.log(`[discover] 连接失败 [${slug}] ${waitMs}ms 后第 ${attempt} 次重试 — ${detail}`),
+        }
+      ).catch((err) => {
+        // 连接阶段最终失败：把 "fetch failed" 展开为根因 + 主机，避免笼统文案
+        throw new Error(describeNetworkError(err, url), { cause: err })
+      })
       // 响应体只读一次（text），debug / 错误详情 / JSON 解析共用原文
       const text = await response.text()
       const respElapsed = Date.now() - providerStartTime

@@ -7,7 +7,11 @@
  *   - completeOnboarding：确认网关 → 验证 cfut → 保存 → KV → 写配置
  *     （成功 / 网关失败 / cfut 失败不落盘 / 缺参 / KV 复用 / KV 失败降级）
  *   - core/providers-config 纯文件读写（合并保留其余字段 / 回填 / 损坏容错）
- *   - 前端纯函数：isOnboardingNeeded / gatewayChoices / requiredPermissionLines
+ *   - createGateway 请求体（回归 Cloudflare 7001：必需数值字段不得缺省）
+ *   - createGateway 幂等（409 / 400 7001 "already exists" → 取回现有网关）
+ *   - verifyGatewayToken：区分认证失败（401）与网络不可达；非认证类 400（如 2008 Invalid
+ *     provider，认证已放行）判为令牌有效；verifyFailureHint 分类提示
+ *   - 前端纯函数：isOnboardingNeeded / gatewayChoices / requiredPermissionLines / failureStatusLines
  *
  * 全程依赖注入 mock，零触网零真实写盘（providers-config 用临时目录）。
  */
@@ -16,7 +20,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { isInitialized, discoverOnboarding, completeOnboarding, KV_NAMESPACE_TITLE } from '../src/logic/onboarding.js'
+import { isInitialized, discoverOnboarding, completeOnboarding, verifyFailureHint, KV_NAMESPACE_TITLE } from '../src/logic/onboarding.js'
+import { createGateway, verifyGatewayToken } from '../src/cloudflare/api.js'
 import {
   readProvidersConfig,
   mergeProvidersConfig,
@@ -26,6 +31,7 @@ import {
   isOnboardingNeeded,
   gatewayChoices,
   requiredPermissionLines,
+  failureStatusLines,
   DEFAULT_GATEWAY_ID,
 } from '../src/web/public/onboarding.js'
 
@@ -149,6 +155,39 @@ section('completeOnboarding')
     check(!deps.calls.some((c) => c[0] === 'writeMgmt'), '验证失败不落盘')
   }
 
+  // cfut 401（结构化返回）→ 明示「未通过认证」而非笼统失败
+  {
+    const deps = makeDeps({
+      verifyGatewayTokenFn: async () => ({ ok: false, status: 401, detail: 'HTTP 401 Unauthorized（2009 Unauthorized）' }),
+    })
+    const r = await completeOnboarding({ managementToken: 'mgt', accountId: 'acc', gatewayId: 'gw', gatewayToken: 'bad' }, deps)
+    check(r.ok === false && r.error.includes('401'), '401 → 错误含状态码')
+    check(r.error.includes('Authentication') && r.error.includes('gateway=gw'), '401 → 提示绑定/认证 + 目标网关')
+    check(!deps.calls.some((c) => c[0] === 'writeMgmt'), '401 不落盘')
+  }
+
+  // cfut 网络不可达（结构化返回）→ 提示为网络问题，不误导成令牌错误
+  {
+    const deps = makeDeps({
+      verifyGatewayTokenFn: async () => ({ ok: false, status: null, detail: 'fetch failed（UND_ERR_CONNECT_TIMEOUT @ gateway.ai.cloudflare.com）' }),
+    })
+    const r = await completeOnboarding({ managementToken: 'mgt', accountId: 'acc', gatewayToken: 'x' }, deps)
+    check(r.ok === false && r.error.includes('无法连接'), '网络失败 → 提示为「无法连接」')
+    check(r.error.includes('UND_ERR_CONNECT_TIMEOUT'), '网络失败 → 保留根因')
+  }
+
+  // cfut 400「Invalid provider」（非认证类响应，认证已放行）→ 视为通过并继续初始化
+  {
+    const deps = makeDeps({
+      verifyGatewayTokenFn: async () => ({ ok: true, status: 400, detail: 'HTTP 400 Bad Request（2008 Invalid provider）（令牌已被网关接受，仅该探测路径不适用）' }),
+    })
+    const r = await completeOnboarding({ managementToken: 'mgt', accountId: 'acc', gatewayToken: 'cfut_x' }, deps)
+    check(r.ok === true, '400 Invalid provider → 初始化继续（不再误判失败）')
+    const step = r.steps.find((s) => s.step === 'cfut_xxx')
+    check(step && step.ok === true && step.message.includes('已通过网关认证'), 'cfut 步骤标为「已通过网关认证」')
+    check(deps.calls.some((c) => c[0] === 'writeMgmt'), '认证放行后正常落盘')
+  }
+
   // 无既有 KV → 创建
   {
     const deps = makeDeps({ listKVNamespacesFn: async () => [] })
@@ -167,6 +206,212 @@ section('completeOnboarding')
     check(merge[1].kv === undefined, 'KV 失败时不写 kv 分块')
     check(merge[1].gateway.gatewayId === DEFAULT_GATEWAY_ID, '缺省 gatewayId 用默认值')
   }
+}
+
+// ── createGateway 请求体（回归：7001 "Expected number, received nan"）──
+// 仅传 { id, authentication } 时 Cloudflare 会因缺失数值字段报 7001，
+// 故必须显式给出 cache_ttl / rate_limiting_* 等必需字段。
+section('createGateway')
+{
+  const calls = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init })
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: async () => JSON.stringify({ success: true, result: { id: 'cf-ai-gateway' } }),
+    }
+  }
+
+  try {
+    const r = await createGateway('tok', 'acc', 'cf-ai-gateway')
+    check(r && r.id === 'cf-ai-gateway', '返回 gateway 对象')
+    check(calls.length === 1, '只发 1 次请求')
+    const { url, init } = calls[0]
+    check(url === 'https://api.cloudflare.com/client/v4/accounts/acc/ai-gateway/gateways', 'POST URL 正确')
+    check(init.method === 'POST', 'method = POST')
+    const body = JSON.parse(init.body)
+    check(body.id === 'cf-ai-gateway', 'body.id 正确')
+    check(body.authentication === true, 'body.authentication = true')
+    check(typeof body.cache_ttl === 'number' && body.cache_ttl === 0, 'cache_ttl 为数值（避开 7001）')
+    check(typeof body.rate_limiting_interval === 'number', 'rate_limiting_interval 为数值')
+    check(typeof body.rate_limiting_limit === 'number', 'rate_limiting_limit 为数值')
+    check(typeof body.cache_invalidate_on_update === 'boolean', 'cache_invalidate_on_update 为布尔')
+    check(typeof body.collect_logs === 'boolean', 'collect_logs 为布尔')
+
+    // guard：缺 accountId / gatewayId
+    let threw = false
+    try { await createGateway('tok', '', 'gw') } catch (e) { threw = e instanceof TypeError }
+    check(threw, '缺 accountId → TypeError')
+    threw = false
+    try { await createGateway('tok', 'acc', '') } catch (e) { threw = e instanceof TypeError }
+    check(threw, '缺 gatewayId → TypeError')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
+// ── createGateway 幂等（网关已存在）──────────────────────
+// Cloudflare 对重复 id 的返回不一致：历史 409，实测 400 7001
+// "An object with this id already exists"。两种都应视为成功并取回现有网关。
+section('createGateway 幂等（已存在）')
+{
+  const originalFetch = globalThis.fetch
+
+  // 400 7001 "already exists" → 回退 getGateway
+  {
+    const calls = []
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init })
+      if (init.method === 'POST') {
+        return {
+          ok: false,
+          status: 400,
+          statusText: 'Bad Request',
+          text: async () => JSON.stringify({
+            success: false,
+            errors: [{ code: 7001, message: 'An object with this id already exists' }],
+            result: null,
+          }),
+        }
+      }
+      return { ok: true, status: 200, statusText: 'OK', text: async () => JSON.stringify({ success: true, result: { id: 'cf-ai-gateway', authentication: true } }) }
+    }
+    try {
+      const r = await createGateway('tok', 'acc', 'cf-ai-gateway')
+      check(r && r.id === 'cf-ai-gateway', '400 already exists → 返回现有网关（不抛错）')
+      check(calls.length === 2 && calls[1].init.method === 'GET', '回退 GET 查现有网关')
+      check(calls[1].url === 'https://api.cloudflare.com/client/v4/accounts/acc/ai-gateway/gateways/cf-ai-gateway', 'GET URL 正确')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+
+  // 409（历史行为）→ 仍回退 getGateway
+  {
+    const calls = []
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init })
+      if (init.method === 'POST') {
+        return { ok: false, status: 409, statusText: 'Conflict', text: async () => JSON.stringify({ success: false, errors: [{ code: 1002, message: 'Conflict' }] }) }
+      }
+      return { ok: true, status: 200, statusText: 'OK', text: async () => JSON.stringify({ success: true, result: { id: 'gw' } }) }
+    }
+    try {
+      const r = await createGateway('tok', 'acc', 'gw')
+      check(r && r.id === 'gw' && calls.length === 2, '409 → 返回现有网关')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+
+  // 其它 400（非 already exists）→ 透传错误，不误判为已存在
+  {
+    const calls = []
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url, init })
+      return {
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        text: async () => JSON.stringify({ success: false, errors: [{ code: 7001, message: 'Invalid request body' }] }),
+      }
+    }
+    try {
+      let msg = ''
+      try {
+        await createGateway('tok', 'acc', 'gw')
+        check(false, '应抛错')
+      } catch (e) {
+        msg = e.message
+      }
+      check(msg.includes('Invalid request body'), '非 already exists 的 400 → 透传错误')
+      check(calls.length === 1, '不触发 GET 回退')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+}
+
+// ── verifyGatewayToken：认证失败 vs 网络 vs 非认证类响应（认证已放行）──────
+section('verifyGatewayToken')
+{
+  const originalFetch = globalThis.fetch
+  let lastUrl = ''
+
+  // 200 → 通过
+  globalThis.fetch = async (url) => {
+    lastUrl = url
+    return { ok: true, status: 200, statusText: 'OK', text: async () => JSON.stringify({ result: [] }) }
+  }
+  try {
+    const r = await verifyGatewayToken('gateway.ai.cloudflare.com', 'acc', 'gw', 'cfut_x')
+    check(r.ok === true && r.status === 200, '200 → ok:true')
+    check(r.detail === 'verified', '通过时 detail=verified')
+    check(lastUrl.includes('/v1/acc/gw/compat/models'), '探测路径为 OpenAI 兼容 /compat/models')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  // 401 → 失败并带状态码 + Gateway 错误码
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 401,
+    statusText: 'Unauthorized',
+    text: async () => JSON.stringify({ success: false, error: [{ code: 2009, message: 'Unauthorized' }] }),
+  })
+  try {
+    const r = await verifyGatewayToken('gateway.ai.cloudflare.com', 'acc', 'gw', 'bad')
+    check(r.ok === false && r.status === 401, '401 → ok:false + status=401')
+    check(r.detail.includes('401') && r.detail.includes('2009'), '401 detail 含状态码与 Gateway 错误码')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  // 400 "2008 Invalid provider" → 认证已放行，令牌有效（回归真实场景）
+  // AI Gateway 先校验 cf-aig-authorization 再解析 provider，故无效令牌必 401；
+  // 有效令牌才可能拿到 2008 Invalid provider（首段被当作 provider slug）。
+  globalThis.fetch = async () => ({
+    ok: false,
+    status: 400,
+    statusText: 'Bad Request',
+    text: async () => JSON.stringify({ success: false, error: [{ code: 2008, message: 'Invalid provider' }] }),
+  })
+  try {
+    const r = await verifyGatewayToken('gateway.ai.cloudflare.com', 'acc', 'gw', 'cfut_x')
+    check(r.ok === true && r.status === 400, '400 Invalid provider → 判为令牌已被接受')
+    check(r.detail.includes('2008') && r.detail.includes('令牌已被网关接受'), 'detail 说明认证已放行')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+
+  // 网络失败 → status=null + 根因 + 主机
+  globalThis.fetch = async () => {
+    const e = new TypeError('fetch failed')
+    e.cause = { code: 'UND_ERR_CONNECT_TIMEOUT' }
+    throw e
+  }
+  try {
+    const r = await verifyGatewayToken('gateway.ai.cloudflare.com', 'acc', 'gw', 'x')
+    check(r.ok === false && r.status === null, '网络失败 → ok:false + status=null')
+    check(r.detail.includes('UND_ERR_CONNECT_TIMEOUT') && r.detail.includes('gateway.ai.cloudflare.com'), '网络失败 detail 含根因 + 主机')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
+// ── verifyFailureHint：失败提示分类 ──────────────────────
+section('verifyFailureHint')
+{
+  const auth = verifyFailureHint({ detail: 'HTTP 401 Unauthorized（2009 Unauthorized）', status: 401, accountId: 'acc', gatewayId: 'gw', host: 'gateway.ai.cloudflare.com' })
+  check(auth.includes('401') && auth.includes('Authentication') && auth.includes('gateway=gw'), '401 → 绑定/认证提示 + 目标')
+  const net = verifyFailureHint({ detail: 'fetch failed（UND_ERR_CONNECT_TIMEOUT @ gateway.ai.cloudflare.com）', status: null, accountId: 'acc', gatewayId: 'gw' })
+  check(net.includes('无法连接') && net.includes('UND_ERR_CONNECT_TIMEOUT'), 'status:null → 网络提示')
+  const other = verifyFailureHint({ detail: 'HTTP 500 Internal Server Error', status: 500, accountId: 'acc', gatewayId: 'gw' })
+  check(other.includes('500') && other.includes('account=acc'), '其它状态 → 透出原因 + 目标')
+  check(verifyFailureHint({}).includes('令牌验证失败'), '缺 detail → 兜底文案')
 }
 
 // ── providers-config 纯文件读写 ──────────────────────────
@@ -238,6 +483,17 @@ section('前端纯函数')
   ])
   check(lines[0].label === 'Account · AI Gateway · Edit' && lines[0].required === true, '权限行文案 + 必需')
   check(lines[1].required === false, '建议权限标记')
+
+  // 失败文案：后端 200 + ok:false 时展示「标题：错误」+ 各步骤明细
+  const fail = failureStatusLines({
+    error: '创建/确认 Gateway 失败：fetch failed（UND_ERR_CONNECT_TIMEOUT @ api.cloudflare.com）',
+    steps: [{ step: 'Gateway', ok: false, message: '网络请求失败' }],
+  })
+  check(fail[0].startsWith('初始化失败：'), '首行为「初始化失败：错误」')
+  check(fail[1] === '✗ Gateway：网络请求失败', '后续行含步骤明细')
+  check(failureStatusLines({}, '读取失败')[0] === '读取失败：未知错误', '缺 error → 兜底「未知错误」')
+  check(failureStatusLines({ error: 'x', steps: [{ step: 'KV namespace', ok: true, message: '跳过' }] })[1] === '✓ KV namespace：跳过', '成功步骤带 ✓')
+  check(failureStatusLines({ error: 'x', steps: [null, 'bad'] }).length === 1, '非法步骤项跳过')
 }
 
 console.log(`\n${checks} 项检查, ${failures} 项失败`)

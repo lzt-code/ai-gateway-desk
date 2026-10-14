@@ -10,6 +10,7 @@
  */
 
 import { logRequest, logResponse, logResult } from '../core/io-logger.js'
+import { withNetworkRetry, describeNetworkError } from '../core/net-retry.js'
 
 const API_BASE = 'https://api.cloudflare.com/client/v4'
 const FETCH_TIMEOUT = 30_000 // 30 秒超时
@@ -121,14 +122,23 @@ async function request(apiToken, path, { method = 'GET', body, timeoutMs = FETCH
   let text = ''
   let payload = null
   try {
-    response = await fetchWithTimeout(
-      url,
+    // 连接阶段偶发超时（本机到 Cloudflare 的网络环境所致）→ 退避重试；
+    // 请求尚未发出，重试无副作用。
+    response = await withNetworkRetry(
+      () =>
+        fetchWithTimeout(
+          url,
+          {
+            method,
+            headers,
+            body: body !== undefined ? JSON.stringify(body) : undefined,
+          },
+          timeoutMs
+        ),
       {
-        method,
-        headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      },
-      timeoutMs
+        onRetry: ({ attempt, waitMs, detail }) =>
+          logResult(op, { ok: false, message: `连接失败，${waitMs}ms 后第 ${attempt} 次重试 — ${detail}`, elapsedMs: Date.now() - start }),
+      }
     )
     text = await response.text()
     if (text) {
@@ -139,9 +149,11 @@ async function request(apiToken, path, { method = 'GET', body, timeoutMs = FETCH
       }
     }
   } catch (err) {
-    logResponse(op, { status: null, output: err.message, elapsedMs: Date.now() - start })
-    logResult(op, { ok: false, message: err.message, elapsedMs: Date.now() - start })
-    throw err
+    const detail = describeNetworkError(err, url)
+    logResponse(op, { status: null, output: detail, elapsedMs: Date.now() - start })
+    logResult(op, { ok: false, message: detail, elapsedMs: Date.now() - start })
+    // 带上根因（如 UND_ERR_CONNECT_TIMEOUT）与目标主机，避免上层只看到 "fetch failed"
+    throw new Error(detail, { cause: err })
   }
 
   const elapsed = Date.now() - start
@@ -177,17 +189,47 @@ export async function createGateway(apiToken, accountId, gatewayId) {
       `/accounts/${encodeURIComponent(accountId)}/ai-gateway/gateways`,
       {
         method: 'POST',
-        body: { id: gatewayId, authentication: true },
+        body: {
+          id: gatewayId,
+          // 实测：仅传 { id, authentication } 时 Cloudflare 返回 400 7001
+          // "Expected number, received nan"（缺失的数值字段被算成 NaN）。
+          // 以下必需字段必须显式给出数值/布尔值，缺一即报错。
+          cache_invalidate_on_update: false,
+          cache_ttl: 0,
+          collect_logs: true,
+          rate_limiting_interval: 0,
+          rate_limiting_limit: 0,
+          authentication: true,
+        },
       }
     )
     return payload?.result
   } catch (err) {
-    // 已存在时（409）视为成功，返回现有 gateway
-    if (err instanceof CloudflareAPIError && err.status === 409) {
+    // 幂等：网关已存在时视为成功，取回现有 gateway。
+    // Cloudflare 对「重复 id」的返回不一致：历史为 409，实测现为
+    // 400 7001 "An object with this id already exists"（同为 InputValidation）。
+    if (isGatewayAlreadyExistsError(err)) {
       return getGateway(apiToken, accountId, gatewayId)
     }
     throw err
   }
+}
+
+/**
+ * 判定是否为「网关已存在」错误（供 createGateway 幂等回退）
+ *
+ * 仅认 CloudflareAPIError；409 直接判定；400/其它下按错误文案匹配
+ * "already exists"（Cloudflare 7001 的 message 即此文案）。
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+function isGatewayAlreadyExistsError(err) {
+  if (!(err instanceof CloudflareAPIError)) return false
+  if (err.status === 409) return true
+  const fromErrors = (Array.isArray(err.errors) ? err.errors : [])
+    .map((e) => `${e?.code ?? ''} ${e?.message ?? ''}`)
+    .join(' ')
+  return /already exists/i.test(fromErrors) || /already exists/i.test(err.message || '')
 }
 
 /**
@@ -269,38 +311,91 @@ export async function listKVNamespaces(apiToken, accountId) {
 }
 
 /**
- * 直接请求 gateway 端点验证 cfut_xxx（GET /v1/<account>/<gateway>/models）
+ * 验证 cfut_xxx（Gateway Token）能否被指定 gateway 接受
  *
- * 2xx 即验证通过；4xx/5xx（认证错误）与网络异常均视为失败。
+ * 探测路径：`/v1/<account>/<gateway>/compat/models`（OpenAI 兼容基址下的 models）。
+ * 关键点：AI Gateway 在解析 provider 路由**之前**先校验 `cf-aig-authorization`，因此
+ *   - 令牌无效 → 一律 401/403（2009 Unauthorized / 10000），与路径无关；
+ *   - 令牌有效 → 认证放行后才可能返回 200 或 400/404（路径、参数或 provider 不适用）。
+ *
+ * 故把「非认证类响应」判为通过（令牌已被网关接受），避免把有效令牌误判为失败：
+ * 例如 `GET /v1/<acc>/<gw>/models` 对有效令牌会返回 400 `2008 Invalid provider`
+ * （首段被当作 provider slug），它其实恰好证明认证已通过。
+ *
  * 走统一 IO 日志（gateway:verify:<gatewayId>），token 使用 cf-aig-authorization 传递。
  * @param {string} host - AI Gateway 主机（默认 gateway.ai.cloudflare.com）
  * @param {string} accountId - Cloudflare 账户 ID
  * @param {string} gatewayId - gateway id
  * @param {string} token - cfut_xxx
- * @returns {Promise<boolean>} 是否验证通过
+ * @returns {Promise<{ ok: boolean, status: number|null, detail: string }>}
+ *   ok 令牌是否被网关接受；status HTTP 状态码（网络失败为 null）；detail 可读说明
  */
 export async function verifyGatewayToken(host, accountId, gatewayId, token) {
   guard(accountId, 'accountId')
   guard(gatewayId, 'gatewayId')
   guard(token, 'token')
   const op = `gateway:verify:${gatewayId}`
-  const url = `https://${host || 'gateway.ai.cloudflare.com'}/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayId)}/models`
+  const url = `https://${host || 'gateway.ai.cloudflare.com'}/v1/${encodeURIComponent(accountId)}/${encodeURIComponent(gatewayId)}/compat/models`
   const start = Date.now()
   logRequest(op, { method: 'GET', url, headers: { 'cf-aig-authorization': `Bearer ${maskToken(token)}` } })
   try {
-    const res = await fetchWithTimeout(url, {
-      method: 'GET',
-      headers: { 'cf-aig-authorization': `Bearer ${token}` },
-    }, 10_000)
+    const res = await withNetworkRetry(
+      () =>
+        fetchWithTimeout(url, {
+          method: 'GET',
+          headers: { 'cf-aig-authorization': `Bearer ${token}` },
+        }, 10_000),
+      {
+        onRetry: ({ attempt, waitMs, detail }) =>
+          logResult(op, { ok: false, message: `连接失败，${waitMs}ms 后第 ${attempt} 次重试 — ${detail}`, elapsedMs: Date.now() - start }),
+      }
+    )
     const elapsed = Date.now() - start
-    logResponse(op, { status: res.status, output: res.ok ? 'ok' : 'auth failed', elapsedMs: elapsed })
-    logResult(op, { ok: res.ok, message: res.ok ? 'verified' : `HTTP ${res.status}`, elapsedMs: elapsed })
-    return res.ok
+    if (res.ok) {
+      logResponse(op, { status: res.status, output: 'ok', elapsedMs: elapsed })
+      logResult(op, { ok: true, message: 'verified', elapsedMs: elapsed })
+      return { ok: true, status: res.status, detail: 'verified' }
+    }
+    // 非 2xx：读取响应体，透出 Gateway 的错误码/文案
+    let bodyText = ''
+    try { bodyText = await res.text() } catch { /* 忽略读取失败 */ }
+    const detail = `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}${gatewayErrorSuffix(bodyText)}`
+    // 认证失败：令牌确实不被接受 → 失败
+    if (res.status === 401 || res.status === 403) {
+      logResponse(op, { status: res.status, output: detail, elapsedMs: elapsed })
+      logResult(op, { ok: false, message: detail, elapsedMs: elapsed })
+      return { ok: false, status: res.status, detail }
+    }
+    // 其它状态（400 2008 Invalid provider / 404 等）：认证已放行 → 令牌有效，仅探测路径本身不适用
+    const accepted = `${detail}（令牌已被网关接受，仅该探测路径不适用）`
+    logResponse(op, { status: res.status, output: accepted, elapsedMs: elapsed })
+    logResult(op, { ok: true, message: accepted, elapsedMs: elapsed })
+    return { ok: true, status: res.status, detail: accepted }
   } catch (err) {
     const elapsed = Date.now() - start
-    logResponse(op, { status: null, output: err.message, elapsedMs: elapsed })
-    logResult(op, { ok: false, message: err.message, elapsedMs: elapsed })
-    return false
+    const detail = describeNetworkError(err, url)
+    logResponse(op, { status: null, output: detail, elapsedMs: elapsed })
+    logResult(op, { ok: false, message: detail, elapsedMs: elapsed })
+    return { ok: false, status: null, detail }
+  }
+}
+
+/**
+ * 从 AI Gateway 错误响应体提取 `（<code> <message>）` 摘要
+ * 形如 {"error":[{"code":2009,"message":"Unauthorized"}]} → `（2009 Unauthorized）`
+ * @param {string} text
+ * @returns {string} 无法解析时返回空串
+ */
+function gatewayErrorSuffix(text) {
+  try {
+    const body = JSON.parse(text)
+    const first = Array.isArray(body?.error) ? body.error[0] : null
+    const code = first?.code ?? body?.internalCode
+    const message = first?.message || body?.message
+    if (code == null && !message) return ''
+    return `（${[code, message].filter((v) => v != null).join(' ')}）`
+  } catch {
+    return ''
   }
 }
 

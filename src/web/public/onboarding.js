@@ -8,7 +8,10 @@
  *
  * 设计：本模块不 import app.js（避免循环依赖），由 app.js 调用 initOnboarding({ api })
  * 注入请求函数。模块顶层零 DOM 访问，纯函数（isOnboardingNeeded / gatewayChoices /
- * requiredPermissionLines）可被 Node 测试直接 import。
+ * requiredPermissionLines / failureStatusLines）可被 Node 测试直接 import。
+ *
+ * 失败处理：后端 discover / complete 失败时返回 HTTP 200 + `{ ok:false }`，前端必须
+ * 显式判 `ok`，保留已填 Token 与表单让用户原地重试，绝不当作成功清空回到初始页。
  */
 
 /** Cloudflare 注册页 */
@@ -64,6 +67,25 @@ export function requiredPermissionLines(permissions) {
       required: p.required !== false,
       reason: typeof p.reason === 'string' ? p.reason : '',
     }))
+}
+
+/**
+ * 失败状态文案行（初始化 / 读取账号失败时展示，纯函数便于单测）
+ *
+ * 后端 discover / complete 失败时返回 HTTP 200 + `{ ok:false, error, steps }`，
+ * 前端需显式判 `ok`，避免误当成功清空表单。
+ * @param {{ error?: string, steps?: Array<{ step?: string, ok?: boolean, message?: string }> }} res
+ * @param {string} [title='初始化失败'] - 标题（如「初始化失败」「读取失败」）
+ * @returns {string[]} 形如 ['初始化失败：xxx', '✗ Gateway：yyy']
+ */
+export function failureStatusLines(res = {}, title = '初始化失败') {
+  const lines = [`${title}：${(res && res.error) || '未知错误'}`]
+  const steps = Array.isArray(res && res.steps) ? res.steps : []
+  for (const s of steps) {
+    if (!s || typeof s !== 'object') continue
+    lines.push(`${s.ok ? '✓' : '✗'} ${s.step ?? ''}：${s.message ?? ''}`)
+  }
+  return lines
 }
 
 // ─── DOM 视图 ────────────────────────────────────────────
@@ -300,13 +322,18 @@ function renderForm(body) {
         method: 'POST',
         body: { managementToken, accountId: selectedAccountId },
       })
+      // 后端失败返回 200 + ok:false：保留已填 Token，用户可直接重试，不进入下一步
+      if (res && res.ok === false) {
+        setStatus(failureStatusLines(res, '读取失败').join('\n'), 'err')
+        return
+      }
       accounts = Array.isArray(res.accounts) ? res.accounts : []
       accountId = res.accountId || ''
       fillAccountSelect()
       fillGatewaySelect(res.gateways)
       setStatus(`读取成功：账号 ${accountId}，网关 ${(res.gateways || []).length} 个`, 'ok')
     } catch (err) {
-      setStatus(`读取失败：${err.message}`, 'err')
+      setStatus(failureStatusLines({ error: err.message, steps: err.body && err.body.steps }, '读取失败').join('\n'), 'err')
     } finally {
       discoverBtn.disabled = false
     }
@@ -330,10 +357,15 @@ function renderForm(body) {
         method: 'POST',
         body: { managementToken, accountId, gatewayId, gatewayToken },
       })
+      // 后端失败返回 200 + ok:false：保留表单与已填的 two Keys，
+      // 用户可直接再次点击「完成初始化」重试，而不是被清空回到最初重填。
+      if (res && res.ok === false) {
+        setStatus(failureStatusLines(res, '初始化失败').join('\n'), 'err')
+        return
+      }
       renderDone(body, res)
     } catch (err) {
-      const steps = err.body && Array.isArray(err.body.steps) ? err.body.steps : []
-      setStatus([`初始化失败：${err.message}`, ...steps.map((s) => `${s.ok ? '✓' : '✗'} ${s.step}：${s.message}`)].join('\n'), 'err')
+      setStatus(failureStatusLines({ error: err.message, steps: err.body && err.body.steps }, '初始化失败').join('\n'), 'err')
     } finally {
       completeBtn.disabled = false
     }
