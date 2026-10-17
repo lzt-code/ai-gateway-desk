@@ -519,7 +519,7 @@ export function showUnresolvedHint(ids, onSync) {
   const text = document.createElement('span')
   text.className = 'unresolved-hint-text'
   const preview = list.slice(0, 3).map((id) => `「${id}」`).join('、')
-  text.textContent = `云端有 ${list.length} 个模型已被采用 / 隐藏，但本机尚未发现：${preview}${list.length > 3 ? ' 等' : ''}。同步后可对齐。`
+  text.textContent = `云端有 ${list.length} 个模型已被选中 / 隐藏，但本机尚未发现：${preview}${list.length > 3 ? ' 等' : ''}。同步后可对齐。`
   box.appendChild(text)
   const btn = document.createElement('button')
   btn.type = 'button'
@@ -1905,11 +1905,12 @@ export function buildModelTableRows(items, newModelIds) {
         ? `<button class="model-delete" data-delete-model="${escapeHtml(modelId)}" title="删除模型" type="button">✕</button>`
         : '') +
       `</td>`
-    // 待审行状态列：双操作（✓ 采用 → selected / ✕ 忽略 → hidden），替代单一状态徽章——
-    // 待审是「等待决策」态，直接暴露决策按钮比展示状态更可用
+    // 待审行状态列：双操作（✓ 选中 → selected / ✕ 隐藏 → hidden），替代单一状态徽章——
+    // 待审是「等待决策」态，直接暴露决策按钮比展示状态更可用；文案与全站状态词
+    // （选中/待审/隐藏）统一，title 保留审核语义（采用/忽略）与后果说明。
     const statusCellHtml = statusKey === 'pending'
-      ? `<button class="status-toggle" data-model-id="${escapeHtml(modelId)}" title="采用：加入选中列表（写入 models.json）" type="button"><span class="status-ok">✓ 采用</span></button>` +
-        `<button class="model-ignore" data-ignore-model="${escapeHtml(modelId)}" title="忽略：转入隐藏（不再进入网关）" type="button"><span class="status-warn">✕ 忽略</span></button>`
+      ? `<button class="status-toggle" data-model-id="${escapeHtml(modelId)}" title="选中（采用）：加入选中列表并写入 models.json" type="button"><span class="status-ok">✓ 选中</span></button>` +
+        `<button class="model-ignore" data-ignore-model="${escapeHtml(modelId)}" title="隐藏（忽略）：转入隐藏，不再进入网关" type="button"><span class="status-warn">✕ 隐藏</span></button>`
       : `<button class="status-toggle" data-model-id="${escapeHtml(modelId)}" title="切换状态" type="button"><span class="status-${st.cls}">${st.icon} ${st.text}</span></button>`
     const html =
       `<tr data-model-id="${escapeHtml(modelId)}" class="${rowCls}">` +
@@ -2374,7 +2375,7 @@ function injectModelsStyles() {
     .status-warn { color: var(--warn); }
     .status-err { color: var(--err); }
     .status-pending { color: var(--accent); }
-    /* 待审行「✕ 忽略」按钮：与状态 pill 同款视觉（warn 色系） */
+    /* 待审行「✕ 隐藏」按钮：与状态 pill 同款视觉（warn 色系） */
     .model-ignore {
       background: transparent; color: inherit; border: 1px solid var(--border);
       border-radius: 999px; padding: 0.15rem 0.6rem; cursor: pointer; font-size: 0.75rem;
@@ -2810,7 +2811,7 @@ export function renderModelsView(container) {
     }
   }
 
-  // 待审行「忽略」按钮：直接设置目标状态（hidden），区别于 toggle 的采用语义
+  // 待审行「隐藏」按钮：直接设置目标状态（hidden），区别于 toggle 的选中语义
   async function setModelStatus(modelId, target) {
     if (guardInitBlocked('设置模型状态')) return
     if (syncing) return
@@ -3566,7 +3567,7 @@ export function renderModelsView(container) {
       })
       return
     }
-    // 待审行「忽略」按钮：pending → hidden（采用走 status-toggle 的「✓ 采用」）
+    // 待审行「隐藏」按钮：pending → hidden（选中走 status-toggle 的「✓ 选中」）
     const ignoreBtn = e.target.closest('.model-ignore')
     if (ignoreBtn) {
       const modelId = ignoreBtn.dataset.ignoreModel
@@ -5475,7 +5476,7 @@ export function renderProvidersView(container) {
       //    否则提示并提供一键同步——否则用户无从得知、也无从处理。
       if (unresolvedIds.length) {
         logActivity(
-          `云端有 ${unresolvedIds.length} 个模型（已采用 / 已隐藏）尚未在本机发现：${unresolvedIds.slice(0, 3).join('、')}${unresolvedIds.length > 3 ? ' 等' : ''}`,
+          `云端有 ${unresolvedIds.length} 个模型（已选中 / 已隐藏）尚未在本机发现：${unresolvedIds.slice(0, 3).join('、')}${unresolvedIds.length > 3 ? ' 等' : ''}`,
           'warn',
         )
       }

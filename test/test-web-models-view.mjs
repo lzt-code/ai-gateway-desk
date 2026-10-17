@@ -147,18 +147,18 @@ section('buildModelTableRows')
   }
 }
 {
-  // 待审行：状态列为双操作按钮（✓ 采用 / ✕ 忽略），非单一状态徽章
+  // 待审行：状态列为双操作按钮（✓ 选中 / ✕ 隐藏），非单一状态徽章
   const rows = buildModelTableRows([
     { modelId: 'p/new-m', entry: { status: 'pending', metadata: {} } },
     { modelId: 'p/sel-m', entry: { status: 'selected', metadata: {} } },
   ])
   check(
-    rows[0].html.includes('class="status-ok">✓ 采用</span>') && rows[0].html.includes('title="采用'),
-    '待审行 → 「✓ 采用」按钮（走 toggle：pending → selected）'
+    rows[0].html.includes('class="status-ok">✓ 选中</span>') && rows[0].html.includes('title="选中（采用）'),
+    '待审行 → 「✓ 选中」按钮（走 toggle：pending → selected）'
   )
   check(
     rows[0].html.includes('class="model-ignore"') && rows[0].html.includes('data-ignore-model="p/new-m"'),
-    '待审行 → 「✕ 忽略」按钮（data-ignore-model，走 set-status hidden）'
+    '待审行 → 「✕ 隐藏」按钮（data-ignore-model，走 set-status hidden）'
   )
   check(rows[0].html.includes('class="row-pending"'), '待审行 → row-pending 类')
   check(
