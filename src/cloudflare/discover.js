@@ -5,6 +5,7 @@
 
 import { listDynamicRoutes, getDynamicRouteDetail } from './api.js'
 import { withNetworkRetry, describeNetworkError } from '../core/net-retry.js'
+import { normalizePathPrefix } from '../gateway/router.js'
 
 const FETCH_TIMEOUT = 15_000 // 15 秒超时
 
@@ -247,7 +248,10 @@ export async function discoverModels(config, gatewayToken, onProgress, providerF
     const slug = gatewaySlug(provider)
     const providerStartTime = Date.now()
     if (onProgress) onProgress({ provider: slug, status: 'pending', done: finished, total })
-    const modelPath = provider.pathPrefix ? `${provider.pathPrefix}/models` : `/v1/models`
+    // pathPrefix 可能手写成不带前导 /（如 "api/paas/v4"），必须归一化，
+    // 否则会拼成 ".../custom-glmapi/paas/v4/models"（slug 与前缀粘连 → 网关 502）
+    const prefix = normalizePathPrefix(provider.pathPrefix)
+    const modelPath = prefix ? `${prefix}/models` : '/v1/models'
     const url = `${baseUrl}/${slug}${modelPath}`
     const method = 'GET'
     const headers = {

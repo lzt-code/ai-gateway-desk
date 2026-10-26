@@ -44,5 +44,17 @@ function check(name, actual, expected) {
   check('空数组返回 {}', JSON.parse(buildProviderRoutesJson([])), {})
 }
 
+// ── 场景 4：pathPrefix 归一化（缺前导 / 会与 slug 粘连 → 网关 502） ──
+{
+  const routes = JSON.parse(buildProviderRoutesJson([
+    { id: 'glm', type: 'custom-provider', pathPrefix: 'api/paas/v4' },
+    { id: 'ark', type: 'custom-provider', pathPrefix: '/api/plan/v3/' },
+    { id: 'blank', type: 'custom-provider', pathPrefix: '   ' },
+  ]))
+  check('缺前导 / 补齐', routes['custom-glm'], '/api/paas/v4')
+  check('尾部 / 去除', routes['custom-ark'], '/api/plan/v3')
+  check('空白前缀被跳过', Object.prototype.hasOwnProperty.call(routes, 'custom-blank'), false)
+}
+
 console.log(failed ? '\n存在失败项' : '\n全部通过 ✓')
 process.exit(failed ? 1 : 0)

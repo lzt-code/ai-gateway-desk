@@ -82,6 +82,7 @@ import {
 import {
   loadGatewayConfig,
 } from '../gateway/config-store.js'
+import { normalizePathPrefix } from '../gateway/router.js'
 import {
   startGatewayProcess,
   stopGatewayProcess,
@@ -1584,9 +1585,13 @@ export function createApp({
     if (changes.localEnabled !== undefined && changes.localEnabled !== null && typeof changes.localEnabled !== 'boolean') {
       return c.json({ error: 'changes.localEnabled must be a boolean' }, 400)
     }
-    // pathPrefix 可选：存在时必须是 string
+    // pathPrefix 可选：存在时必须是 string；归一化后落盘 / 推 KV
+    // （补前导 /、去尾 /），避免 "api/paas/v4" 与 slug 粘连
     if (changes.pathPrefix !== undefined && changes.pathPrefix !== null && typeof changes.pathPrefix !== 'string') {
       return c.json({ error: 'changes.pathPrefix must be a string' }, 400)
+    }
+    if (typeof changes.pathPrefix === 'string') {
+      changes.pathPrefix = normalizePathPrefix(changes.pathPrefix)
     }
     // baseUrl 可选：存在时必须是非空 http(s) 字符串（仅 custom-provider 有意义；
     // BYOK 由 buildCloudUpdateParams 拦截）
@@ -1797,6 +1802,9 @@ export function createApp({
     }
     if (body.pathPrefix !== undefined && typeof body.pathPrefix !== 'string') {
       return c.json({ error: 'pathPrefix must be a string' }, 400)
+    }
+    if (typeof body.pathPrefix === 'string') {
+      body.pathPrefix = normalizePathPrefix(body.pathPrefix)
     }
     if (body.type === 'byok' && (typeof body.apiKey !== 'string' || !body.apiKey.trim())) {
       return c.json({ error: 'byok requires apiKey' }, 400)

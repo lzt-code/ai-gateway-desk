@@ -39,6 +39,24 @@ function extractProviderSlug(bodyText) {
 }
 
 /**
+ * 归一化 pathPrefix：保证以 '/' 开头、无尾部 '/'。
+ *
+ * KV 里的 provider-routes 可能是旧数据 / 手写值（如 "api/paas/v4"），
+ * 而目标 URL 直接做 `${slug}${pathPrefix}` 拼接，缺前导 '/' 会粘连成
+ * ".../custom-glmapi/paas/v4/chat/completions"（网关 502）。
+ *
+ * @param {unknown} pathPrefix
+ * @returns {string} 归一化后的前缀；空 / 非法类型返回 ''
+ */
+function normalizePathPrefix(pathPrefix) {
+  if (typeof pathPrefix !== 'string') return ''
+  let p = pathPrefix.trim()
+  if (!p) return ''
+  if (!p.startsWith('/')) p = `/${p}`
+  return p.replace(/\/+$/, '')
+}
+
+/**
  * 剥离 model 字段中的 provider slug 前缀。
  *
  * 仅在 provider-specific 端点使用——URL 路径已包含 slug，
@@ -104,7 +122,7 @@ export async function handleChat(request, env) {
   }
 
   const slug = extractProviderSlug(bodyText)
-  const pathPrefix = slug ? customRoutes[slug] : null
+  const pathPrefix = slug ? normalizePathPrefix(customRoutes[slug]) : ''
   const op = `worker:chat:${slug ?? '(none)'}`
 
   // 决定目标 URL；provider-specific 端点需要剥离 model 中的 slug 前缀

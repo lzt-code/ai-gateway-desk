@@ -31,6 +31,13 @@ globalThis.fetch = async (url) => {
       headers: { 'content-type': 'application/json' },
     })
   }
+  if (s.includes('/custom-glm/api/paas/v4/models')) {
+    // 智谱：pathPrefix 手写为 "api/paas/v4"（缺前导 /），归一化后应拼到这里
+    return new Response(JSON.stringify({ object: 'list', data: [{ id: 'glm-4.6' }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
   if (s.includes('/openrouter/v1/models')) {
     // OpenRouter 原生格式：只有 data 数组，无 object 字段
     return new Response(JSON.stringify({ data: [{ id: 'inclusionai/ling-3.0-tiny:free', name: 'Ling' }] }), {
@@ -301,6 +308,27 @@ try {
     }
     const r = await discoverModels(config, 'cfut_test', null, 'p3')
     check('场景14 禁用 provider 过滤 → 空结果', r.results, [])
+  }
+
+  // ── 场景 16：pathPrefix 缺前导 '/' → 归一化拼接（智谱 502 回归） ──
+  {
+    const config = {
+      gateway: { host: 'gateway.ai.cloudflare.com', accountId: 'acc-1', gatewayId: 'gw-1' },
+      providers: [
+        { id: 'glm', type: 'custom-provider', enabled: true, pathPrefix: 'api/paas/v4' },
+      ],
+      debug: true,
+    }
+    const events = []
+    const r = await discoverModels(config, 'cfut_test', (p) => events.push(p))
+    const reqEv = events.find((e) => e.status === 'debug' && e.debug?.phase === 'request')
+    check(
+      '场景16 pathPrefix 补前导 /',
+      reqEv?.debug?.url,
+      'https://gateway.ai.cloudflare.com/v1/acc-1/gw-1/custom-glm/api/paas/v4/models',
+    )
+    check('场景16 slug 与前缀不粘连', String(reqEv?.debug?.url).includes('custom-glmapi'), false)
+    check('场景16 发现成功', r.results[0]?.models?.map((m) => m.id), ['custom-glm/glm-4.6'])
   }
 
   // ── 场景 15：无 providerFilter 向后兼容（全量） ──

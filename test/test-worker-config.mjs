@@ -96,5 +96,36 @@ function check(name, actual, expected) {
   }
 }
 
+// ── 8. handleChat：KV pathPrefix 缺前导 '/' → 归一化后拼接（智谱 502 回归）
+{
+  const env = {
+    GW_HOST: 'gw.example.com', ACCOUNT_ID: 'acc-1', GATEWAY_ID: 'gw-1',
+    MODELS_KV: { get: async () => ({ 'custom-glm': 'api/paas/v4' }) },
+  }
+  let captured = null
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    captured = { url: url.toString(), body: init.body }
+    return new Response('upstream-ok', { status: 200 })
+  }
+  try {
+    const req = new Request('http://localhost/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer cfut_test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'custom-glm/glm-4.6', messages: [] }),
+    })
+    const res = await handleChat(req, env)
+    check('pathPrefix 场景转发状态码', res.status, 200)
+    check(
+      'pathPrefix 补前导 / 后拼接',
+      captured.url,
+      'https://gw.example.com/v1/acc-1/gw-1/custom-glm/api/paas/v4/chat/completions'
+    )
+    check('pathPrefix 场景剥离 slug', JSON.parse(captured.body).model, 'glm-4.6')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+}
+
 console.log(failed ? '\n存在失败断言' : '\n全部通过')
 process.exit(failed ? 1 : 0)

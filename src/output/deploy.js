@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { gatewaySlug } from '../cloudflare/discover.js'
+import { normalizePathPrefix } from '../gateway/router.js'
 import { writeKvValue } from '../cloudflare/kv.js'
 import { readManagementToken } from '../core/token-store.js'
 import { logRequest, logResult } from '../core/io-logger.js'
@@ -35,7 +36,10 @@ export function buildProviderRoutesJson(providers) {
         // 中解析出的 slug 以及 discover.js 写入 models.json 的前缀保持一致。
         // 用裸 id（如 fang-zhou）会导致 worker 查不到 pathPrefix，
         // 所有方舟请求回退到 /compat 端点。
-        routes[gatewaySlug(p)] = p.pathPrefix
+        // 归一化（补前导 /、去尾 /）：worker 直接做字符串拼接 `${slug}${pathPrefix}`，
+        // 缺前导 / 会粘连成 "custom-glmapi/paas/v4"。空白前缀归一化后为空 → 跳过。
+        const prefix = normalizePathPrefix(p.pathPrefix)
+        if (prefix) routes[gatewaySlug(p)] = prefix
       }
     }
   }

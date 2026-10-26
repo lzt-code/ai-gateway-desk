@@ -346,6 +346,24 @@ section('POST /api/providers/update')
 
 {
   clearEnv()
+  // pathPrefix 归一化：写盘 / KV / 响应均为规范形式（补前导 /、去尾 /）
+  const deps = makeDeps()
+  deps.deployProviderRoutesToKV = async () => ({ success: true })
+  const { app } = makeApp(deps)
+  const res = await post(app, '/api/providers/update', {
+    id: 'agnes',
+    changes: { pathPrefix: 'api/paas/v4/' },
+  })
+  const data = await res.json()
+  check(res.status === 200 && data.ok === true, '测试 9c: pathPrefix 更新 200')
+  const write = deps.calls.find((c) => c[0] === 'write')
+  const writtenAgnes = write && write[1].find((p) => p.id === 'agnes')
+  check(writtenAgnes && writtenAgnes.pathPrefix === '/api/paas/v4', '测试 9c: 写盘 pathPrefix 已归一化')
+  check(data.provider && data.provider.pathPrefix === '/api/paas/v4', '测试 9c: 响应 provider.pathPrefix 已归一化')
+}
+
+{
+  clearEnv()
   const deps = makeDeps()
   const { app } = makeApp(deps)
   const res = await post(app, '/api/providers/update', {
