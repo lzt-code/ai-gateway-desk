@@ -785,7 +785,10 @@ export function setInitOperationButtonsDisabled(disabled) {
       if (el.dataset.initLock !== '1') continue
       const isBtn = el.tagName === 'BUTTON'
       if (isBtn) {
-        el.disabled = el.dataset.initPrevDisabled === '1'
+        // 锁定期间若其它逻辑已按最新状态重设可用性（如 Provider 视图拉到响应后
+        // 按只读态重设「添加 Provider」），以该新状态为准；无脑还原锁定前的快照会把它
+        // 重新禁用，表现为按钮长期灰色不可点（渲染时的占位禁用被当成了基准态）。
+        if (el.disabled) el.disabled = el.dataset.initPrevDisabled === '1'
         delete el.dataset.initPrevDisabled
       } else {
         el.style.pointerEvents = el.dataset.initPrevPointer || ''
