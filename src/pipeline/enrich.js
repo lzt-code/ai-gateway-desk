@@ -12,21 +12,36 @@
  *       历史误匹配；pricing 覆盖已有值以跟随上游改价——provider 自报价格的还原
  *       由 sync-flow 在 enrich 之后统一处理，provider 价格优先于富化源）
  *
+ * 容错：两源并发拉取，任一源失败静默跳过（只补另一源的字段）；失败源在
+ *       FAILURE_RETRY_MS 窗口内负缓存，避免 enrich 循环逐模型重发请求——
+ *       旧行为「失败即清空 promise」会让每个模型各等一次超时，同步整段卡住。
+ *
  * @module ai-gateway-desk/src/pipeline/enrich
  */
 
-const FETCH_TIMEOUT = 15_000 // 15 秒超时
+import { logRequest, logResponse, logResult } from '../core/io-logger.js'
+
+const FETCH_TIMEOUT = 15_000 // OpenRouter 列表：15 秒超时
+const CATALOG_TIMEOUT = 30_000 // models.dev catalog 体积达数 MB，读正文需要更宽裕的时间
 const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/models'
 const MODELS_DEV_CATALOG_URL = 'https://models.dev/catalog.json'
+// 失败负缓存窗口：某源本进程内失败后，窗口期内直接按「不可用」返回，不再重发请求。
+// 否则 enrich 循环里每个模型都会重新 fetch 一次并再等满一个超时（model 数量 × 超时），
+// 表现就是「一个源失败后整个同步卡住」。
+const FAILURE_RETRY_MS = 5 * 60_000
 
 /** @type {Array<object>|null} */
 let cachedModels = null
 /** @type {Promise<Array<object>>|null} */
 let fetchPromise = null
+/** @type {number} OpenRouter 上次失败时间（0 = 无失败记录） */
+let modelsFailedAt = 0
 /** @type {object|null} */
 let cachedCatalog = null
 /** @type {Promise<object>|null} */
 let catalogPromise = null
+/** @type {number} models.dev 上次失败时间（0 = 无失败记录） */
+let catalogFailedAt = 0
 
 /**
  * 取短 id（去掉第一段网关前缀）。
@@ -53,35 +68,58 @@ function normName(s) {
 }
 
 /**
- * 带超时的 fetch
+ * 带超时的 JSON GET，统一走 IO 日志器。
+ *
+ * 超时覆盖「连接 + 读响应体」全过程：只覆盖响应头时，卡在正文传输的连接会无限
+ * 等待（catalog.json 数 MB，弱网下常出现），同步流程会看起来卡死。
+ *
  * @param {string} url
  * @param {object} options
- * @param {number} timeoutMs
- * @returns {Promise<Response>}
+ * @param {string} options.operation - 日志操作名（域:动作[:目标]）
+ * @param {string} options.label - 错误文案中的源名称
+ * @param {number} [options.timeoutMs=FETCH_TIMEOUT]
+ * @param {(body: any) => void} [options.validate] - 解析后的结构校验，抛错即视为失败
+ * @returns {Promise<any>} 解析后的 JSON
  */
-function fetchWithTimeout(url, options, timeoutMs = FETCH_TIMEOUT) {
-  return new Promise((resolve, reject) => {
-    const controller = new AbortController()
-    const timer = setTimeout(() => {
-      controller.abort()
-      reject(new Error(`请求超时 (${timeoutMs / 1000}s): ${url}`))
-    }, timeoutMs)
-
-    fetch(url, { ...options, signal: controller.signal })
-      .then((res) => {
-        clearTimeout(timer)
-        resolve(res)
-      })
-      .catch((err) => {
-        clearTimeout(timer)
-        reject(err)
-      })
-  })
+async function fetchJsonWithTimeout(url, { operation, label, timeoutMs = FETCH_TIMEOUT, validate } = {}) {
+  const start = Date.now()
+  const headers = { Accept: 'application/json' }
+  logRequest(operation, { method: 'GET', url, headers })
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let status = null
+  try {
+    const res = await fetch(url, { method: 'GET', headers, signal: controller.signal })
+    status = res.status
+    if (!res.ok) {
+      throw new Error(`${label} 返回 ${res.status} ${res.statusText}`)
+    }
+    const text = await res.text()
+    const bytes = Buffer.byteLength(text, 'utf8')
+    const body = JSON.parse(text)
+    if (validate) validate(body)
+    const elapsed = Date.now() - start
+    logResponse(operation, { status: res.status, statusText: res.statusText, bytes, elapsedMs: elapsed })
+    logResult(operation, { ok: true, message: `收到 ${bytes} 字节`, elapsedMs: elapsed })
+    return body
+  } catch (err) {
+    const elapsed = Date.now() - start
+    const timedOut = controller.signal.aborted
+    const message = timedOut
+      ? `请求超时 (${timeoutMs / 1000}s): ${url}`
+      : err instanceof Error ? err.message : String(err)
+    logResponse(operation, { status, output: message, elapsedMs: elapsed })
+    logResult(operation, { ok: false, message, elapsedMs: elapsed })
+    throw timedOut ? new Error(message) : err
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 /**
  * 从 OpenRouter 获取模型列表
- * 缓存在模块级变量中，多次调用只 fetch 一次，失败时返回空数组
+ * 缓存在模块级变量中，多次调用只 fetch 一次；失败时返回空数组，
+ * 并在 FAILURE_RETRY_MS 窗口内不再重试（负缓存），避免逐模型重复等超时。
  * @returns {Promise<Array<object>>} 模型数组
  */
 export async function fetchOpenRouterModels() {
@@ -93,34 +131,30 @@ export async function fetchOpenRouterModels() {
     return fetchPromise
   }
 
+  if (modelsFailedAt && Date.now() - modelsFailedAt < FAILURE_RETRY_MS) {
+    return []
+  }
+
   fetchPromise = (async () => {
     try {
-      const response = await fetchWithTimeout(OPENROUTER_API_URL, {
-        method: 'GET',
-        headers: {
-          Accept: 'application/json',
+      const body = await fetchJsonWithTimeout(OPENROUTER_API_URL, {
+        operation: 'enrich:openrouter:models',
+        label: 'OpenRouter API',
+        validate: (b) => {
+          // OpenRouter 返回 { data: [...] }
+          if (!b || !Array.isArray(b.data)) {
+            throw new Error('OpenRouter 返回格式异常: 缺少 data 数组')
+          }
         },
       })
 
-      if (!response.ok) {
-        throw new Error(
-          `OpenRouter API 返回 ${response.status} ${response.statusText}`
-        )
-      }
-
-      const body = await response.json()
-
-      // OpenRouter 返回 { data: [...] }
-      if (!body || !Array.isArray(body.data)) {
-        throw new Error('OpenRouter 返回格式异常: 缺少 data 数组')
-      }
-
       cachedModels = body.data
+      modelsFailedAt = 0
       return cachedModels
-    } catch (err) {
-      // 失败时清空 promise，下次可重试
+    } catch {
+      // 失败记时并清空进行中的 promise（窗口过期后可重试）；失败详情已由日志器记录
+      modelsFailedAt = Date.now()
       fetchPromise = null
-      console.warn(`[enrich] 获取 OpenRouter 模型列表失败: ${err.message}`)
       return []
     }
   })()
@@ -130,7 +164,8 @@ export async function fetchOpenRouterModels() {
 
 /**
  * 从 models.dev 获取 catalog（providers + models 元数据）
- * 缓存在模块级变量中，多次调用只 fetch 一次，失败时返回 null
+ * 缓存在模块级变量中，多次调用只 fetch 一次；失败时返回 null，
+ * 并在 FAILURE_RETRY_MS 窗口内不再重试（负缓存）。
  * @returns {Promise<object|null>} catalog 对象（{ providers, models }），失败返回 null
  */
 export async function fetchModelsDevCatalog() {
@@ -142,32 +177,31 @@ export async function fetchModelsDevCatalog() {
     return catalogPromise
   }
 
+  if (catalogFailedAt && Date.now() - catalogFailedAt < FAILURE_RETRY_MS) {
+    return null
+  }
+
   catalogPromise = (async () => {
     try {
-      const response = await fetchWithTimeout(MODELS_DEV_CATALOG_URL, {
-        method: 'GET',
-        headers: {
-          Accept: 'application/json',
+      const body = await fetchJsonWithTimeout(MODELS_DEV_CATALOG_URL, {
+        operation: 'enrich:modelsdev:catalog',
+        label: 'models.dev API',
+        timeoutMs: CATALOG_TIMEOUT,
+        validate: (b) => {
+          // catalog.json 结构：{ providers: { [id]: Provider }, models: { [lab/model]: ModelMetadata } }
+          if (!b || typeof b !== 'object') {
+            throw new Error('models.dev 返回格式异常: 期望对象')
+          }
         },
       })
 
-      if (!response.ok) {
-        throw new Error(`models.dev API 返回 ${response.status} ${response.statusText}`)
-      }
-
-      const body = await response.json()
-
-      // catalog.json 结构：{ providers: { [id]: Provider }, models: { [lab/model]: ModelMetadata } }
-      if (!body || typeof body !== 'object') {
-        throw new Error('models.dev 返回格式异常: 期望对象')
-      }
-
       cachedCatalog = body
+      catalogFailedAt = 0
       return cachedCatalog
-    } catch (err) {
-      // 失败时清空 promise，下次可重试
+    } catch {
+      // 失败记时并清空进行中的 promise（窗口过期后可重试）；失败详情已由日志器记录
+      catalogFailedAt = Date.now()
       catalogPromise = null
-      console.warn(`[enrich] 获取 models.dev catalog 失败: ${err.message}`)
       return null
     }
   })()
@@ -669,32 +703,37 @@ export async function enrichModel(modelId, existingMetadata) {
   // 即使外部源匹配失败也能显示
   let result = normalizeMetadataAliases({ ...existingMetadata })
 
+  // 两个源并发拉取（各自带超时 + 失败负缓存）：任一源失败不阻塞另一源，
+  // 首轮最坏耗时从「两段超时相加」降为「单段超时」
+  const [orModels, catalog] = await Promise.all([
+    fetchOpenRouterModels().catch(() => []),
+    fetchModelsDevCatalog().catch(() => null),
+  ])
+
   // 源 1: OpenRouter（现有逻辑，name 无条件覆盖以修正历史误匹配；
   //        pricing 覆盖以跟随上游改价）
   let orPriced = false
-  try {
-    const orModels = await fetchOpenRouterModels()
-    if (orModels && orModels.length > 0) {
+  if (orModels && orModels.length > 0) {
+    try {
       const or = enrichFromOpenRouter(modelId, result, orModels)
       result = or.metadata
       orPriced = or.providedPricing
+    } catch {
+      // OR 匹配/合并异常，继续尝试 MD
     }
-  } catch {
-    // OR fetch 失败，继续尝试 MD
   }
 
   // 源 2: models.dev（补 OR 未覆盖的字段；OR 没匹配到时全量补；
   //        OR 已提供 pricing 时跳过 cost，保持源优先级）
-  try {
-    const catalog = await fetchModelsDevCatalog()
-    if (catalog) {
+  if (catalog) {
+    try {
       const mdResult = enrichFromModelsDev(modelId, result, catalog, { skipPricing: orPriced })
       if (mdResult) {
         result = mdResult
       }
+    } catch {
+      // MD 合并异常，静默
     }
-  } catch {
-    // MD fetch 失败，静默
   }
 
   return result
@@ -702,11 +741,13 @@ export async function enrichModel(modelId, existingMetadata) {
 
 /**
  * 重置模块级缓存（仅供测试使用）
- * 清空 OpenRouter 模型列表与 models.dev catalog 的缓存及进行中的 promise
+ * 清空 OpenRouter 模型列表与 models.dev catalog 的缓存、进行中的 promise 及失败记录
  */
 export function _resetCache() {
   cachedModels = null
   fetchPromise = null
+  modelsFailedAt = 0
   cachedCatalog = null
   catalogPromise = null
+  catalogFailedAt = 0
 }

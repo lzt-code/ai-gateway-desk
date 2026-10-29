@@ -440,6 +440,20 @@ try {
     })
     check('场景15 pricing=全部无效不覆盖', r.pricing, { prompt: 9 })
   }
+  // ── 场景 16：某源失败后负缓存 —— 不再逐模型重发请求 ──
+  // 复现「启动同步只打一次失败日志，却整段卡住」：旧实现失败即清空 promise，
+  // enrich 循环里每个模型都会重新 fetch 并再等满一个超时（模型数 × 超时）。
+  _resetCache()
+  mockOR = null
+  mockMD = null
+  orCallCount = mdCallCount = 0
+  {
+    for (const id of ['a/m1', 'a/m2', 'a/m3']) {
+      await enrichModel(id, { id })
+    }
+    check('场景16 失败源只请求一次（OR）', orCallCount, 1)
+    check('场景16 失败源只请求一次（MD）', mdCallCount, 1)
+  }
 } finally {
   globalThis.fetch = originalFetch
 }

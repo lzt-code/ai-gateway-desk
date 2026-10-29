@@ -2,7 +2,7 @@
 // 覆盖：pending/done/error 事件序列、done/total 计数、无回调向后兼容、
 //       custom provider 自动加 custom- 前缀、OpenRouter 原生格式（无 object 字段）、
 //       debug 模式（request/response 事件、token 脱敏、预览截断、关闭时无 debug 事件）
-import { discoverModels, gatewaySlug, maskHeaders } from '../src/cloudflare/discover.js'
+import { discoverModels, gatewaySlug, maskHeaders, _fetchTextWithTimeout } from '../src/cloudflare/discover.js'
 
 let failed = false
 function check(name, actual, expected) {
@@ -13,7 +13,7 @@ function check(name, actual, expected) {
 
 // mock fetch：按 URL 分段返回不同响应
 const originalFetch = globalThis.fetch
-globalThis.fetch = async (url) => {
+const mockFetch = async (url) => {
   const s = String(url)
   if (s.includes('/p1/v1/models')) {
     return new Response(JSON.stringify({ object: 'list', data: [{ id: 'm1' }, { id: 'm2' }] }), {
@@ -66,6 +66,7 @@ globalThis.fetch = async (url) => {
   }
   return new Response('not found', { status: 404 })
 }
+globalThis.fetch = mockFetch
 
 try {
   // ── 场景 0：gatewaySlug 计算（custom- 前缀 / byok 原样） ──
@@ -342,6 +343,38 @@ try {
     }
     const r = await discoverModels(config, 'cfut_test')
     check('场景15 无 filter 仍全量', r.results.length + r.errors.length, 2)
+  }
+  // ── 场景 17：超时覆盖「连接 + 读响应体」 —— 响应头已到、正文卡住也必须按时超时 ──
+  // 回归：旧实现拿到响应头就清定时器，response.text() 无超时 → provider 正文卡住
+  // 会让 discover 阶段无限期挂住（同 enrich 的 models.dev catalog 问题）
+  {
+    const stallFetch = async (_url, opts) => ({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      headers: { entries: () => new Map().entries() },
+      // 模拟：响应头已返回，正文永远不结束（只受 abort 影响）
+      text: () =>
+        new Promise((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => {
+            const err = new Error('This operation was aborted')
+            err.name = 'AbortError'
+            reject(err)
+          })
+        }),
+    })
+    globalThis.fetch = stallFetch
+    const start = Date.now()
+    let caught = null
+    try {
+      await _fetchTextWithTimeout('https://example.test/stall', { operation: 'discover:models:stall', timeoutMs: 120 })
+    } catch (err) {
+      caught = err
+    }
+    const elapsed = Date.now() - start
+    check('场景17 正文卡住按时超时（不挂住）', caught instanceof Error && /请求超时/.test(caught.message), true)
+    check(`场景17 超时时长 < 2000ms（实测 ${elapsed}ms）`, elapsed < 2000, true)
+    globalThis.fetch = mockFetch
   }
 } finally {
   globalThis.fetch = originalFetch

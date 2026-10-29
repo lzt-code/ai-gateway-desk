@@ -129,11 +129,11 @@ Vanilla JS 单页（`app.js` / `index.html` / `style.css`），五个视图 tab�
 - `api.js`：统一 `request()`（超时 + 错误归类），按资源分组——AI Gateway（创建/查询）、BYOK provider_configs（增删改查）、Custom Providers（增删改查）、KV namespace 创建
 - `kv.js`：管理端直读直写 KV 单键（读 404 返回 null 不抛错），用于跨 PC 同步 `provider-visibility`
 - `providers-sync.js`：并行拉取云端 Custom Providers + BYOK 配置，与本地 `providers.json` 合并（策略 A）
-- `discover.js`：模型发现，`/v1/models` 或由 pathPrefix 构造列表 URL；`config.debug === true` 时输出每个 provider 的完整请求/响应（终端全文、SSE `status:'debug'` 事件带脱敏请求头与截断响应体预览）
+- `discover.js`：模型发现，`/v1/models` 或由 pathPrefix 构造列表 URL；单 provider 请求超时覆盖「连接 + 读响应体」全程（只等响应头会让正文卡住的请求挂住整个 discover）；请求/响应明细走统一日志器（`discover:models:<slug>` / `discover:routes:dynamic`，结果日志恒输出），`config.debug === true` 时额外向前端发 SSE `status:'debug'` 事件（脱敏请求头 + 截断响应体预览）
 
 ### 4.6 模型管道 — `src/pipeline/` + `src/output/`
 
-- `enrich.js`：OpenRouter + models.dev 双源富化（模块级缓存，仅补缺失字段；pricing 例外——覆盖以跟随上游改价，失败静默）
+- `enrich.js`：OpenRouter + models.dev 双源富化（模块级缓存，仅补缺失字段；pricing 例外——覆盖以跟随上游改价，失败静默）。网络侧要点：超时覆盖「连接 + 读响应体」（catalog.json 数 MB，只等响应头会卡死正文读取）；两源并发拉取；任一源失败后 5 分钟内负缓存不再重试（否则 enrich 循环逐模型重发请求，每个模型再等满一个超时，表现为整段同步卡住）
 - `merge.js`：**策略 A：provider 永远覆盖**；仅对成功查询的 provider 执行「未发现 → 直接删除」（manual 条目豁免）
 - `generate.js`：过滤 selected + 隐藏 provider（`enabled===false`）的模型 → 写 `data/models.json`
 - `deploy.js`：REST 写入部署 models + `provider-routes` 路由映射（slug → pathPrefix），无 wrangler 子进程开销
