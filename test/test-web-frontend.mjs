@@ -121,6 +121,8 @@ const {
   getUnresolvedIds,
   setUnresolvedIds,
   showUnresolvedHint,
+  markModelViewDataStale,
+  consumeModelViewDataStale,
 } = mod
 check(true, 'app.js 可被 Node import（顶层无 DOM 访问，能加载即证明）')
 
@@ -135,6 +137,14 @@ check(getUnresolvedIds().length === 1 && getUnresolvedIds()[0] === 'cloud/a',
   'setUnresolvedIds 过滤非字符串 / 空值')
 setUnresolvedIds(null)
 check(getUnresolvedIds().length === 0, 'setUnresolvedIds(null) → 空列表')
+
+// 8y2：Provider 增删改 → 模型视图数据失效标记（切回模型视图时重拉侧栏/表格）
+check(typeof markModelViewDataStale === 'function' && typeof consumeModelViewDataStale === 'function',
+  'markModelViewDataStale/consumeModelViewDataStale 已导出')
+check(consumeModelViewDataStale() === false, '初始无失效标记')
+markModelViewDataStale()
+check(consumeModelViewDataStale() === true, '标记后首次消费返回 true')
+check(consumeModelViewDataStale() === false, '消费一次后清除（不会重复重拉）')
 
 // 8z：全局加载指示（转圈圈）纯函数（showBusy / hideBusy / withBusy）
 check(typeof showBusy === 'function' && typeof hideBusy === 'function', 'showBusy/hideBusy 已导出（全局加载指示）')

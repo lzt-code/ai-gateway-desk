@@ -126,12 +126,13 @@ function makeDeps({
 }
 
 // app 工厂：注入 configStore（内存配置）+ stateStore + mock deps
-function makeApp(deps, { config = fakeConfig, state = {} } = {}) {
+function makeApp(deps, { config = fakeConfig, state = {}, appOptions = {} } = {}) {
   const store = makeStore(state)
   const app = createTestApp({
     configStore: { load: () => config },
     stateStore: store,
     deps,
+    ...appOptions,
   })
   return { app, store }
 }
@@ -554,6 +555,55 @@ section('POST /api/providers/delete')
   check(deps.calls.some((c) => c[0] === 'delete' && c[1] === 'openrouter'), '测试 21: 云端 404 仍尝试删除（失败后降级）')
   const write = deps.calls.find((c) => c[0] === 'write')
   check(write && !write[1].some((p) => p.id === 'openrouter'), '测试 21: 写盘已无 openrouter')
+}
+
+// 级联删除模型 → 排期闲置自动部署（关闭页面时 flush 立即部署，避免 Worker 列表残留）
+{
+  clearEnv()
+  const state = {
+    'openrouter/gpt-4o': { status: 'selected', provider: 'openrouter', metadata: { id: 'openrouter/gpt-4o' } },
+    'custom-agnes/agnes': { status: 'selected', provider: 'custom-agnes', metadata: { id: 'custom-agnes/agnes' } },
+  }
+  const deps = makeDeps()
+  const deployed = []
+  deps.saveAndDeploy = async ({ state: s }) => {
+    deployed.push(Object.keys(s))
+    return { ok: true }
+  }
+  const { app, store } = makeApp(deps, { state, appOptions: { autoDeployIdleMs: 20 } })
+  const res = await post(app, '/api/providers/delete', { id: 'openrouter' })
+  const data = await res.json()
+  check(data.modelsDeleted === 1, '测试 22: 级联删除该 provider 下 1 个模型')
+  check(data.autoDeployScheduled === true, '测试 22: 级联删除后已排期自动部署')
+  check(!store.state['openrouter/gpt-4o'], '测试 22: state 已移除被删 provider 的模型')
+  check(Boolean(store.state['custom-agnes/agnes']), '测试 22: 其他 provider 的模型保留')
+  const st = await (await app.request('/api/state')).json()
+  check(st.autoDeployPending === true, '测试 22: /api/state 返回 autoDeployPending=true')
+  // 等待防抖窗口（20ms）后应真正执行一次 saveAndDeploy
+  await new Promise((r) => setTimeout(r, 100))
+  check(deployed.length === 1 && !deployed[0].includes('openrouter/gpt-4o'),
+    '测试 22: 闲置自动部署已执行且投影不含被删模型')
+}
+
+// 关闭页面 / 进程退出：startServer 会调用 flushPendingDeploy，排期中的级联删除应立即部署
+{
+  clearEnv()
+  const state = {
+    'openrouter/gpt-4o': { status: 'selected', provider: 'openrouter', metadata: { id: 'openrouter/gpt-4o' } },
+  }
+  const deps = makeDeps()
+  const deployed = []
+  deps.saveAndDeploy = async ({ state: s }) => {
+    deployed.push(Object.keys(s))
+    return { ok: true }
+  }
+  const { app } = makeApp(deps, { state, appOptions: { autoDeployIdleMs: 60_000 } })
+  const res = await post(app, '/api/providers/delete', { id: 'openrouter' })
+  const data = await res.json()
+  check(data.autoDeployScheduled === true, '测试 23: 删除后进入 20s 防抖排期')
+  await app.flushPendingDeploy(2000)
+  check(deployed.length === 1 && !deployed[0].includes('openrouter/gpt-4o'),
+    '测试 23: 页面关闭冲刷（flushPendingDeploy）立即部署且不含被删模型')
 }
 
 // ── 写盘内容断言 + 回归 ──────────────────────────────────

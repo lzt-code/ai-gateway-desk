@@ -168,6 +168,17 @@ export function markDiscovered(now = Date.now()) {
 let _modelViewRefreshFn = null
 export function registerModelViewRefresh(fn) { _modelViewRefreshFn = fn }
 
+// 模型视图数据失效标记：Provider 视图增删改 Provider 后置位，模型视图再次可见时
+// 重新拉取 /api/state + /api/providers/list 并重绘侧栏/表格，避免必须全量同步或
+// 重启应用才能看到 Provider 变化（视图懒渲染，切回时不会自动重建）。
+let _modelViewDataStale = false
+export function markModelViewDataStale() { _modelViewDataStale = true }
+export function consumeModelViewDataStale() {
+  const stale = _modelViewDataStale
+  _modelViewDataStale = false
+  return stale
+}
+
 // ── 未解析模型 id（云端已决策、本机未发现）──────────────────
 // /api/sync/consistency 与 /api/sync 的响应携带 unresolvedIds：KV 声明了这些 id
 // （已采用 / 已隐藏），但本机 state 没有对应条目——新机器、或 discover 尚未覆盖
@@ -2525,6 +2536,9 @@ export function renderModelsView(container) {
   // 本次同步新增模型 ID（仅本地内存态，不写入 data/）：done 事件的 summary.newModels
   // 填充，下次同步开始时清空；用于表格 row-new 高亮。页面刷新自然丢失。
   let newModelIds = new Set()
+  // 初始数据是否已加载（Provider 视图变更后的失效标记只在已加载后生效，
+  // 避免首次渲染时初始加载与失效刷新重复请求）
+  let dataLoaded = false
 
   // ── DOM 骨架（§4.1 结构）────────────────────────────────
   container.innerHTML = ''
@@ -2791,6 +2805,25 @@ export function renderModelsView(container) {
     } catch (err) {
       flash(err.message, 'err')
     }
+  }
+
+  // 重新拉取内存态并重绘（Provider 视图增删改 Provider 后，切回模型视图时调用）：
+  //   - providers 侧栏随 /api/providers/list 更新（新增 / 删除 / 改名 / 隐藏）
+  //   - /api/state 随之更新（删除 Provider 时后端已级联删除其模型）
+  // 当前筛选的 Provider 已不存在 → 回退「全部」，避免停在被删 Provider 的空列表。
+  async function reloadModelData() {
+    const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
+    state = s.state || {}
+    baseline = s.baseline || {}
+    autoDeployScheduled = !!s.autoDeployPending
+    if (s.autoDeployIdleMs) autoDeployIdleMs = s.autoDeployIdleMs
+    providers = p.providers || []
+    const providerExists = provider === null || providers.some((x) => (typeof x === 'string' ? x : x.id) === provider)
+    if (!providerExists) provider = null
+    if (detailModelId && !state[detailModelId]) detailModelId = null
+    renderSidebar()
+    updateDirty()
+    await applyFilter()
   }
 
   // ── 变更操作（响应驱动更新内存态，再重新 applyFilter）────
@@ -3634,14 +3667,21 @@ export function renderModelsView(container) {
   // 切走视图强制关闭 EventSource（已知坑 1 简单方案：切回不自动续，避免重复连接）
   // 同时停止 dirty 轮询（视图隐藏期间不刷 baseline）；切回时若仍 dirty 立即
   // 补一次轮询并重启定时器，避免部署完成后标记卡在「待自动部署」不消失。
+  // 切回时若 Provider 视图增删改过 Provider（失效标记置位）→ 重拉内存态，
+  // 让侧栏/表格立即反映 Provider 变化，无需全量同步或重启。
   if (typeof MutationObserver !== 'undefined') {
     const obs = new MutationObserver(() => {
       if (container.hidden) {
         finishSync()
         stopDirtyPoll()
-      } else if (computeDirty(baseline, state)) {
-        pollDirtyOnce()
-        startDirtyPoll()
+      } else {
+        if (dataLoaded && consumeModelViewDataStale()) {
+          reloadModelData().catch((err) => flash(err.message, 'err'))
+        }
+        if (computeDirty(baseline, state)) {
+          pollDirtyOnce()
+          startDirtyPoll()
+        }
       }
     })
     obs.observe(container, { attributes: true, attributeFilter: ['hidden'] })
@@ -3654,15 +3694,10 @@ export function renderModelsView(container) {
   ;(async () => {
     try {
       const doLoad = async () => {
-        const [s, p] = await Promise.all([api('/api/state'), api('/api/providers/list')])
-        state = s.state || {}
-        baseline = s.baseline || {}
-        autoDeployScheduled = !!s.autoDeployPending
-        if (s.autoDeployIdleMs) autoDeployIdleMs = s.autoDeployIdleMs
-        providers = p.providers || []
-        renderSidebar()
-        updateDirty()
-        await applyFilter()
+        await reloadModelData()
+        // 本次已拉取最新数据 → 清除 Provider 视图遗留的失效标记
+        consumeModelViewDataStale()
+        dataLoaded = true
         // 进入视图时若已有历史同步明细，则按当前调试模式恢复表格（调试关=简要，调试开=高亮对比）
         const cached = appState().get('lastSyncDetails')
         if (hasSyncDiff(cached)) renderSyncDiffToPanel(cached)
@@ -5564,6 +5599,8 @@ export function renderProvidersView(container) {
         if (idx >= 0) providers[idx] = res.provider
         else providers.push(res.provider)
         renderTable()
+        // 可见性变化会影响模型页 Provider 侧栏（隐藏即不展示）→ 标记待刷新
+        markModelViewDataStale()
       }
       const kvWarn = res.kvDeployed === false && res.kvSkipped !== true
       const stateText = nextEnabled ? '启用' : '隐藏'
@@ -5604,6 +5641,8 @@ export function renderProvidersView(container) {
         if (idx >= 0) providers[idx] = res.provider
         else providers.push(res.provider)
         renderTable()
+        // 改名 / 路径前缀变化 → 模型页 Provider 侧栏展示需同步
+        markModelViewDataStale()
       }
       // KV 同步：可见性与路由都写 KV；失败提示可重试
       const kvWarn = res.kvDeployed === false && res.kvSkipped !== true
@@ -5645,6 +5684,8 @@ export function renderProvidersView(container) {
       if (res && res.removed === true) {
         providers = providers.filter((p) => p.id !== id)
         renderTable()
+        // 删除 Provider（后端已级联删除其模型）→ 模型页侧栏与表格需重新拉取
+        markModelViewDataStale()
         // 详细日志：标注类型 + 云端删除结果（cloudAction 由后端返回）
         const typeText = provider.type === 'byok' ? 'BYOK' : 'Custom'
         const actionText = ({
@@ -5657,11 +5698,13 @@ export function renderProvidersView(container) {
         })[res.cloudAction] || res.cloudAction || 'unknown'
         const kvWarn = res.kvDeployed === false && res.kvSkipped !== true
         let deleteLog = `删除 Provider：${id}（${typeText}，${actionText}）`
+        if (res.modelsDeleted > 0) deleteLog += `，级联删除 ${res.modelsDeleted} 个模型`
+        if (res.autoDeployScheduled) deleteLog += '；模型变更已排期自动部署'
         if (kvWarn) {
           deleteLog += '；路由同步 KV 失败'
           flash(`已删除，但路由同步 KV 失败：${res.kvError || '未知错误'}（可到模型页点【部署更改】重试）`, 'warn')
         } else {
-          flash('已删除', 'ok')
+          flash(res.autoDeployScheduled ? '已删除，模型变更将自动部署' : '已删除', 'ok')
         }
         logActivity(deleteLog, kvWarn ? 'warn' : 'ok')
       }
@@ -5707,6 +5750,8 @@ export function renderProvidersView(container) {
       if (res.provider) {
         providers.push(res.provider)
         renderTable()
+        // 新增 Provider → 模型页侧栏需同步出现（其模型需同步后才有）
+        markModelViewDataStale()
       }
       // KV 同步：带 pathPrefix 才推路由；失败提示可重试（不阻断创建结果展示）
       const kvWarn = res.kvDeployed === false && res.kvSkipped !== true

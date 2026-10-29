@@ -2034,20 +2034,31 @@ export function createApp({
       .filter(([, entry]) => entry.provider === providerSlug)
       .map(([modelId]) => modelId)
     let modelsDeleted = 0
+    let autoDeployScheduled = false
     if (modelsToDelete.length > 0) {
       for (const modelId of modelsToDelete) {
         delete state[modelId]
       }
       stateStore.save(state)
-      try {
-        depsAll.writeModelsJson(state)
-      } catch {
-        // models.json 写入失败不影响删除结果
-      }
+      stateVersion++
       modelsDeleted = modelsToDelete.length
+      // 级联删除会改变部署投影（选中模型的 models.json / KV models，以及隐藏 /
+      // 手工模型 KV）→ 进入与 toggle/set-status 相同的闲置自动部署防抖，
+      // 避免本地已删、Worker 列表仍保留；页面关闭时由 flushPendingDeploy 立即冲刷。
+      // 注意：此处不提前改写 models.json——部署基线仍代表「已部署」内容，
+      // 待自动部署（或手动保存并部署）时统一重写本地文件与 KV，避免二者静默分叉。
+      autoDeployScheduled = scheduleAutoDeploy()
       console.log(`[provider-delete] 级联删除 ${modelsDeleted} 个模型 (provider=${providerSlug})`)
-      console.warn(`[provider-delete] 本地模型列表已更新，Worker 模型列表接口需「保存并部署」后才会同步`)
+      if (autoDeployScheduled) {
+        console.log(`[provider-delete] 模型变更已排期 ${Math.round(autoDeployIdleMs / 1000)}s 后自动部署`)
+      } else {
+        console.warn('[provider-delete] 本地模型列表已更新，Worker 模型列表接口需「保存并部署」后才会同步')
+      }
     }
+
+    // 已删除的手工 / 隐藏模型 id 从 KV 摘除，防止下次同步时从 KV 复活
+    // （与 /api/models/remove 一致；KV 不可用时静默降级，自动部署会全量重写）
+    if (modelsDeleted > 0) await cleanupModelKvAfterDeletion()
 
     // KV 同步：被删 provider 带 pathPrefix → 重推 provider-routes 摘除；
     // 同时重写 provider-visibility（摘除已删条目，跨 PC 一致）。
@@ -2075,9 +2086,20 @@ export function createApp({
         mgmtToken, gateway.accountId, namespaceId, buildVisibilityMap(local)
       ))
     }
-    ioLogResult(`provider:delete:${body.id}`, { ok: true, message: `cloud:${cloudAction} models:${modelsDeleted} kv:${kvDeployed ? 'ok' : kvError || 'skipped'}` })
+    ioLogResult(`provider:delete:${body.id}`, { ok: true, message: `cloud:${cloudAction} models:${modelsDeleted} autoDeploy:${autoDeployScheduled ? 'scheduled' : 'off'} kv:${kvDeployed ? 'ok' : kvError || 'skipped'}` })
     if (isDebugEnabled()) ioLogRequest(`provider:delete:${body.id}`, { method: 'POST', path: '/api/providers/delete', body: { id: body.id } })
-    return c.json({ ok: true, removed: true, cloudAction, modelsDeleted, kvDeployed, kvSkipped, kvError, localKeyWarning })
+    return c.json({
+      ok: true,
+      removed: true,
+      cloudAction,
+      modelsDeleted,
+      autoDeployScheduled,
+      ...(autoDeployScheduled ? { autoDeployIdleMs } : {}),
+      kvDeployed,
+      kvSkipped,
+      kvError,
+      localKeyWarning,
+    })
   })
 
   // ─── 任务 29：Worker + 账户管理 API（注册在静态文件中间件之前）───
