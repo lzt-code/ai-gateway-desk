@@ -6,7 +6,7 @@
  *       manual 豁免 / 未查询的 provider 豁免 / 无变更空汇总。
  */
 
-import { mergeDiscovery } from '../src/pipeline/merge.js'
+import { mergeDiscovery, buildSyncDetails } from '../src/pipeline/merge.js'
 
 let failures = 0
 let checks = 0
@@ -110,6 +110,42 @@ section('存量 removed 迁移')
   check(r.state['openrouter/legacy'].status === 'selected', '上游仍返回的存量 removed → 归位 selected')
   check(JSON.stringify(r.updatedModels) === JSON.stringify(['openrouter/legacy']), '迁移计入 updatedModels（保证落盘）')
   check(!('openrouter/legacy-gone' in r.state), '上游已不返回的存量 removed → 直接删除')
+}
+
+// ── 测试 8：易变字段（created）不回写、不触发更新 ──
+section('易变字段不覆盖')
+{
+  const state = {
+    'openrouter/m1': { status: 'selected', provider: 'openrouter', metadata: { id: 'openrouter/m1', created: 100, name: 'M1' } },
+  }
+  const r = mergeDiscovery(state, results([['openrouter', [{ id: 'openrouter/m1', name: 'M1', created: 999, architecture: { modality: 'text->text' } }]]]))
+  check(r.state['openrouter/m1'].metadata.created === 100, 'created 保持首次发现值（不被上游时间戳覆盖）')
+  check(r.updatedModels.length === 0, '仅 created/architecture 变化 → 不计入 updatedModels')
+}
+
+// ── 测试 9：同步明细（buildSyncDetails）忽略易变字段、过滤空变更 ──
+section('同步明细')
+{
+  const oldState = {
+    'p/a': { status: 'selected', provider: 'p', metadata: { id: 'p/a', created: 1, context_length: 100 } },
+    'p/b': { status: 'selected', provider: 'p', metadata: { id: 'p/b', context_length: 10 } },
+  }
+  const newState = {
+    // a：仅易变字段 created 变化 → 不应产生字段差异
+    'p/a': { status: 'selected', provider: 'p', metadata: { id: 'p/a', created: 2, context_length: 100 } },
+    // b：状态真实变化 → 必须产生 status 变更
+    'p/b': { status: 'hidden', provider: 'p', metadata: { id: 'p/b', context_length: 10 } },
+  }
+  const details = buildSyncDetails(oldState, newState, {
+    newModels: [], removedModels: [], updatedModels: ['p/a', 'p/b'],
+  })
+  check(details.updated.length === 1, '仅 p/b 进入 updated（p/a 无真实变更被过滤）')
+  const a = details.updated.find((u) => u.modelId === 'p/a')
+  const b = details.updated.find((u) => u.modelId === 'p/b')
+  // p/a 无真实字段差异：应被 filter(changes.length > 0) 剔除
+  check(a === undefined, '仅 created 变化 → 不出现在 updated 明细（易变字段被忽略）')
+  check(b && b.changes.length === 1 && b.changes[0].field === 'status' && b.changes[0].newValue === 'hidden',
+    '状态变化 → 明细含 status 旧值/新值')
 }
 
 console.log(`\n结果: ${checks - failures}/${checks} 通过`)

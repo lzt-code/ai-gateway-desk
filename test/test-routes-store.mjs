@@ -39,6 +39,8 @@ try {
   check(parsed.routes.a && parsed.extra === 1, '合法文件原样读回（不清洗额外字段）')
   writeFileSync(path.join(dir, 'routes.json'), '{"no-routes":true}', 'utf-8')
   check(JSON.stringify(loadRoutesStore(dir)) === JSON.stringify({ routes: {} }), '缺 routes 键 → 空骨架')
+  writeFileSync(path.join(dir, 'routes.json'), '{"routes":null}', 'utf-8')
+  check(JSON.stringify(loadRoutesStore(dir)) === JSON.stringify({ routes: {} }), 'routes 为 null → 空骨架')
 
   // ── 2：写入 / 读回 ──────────────────────────────────────
   section('写入 / 读回')

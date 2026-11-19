@@ -397,11 +397,24 @@ section('测试 18: add — 新模型')
   const body = await res.json()
   check(res.status === 200, '返回 200')
   check(body.entry.status === 'selected', 'entry.status === selected')
+  check(body.entry.manual === true, '手工新增模型带 manual 标记（同步时不被自动删除）')
   check(body.entry.provider === 'openrouter', 'entry.provider === openrouter')
   const stateBody = await (await app.request('/api/state')).json()
   check('openrouter/claude-3-5-sonnet' in stateBody.state, 'GET /api/state 含新键')
 }
 
+section('测试 18b: add — metadata.id 以 modelId 为准')
+{
+  const { req } = makeApp()
+  const res = await req('POST', '/api/models/add', {
+    modelId: 'openrouter/forced-id',
+    provider: 'openrouter',
+    metadata: { id: 'WRONG', name: 'Forced' },
+  })
+  const body = await res.json()
+  check(res.status === 200, '返回 200')
+  check(body.entry.metadata.id === 'openrouter/forced-id', 'metadata.id 强制等于 modelId')
+}
 section('测试 19: add — 缺 provider')
 {
   const { req } = makeApp()

@@ -155,5 +155,24 @@ section('pathPrefix provider 防呆警告')
     'fallback 链中命中 provider → 按节点 id 精确警告（不误伤其他级）')
 }
 
-console.log(`\n通过 ${checks - failures}/${checks}`)
+// ── 7：Cloudflare 硬性约束与边界值 ────────────────────────
+section('约束与边界值')
+// model 节点缺 outputs.success（只有 fallback）→ 不通过（cloud 7001）
+check(!ok(graphWith({ id: 'm', type: 'model', properties: { provider: 'p', model: 'm' }, outputs: { fallback: { elementId: 'END' } } })),
+  'model 缺 outputs.success → 不通过')
+// 空 elementId 必须报「缺少 elementId」，不能被后续「指向不存在节点」兜底掩盖
+{
+  const emptyTarget = graphWith({ id: 'm', type: 'model', properties: { provider: 'p', model: 'm' }, outputs: { success: { elementId: '' }, fallback: { elementId: 'END' } } })
+  const r = validateRouteElements(emptyTarget)
+  check(!r.ok && r.errors.some((e) => e.includes('缺少 elementId')), '空 elementId → 报「缺少 elementId」')
+}
+// rate 边界：limit/window 恰好为 0 必须拒绝（<= 0，而非 < 0）
+check(!ok(graphWith({ id: 'r', type: 'rate', properties: { limitType: 'count', limit: 0, window: 3600, key: 'metadata.user_id' }, outputs: { success: { elementId: 'END' } } })),
+  'rate limit=0（边界）→ 不通过')
+check(!ok(graphWith({ id: 'r', type: 'rate', properties: { limitType: 'count', limit: 100, window: 0, key: 'metadata.user_id' }, outputs: { success: { elementId: 'END' } } })),
+  'rate window=0（边界）→ 不通过')
+// percentage 权重和必须严格为 100（99.5 也不允许）
+check(!ok(graphWith({ id: 'p', type: 'percentage', outputs: { '99.5%': { elementId: 'END' }, '0%': { elementId: 'END' } } })),
+  'percentage 权重和 99.5（边界）→ 不通过')
+
 process.exit(failures ? 1 : 0)

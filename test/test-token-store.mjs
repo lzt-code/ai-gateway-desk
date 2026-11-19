@@ -18,6 +18,7 @@ const {
   writeToken, readToken, clearToken,
   writeManagementToken, readManagementToken, clearManagementToken,
   getSlotStatus, getTokenStoreInfo,
+  readSecret, writeSecret, deleteSecret, secretExists,
 } = await import('../src/core/token-store.js')
 
 let failed = false
@@ -51,6 +52,33 @@ try {
   clearManagementToken()
   check('clearManagementToken() 后 readManagementToken()', readManagementToken(), null)
   check('getSlotStatus() 全空', getSlotStatus(), { management: '未保存', gateway: '未保存' })
+
+  // 5. 外部修改凭证文件 → 缓存必须按 mtime 失效
+  writeToken('local-first')
+  check('外部改写前读取', readToken(), 'local-first')
+  {
+    const tokenPath = path.join(TEST_DIR, 'token')
+    fs.writeFileSync(tokenPath, 'external-second')
+    const future = new Date(Date.now() + 5000)
+    fs.utimesSync(tokenPath, future, future)
+    check('外部改写后读取新值（缓存按 mtime 失效）', readToken(), 'external-second')
+  }
+
+  // 6. 通用凭证：合法子路径读写 + 名称安全校验
+  writeSecret('provider-keys/custom-ark', 'sk-x')
+  check('writeSecret/readSecret 子路径', readSecret('provider-keys/custom-ark'), 'sk-x')
+  check('secretExists 已保存', secretExists('provider-keys/custom-ark'), true)
+  check('secretExists 未保存', secretExists('provider-keys/not-saved'), false)
+  deleteSecret('provider-keys/custom-ark')
+  check('deleteSecret 后读取', readSecret('provider-keys/custom-ark'), null)
+
+  const throws = (fn) => { try { fn(); return false } catch { return true } }
+  let nullNameMsg = ''
+  try { writeSecret('bad\0name', 'x') } catch (e) { nullNameMsg = e.message }
+  check('名称含 null 字节 → 明确报错「无效的凭证名称」', /无效的凭证名称/.test(nullNameMsg), true)
+  check('写入路径穿越 ../ → 抛错', throws(() => writeSecret('../escape', 'x')), true)
+  check('读取路径穿越 ../ → 抛错', throws(() => readSecret('../escape')), true)
+  check('空名称 → 抛错', throws(() => writeSecret('', 'x')), true)
 
   // ─── 隔离验证：读写全程只落在临时目录，真实凭证目录未被触碰 ───
 // 关键断言：测试运行前后，真实目录（~/.ai-gateway-desk/）的文件内容一致。

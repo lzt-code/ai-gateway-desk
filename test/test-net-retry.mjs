@@ -84,6 +84,23 @@ section('withNetworkRetry')
   check(r === 'ok' && n === 3, '连接超时重试至成功（共 3 次尝试）')
   check(retries.length === 2 && retries[0].attempt === 1 && retries[0].waitMs === 1, 'onRetry 回调收到尝试序号与等待时长')
 
+  // 退避按 n*baseDelayMs 递增（第 1 次 10ms、第 2 次 20ms），并带上根因详情
+  {
+    let j = 0
+    const infos = []
+    const ok = await withNetworkRetry(
+      async () => {
+        j++
+        if (j < 3) throw connectTimeout()
+        return 'ok'
+      },
+      { retries: 2, baseDelayMs: 10, onRetry: (info) => infos.push(info) }
+    )
+    check(ok === 'ok' && infos.map((i) => i.waitMs).join(',') === '10,20', '退避按 n×baseDelayMs 递增（10,20）')
+    check(infos.every((i) => typeof i.detail === 'string' && i.detail.includes('UND_ERR_CONNECT_TIMEOUT')),
+      'onRetry detail 含根因（便于定位）')
+  }
+
   // 持续失败 → 抛出，且尝试次数 = retries+1
   let m = 0
   let threw = false

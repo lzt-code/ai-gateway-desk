@@ -1,7 +1,7 @@
 // 双源富化（OpenRouter + models.dev）测试
 // 覆盖：双源融合补缺、name 优先级、匹配优先级 a/b/c/d、已有字段不覆盖、
 //       fetch 失败静默降级、模块级缓存（_resetCache）
-import { enrichModel, _resetCache } from '../src/pipeline/enrich.js'
+import { enrichModel, normalizeMetadataAliases, _resetCache } from '../src/pipeline/enrich.js'
 
 let failed = false
 function check(name, actual, expected) {
@@ -453,6 +453,71 @@ try {
     }
     check('场景16 失败源只请求一次（OR）', orCallCount, 1)
     check('场景16 失败源只请求一次（MD）', mdCallCount, 1)
+  }
+  // ── 场景 17：价格 0 是合法值（免费模型），不得当作缺失丢弃 ──
+  _resetCache()
+  mockOR = [{ id: 'z-ai/free-model', name: 'Free Model', pricing: { prompt: '0', completion: '0' } }]
+  mockMD = { providers: {}, models: {} }
+  {
+    const r = await enrichModel('custom-z/free-model', { id: 'custom-z/free-model' })
+    check('场景17 OR 免费价格 0 保留', r.pricing, { prompt: 0, completion: 0 })
+  }
+  _resetCache()
+  mockOR = null
+  mockMD = {
+    providers: {},
+    models: { 'lab/zero-cost': { name: 'Zero Cost', cost: { input: 0, output: 0 } } },
+  }
+  {
+    const r = await enrichModel('custom-lab/zero-cost', { id: 'custom-lab/zero-cost' })
+    check('场景17 MD 免费成本 0 保留', r.pricing, { prompt: 0, completion: 0 })
+  }
+  // ── 场景 18：OR 名称单侧模糊匹配（namePart 包含 orName）──
+  _resetCache()
+  mockOR = [{ id: 'vendor/unknown-1', name: 'GPT-4o', context_length: 123456 }]
+  mockMD = null
+  {
+    const r = await enrichModel('custom-x/my-gpt-4o', { id: 'custom-x/my-gpt-4o' })
+    check('场景18 OR 单侧模糊名仍匹配', r.context_length, 123456)
+  }
+
+  // ── 场景 19：上游 architecture 给空数组 → 不写空 output_modalities（否则阻断 MD 兜底）──
+  _resetCache()
+  mockOR = [{
+    id: 'z-ai/empty-mod',
+    name: 'Empty Mod',
+    architecture: { input_modalities: ['text'], output_modalities: [] },
+    supported_parameters: [],
+  }]
+  mockMD = { providers: {}, models: {} }
+  {
+    const r = await enrichModel('custom-z/empty-mod', { id: 'custom-z/empty-mod' })
+    check('场景19 空 output_modalities 不写入', r.output_modalities, undefined)
+  }
+
+  // ── 场景 20：短 id 精确匹配优先于末段兜底（两个候选，顺序相关）──
+  _resetCache()
+  mockOR = [
+    { id: 'other/bar', name: 'WRONG-MATCH', context_length: 111 },
+    { id: 'x/foo/bar', name: 'RIGHT-MATCH', context_length: 222 },
+  ]
+  mockMD = { providers: {}, models: {} }
+  {
+    const r = await enrichModel('custom/foo/bar', { id: 'custom/foo/bar' })
+    check('场景20 短 id 优先命中（不被末段兜底抢走）', r.name, 'RIGHT-MATCH')
+  }
+
+  // ── 场景 21：别名归一化不覆盖已有正名 ──
+  {
+    const meta = normalizeMetadataAliases({
+      id: 'x',
+      context_length: 100,
+      context_window: 200,
+      max_output_length: 50,
+      max_tokens: 60,
+    })
+    check('场景21 别名不覆盖已有 context_length', meta.context_length, 100)
+    check('场景21 别名不覆盖已有 max_output_length', meta.max_output_length, 50)
   }
 } finally {
   globalThis.fetch = originalFetch

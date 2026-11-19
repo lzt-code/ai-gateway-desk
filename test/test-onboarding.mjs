@@ -448,6 +448,21 @@ section('core/providers-config')
   fs.writeFileSync(configPath, '{ not json')
   check(readProvidersConfig(deps).providers === undefined, '损坏文件 → 容错为空')
 
+  // 顶层是数组（合法 JSON、非法配置）→ 必须视为空对象，不能原样返回数组
+  fs.writeFileSync(configPath, '[]')
+  const arrayCfg = readProvidersConfig(deps)
+  check(!Array.isArray(arrayCfg) && Object.keys(arrayCfg).length === 0, '顶层数组 → 视为空对象')
+
+  // kv 无 key 时回填必须补默认 key（models），不能写其他值
+  fs.writeFileSync(configPath, JSON.stringify({
+    gateway: { host: 'h', accountId: 'a', gatewayId: 'g' },
+    kv: { namespaceId: 'ns-old' },
+    providers: [],
+  }, null, 2))
+  backfillKVNamespaceId('ns-new', deps)
+  const noKey = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+  check(noKey.kv.namespaceId === 'ns-new' && noKey.kv.key === 'models', 'kv 无 key 时回填补默认 models')
+
   // 全新机器：只传 gateway（KV 失败/跳过场景）→ 仍须产出 loadConfig 合法的结构
   const freshPath = path.join(dir, 'fresh.json')
   mergeProvidersConfig(
